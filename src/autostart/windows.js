@@ -37,6 +37,13 @@ function install(ctx) {
   return { path: `Task Scheduler\\${taskName()}`, ok: r.status === 0, output: (r.stderr || r.stdout || '').trim() };
 }
 
+// Task Scheduler runs our task ONLOGON, not as a managed service, so there's no
+// OS-owned "restart the daemon now" primitive to delegate to. Report unsupported;
+// callers fall back to their no-service path.
+function restart() {
+  return { ok: false, unsupported: true };
+}
+
 function uninstall() {
   const r = cp.spawnSync('schtasks', ['/Delete', '/TN', taskName(), '/F'], { encoding: 'utf8' });
   return { path: `Task Scheduler\\${taskName()}`, ok: r.status === 0, removed: r.status === 0, output: (r.stderr || r.stdout || '').trim() };
@@ -53,4 +60,4 @@ function startupShortcutDir() {
   return path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
 }
 
-module.exports = { render, install, uninstall, status, taskName, runCommand, startupShortcutDir };
+module.exports = { render, install, restart, uninstall, status, taskName, runCommand, startupShortcutDir };

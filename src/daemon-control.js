@@ -121,17 +121,29 @@ function resolveLatestTag(repoUrl) {
 }
 
 // Restart the daemon PROCESS so it loads new code (distinct from commands.restart,
-// which restarts tunnels in the running daemon). Service-aware: with the OS
-// service installed, KeepAlive relaunches it; otherwise spawn a fresh one.
+// which restarts tunnels in the running daemon). Either way the relaunch is owned
+// by something that outlives THIS process — so a restart that drops a tunnel
+// carrying our own ssh session can't strand the daemon. With an OS service: the
+// service manager restarts it (the same primitive a reinstall uses). Without one:
+// the daemon relaunches ITSELF via a detached successor (shutdown {relaunch:true}).
 async function restartDaemonProcess(io) {
   const before = await daemonPing();
   if (!before) return { restarted: false, reason: 'not-running' };
   const oldPid = before.pid;
+  const ctx = autostart.context();
+  const adapter = autostart.adapterFor();
   let serviceInstalled = false;
-  try { serviceInstalled = autostart.adapterFor().status(autostart.context()).installed; } catch (_) {}
+  try { serviceInstalled = adapter.status(ctx).installed; } catch (_) {}
   line(io, 'restarting daemon to apply new code (tunnels blip ~1s)…');
-  try { await ipc.request(paths.socketPath(), 'shutdown', {}); } catch (_) {}
+
   if (serviceInstalled) {
+    // Hand the restart to the OS service manager — the SAME primitive a reinstall
+    // uses (launchctl kickstart -k / systemctl --user restart). It owns the
+    // relaunch, so even if THIS process is killed mid-restart (e.g. the restart
+    // drops a tunnel carrying our own ssh session), the daemon still comes back.
+    const r = adapter.restart(ctx);
+    if (r && r.unsupported) return spawnRelaunch(); // e.g. Windows Task Scheduler
+    if (!r || !r.ok) return { restarted: false, reason: 'service-restart-failed', output: r && r.output };
     for (let i = 0; i < 100; i++) {
       const p = await daemonPing();
       if (p && p.pid !== oldPid) return { restarted: true, via: 'service', pid: p.pid, version: p.version };
@@ -139,9 +151,24 @@ async function restartDaemonProcess(io) {
     }
     return { restarted: false, reason: 'service-relaunch-timeout' };
   }
-  for (let i = 0; i < 50; i++) { if (!(await daemonPing())) break; await sleep(100); }
-  const p = await ensureDaemon(io);
-  return { restarted: true, via: 'spawn', pid: p.pid, version: p.version };
+
+  return spawnRelaunch();
+
+  // No OS service to own the relaunch. Do NOT shut the daemon down and respawn it
+  // from HERE: if this process rides a tunnel the restart drops, it dies before
+  // the respawn → daemon stranded, locked out. Instead tell the daemon to relaunch
+  // ITSELF — it spawns a fresh, detached successor (new code) as it exits, owned by
+  // the daemon, not by our (possibly tunnel-carried) session.
+  async function spawnRelaunch() {
+    try { await ipc.request(paths.socketPath(), 'shutdown', { relaunch: true }); }
+    catch (_) { return { restarted: false, reason: 'shutdown-request-failed' }; }
+    for (let i = 0; i < 100; i++) {
+      const p = await daemonPing();
+      if (p && p.pid !== oldPid) return { restarted: true, via: 'self-relaunch', pid: p.pid, version: p.version };
+      await sleep(100);
+    }
+    return { restarted: false, reason: 'self-relaunch-timeout' };
+  }
 }
 
 function renderUpdate(io, res) {

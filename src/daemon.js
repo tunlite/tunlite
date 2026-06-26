@@ -18,6 +18,10 @@ class Daemon {
     this.socketPath = opts.socketPath || paths.socketPath();
     this.pidFile = opts.pidFile || paths.pidFile();
     this.sshBinary = opts.sshBinary || null;
+    // Injectable so a relaunch-on-shutdown can be unit-tested without forking
+    // (or actually exiting) the test process.
+    this._spawn = opts.spawn || require('child_process').spawn;
+    this._exit = opts.exit || process.exit;
     this.logs = new LogHub({ dir: opts.logDir || paths.logDir() });
     this.supervisors = new Map();
     this.config = config.defaultConfig();
@@ -185,7 +189,7 @@ class Daemon {
         ctx.onClose(() => this.logs.removeListener('line', onLine));
         await new Promise(() => {}); // keep open until client disconnects
       },
-      shutdown: async () => { setTimeout(() => this.shutdown(), 10); return { ok: true }; },
+      shutdown: async (args) => { setTimeout(() => this.shutdown({ relaunch: Boolean(args && args.relaunch) }), 10); return { ok: true }; },
     };
   }
 
@@ -195,8 +199,8 @@ class Daemon {
     process.on('SIGINT', onSig);
   }
 
-  async shutdown() {
-    this.log('daemon shutting down');
+  async shutdown(opts = {}) {
+    this.log(`daemon shutting down${opts.relaunch ? ' (relaunch)' : ''}`);
     // Suspend per-tunnel alerts so stopping every supervisor doesn't spray
     // `stopped` events — the single daemon-down covers the shutdown.
     this.alerter.suspended = true;
@@ -208,7 +212,22 @@ class Daemon {
     // Give daemon-down up to ~1.5s to reach the webhook before we exit.
     await Promise.race([downSent, new Promise((r) => setTimeout(r, 1500))]);
     this.logs.close();
-    process.exit(0);
+    // Relaunch on update without an OS service: spawn our successor (now running
+    // the freshly anchored code) as a DETACHED, session-independent process, so
+    // the restart is owned by the daemon — not by whoever sent `shutdown`. That
+    // caller (e.g. `tunlite update` over a tunnel this very restart drops) may
+    // already be dead; the successor still comes up. Ordering is safe: supervisors
+    // are stopped and the server is closed (socket unlinked) above, and the new
+    // daemon's listen() reclaims any stale socket on its own.
+    if (opts.relaunch) {
+      try {
+        const child = this._spawn(process.execPath, [process.argv[1], 'daemon', 'run'], {
+          detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.unref();
+      } catch (_) { /* best effort — a failed relaunch must not block exit */ }
+    }
+    this._exit(0);
   }
 }
 

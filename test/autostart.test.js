@@ -65,6 +65,75 @@ test('systemd unit name derives from ctx (explicit ctx honored, not the live env
   }
 });
 
+test('launchd reinstall restarts via kickstart -k, never unload (no stranding window)', () => {
+  // An already-loaded job (reinstall) must be restarted by launchd itself, not
+  // torn down with unload→load. A bare `unload` stops the daemon, which drops
+  // every tunnel; if the reinstall is running over a tunlite tunnel, that severs
+  // its own session and kills it before the `load` runs → daemon stranded.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-la-'));
+  const c = { ...ctx, launchAgentsDir: dir, logDir: dir };
+  const calls = [];
+  const run = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[0] === 'print') return { status: 0 }; // simulate "already loaded"
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const res = autostart.launchd.install(c, run);
+  assert.ok(res.ok);
+  const verbs = calls.map((c) => c[1]); // launchctl <verb> ...
+  assert.ok(verbs.includes('kickstart'), 'reinstall must restart via kickstart -k');
+  assert.ok(!verbs.includes('unload') && !verbs.includes('bootout'), 'must never tear the loaded job down');
+});
+
+test('launchd fresh install bootstraps, never unload', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-la-'));
+  const c = { ...ctx, launchAgentsDir: dir, logDir: dir };
+  const calls = [];
+  const run = (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args[0] === 'print') return { status: 1 }; // not loaded
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const res = autostart.launchd.install(c, run);
+  assert.ok(res.ok);
+  const verbs = calls.map((c) => c[1]);
+  assert.ok(verbs.includes('bootstrap'), 'fresh install must bootstrap');
+  assert.ok(!verbs.includes('unload') && !verbs.includes('kickstart'), 'nothing loaded to restart or unload');
+});
+
+test('systemd (re)install restarts via systemctl restart, never stop/disable', () => {
+  // `restart` (not `enable --now`): on a reinstall the unit is already active, so
+  // `--now` would no-op and the new code would never load. `restart` is owned by
+  // the systemd user manager, so a severed caller session can't strand the daemon.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-sd-'));
+  const c = { ...ctx, systemdDir: dir, logDir: dir };
+  const calls = [];
+  const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: 0, stdout: '', stderr: '' }; };
+  const res = autostart.systemd.install(c, run);
+  assert.ok(res.ok);
+  const verbs = calls.map((c) => c[2]); // systemctl --user <verb> ...
+  assert.ok(verbs.includes('restart'), 'must apply new code via an init-owned restart');
+  assert.ok(!verbs.includes('stop') && !verbs.includes('disable'), 'must never stop/disable the running unit');
+});
+
+test('adapter.restart uses the init-owned restart primitive (kickstart -k / systemctl restart)', () => {
+  // The shared "apply new code" primitive both reinstall and `update` call. It
+  // must be an OS-owned restart, never a teardown — so a severed caller session
+  // can't strand the daemon.
+  const laCalls = [];
+  autostart.launchd.restart(ctx, (cmd, args) => { laCalls.push([cmd, ...args]); return { status: 0 }; });
+  assert.deepEqual(laCalls[0].slice(1, 3), ['kickstart', '-k']);
+
+  const sdCalls = [];
+  autostart.systemd.restart(ctx, (cmd, args) => { sdCalls.push([cmd, ...args]); return { status: 0 }; });
+  assert.deepEqual(sdCalls[0].slice(1, 4), ['--user', 'restart', 'tunlite.service']);
+
+  // Windows Task Scheduler has no managed-restart primitive → reported unsupported.
+  assert.equal(autostart.windows.restart().unsupported, true);
+  // The sandbox adapter no-ops (never touches the OS).
+  assert.equal(autostart.sandbox.restart().ok, true);
+});
+
 test('windows task command is quoted', () => {
   const { content } = autostart.windows.render(ctx);
   assert.equal(content, '"/usr/local/bin/node" "/opt/tunlite/bin/tunlite.js" daemon run');

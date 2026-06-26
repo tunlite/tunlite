@@ -250,9 +250,53 @@ test('start(): a clean start (no leftover pidfile) reports daemon-up only', asyn
   assert.ok(fs.existsSync(daemon.pidFile), 'a fresh pidfile is written on start');
 });
 
-// NOTE (deliberate skip): the full shutdown() path is not driven here because it
-// ends in process.exit(0), which would terminate the node --test runner. Its
-// alert-suspension + daemon-down drain is covered structurally by the alerter
-// tests and is exercised end-to-end by the CLI integration tests that spawn a
-// real daemon child (test/cli.test.js: `daemon stop`). Re-driving it inline
-// would require stubbing process.exit and real timers and would be flaky.
+// -------------------------------------------------------------------------
+// shutdown(relaunch) — the serviceless `update` path. The daemon must spawn its
+// own detached successor (new code) as it exits, so the restart is owned by the
+// daemon, not by a caller whose session the restart may sever. `spawn`/`exit`
+// are injected so this runs without forking or killing the test runner.
+// -------------------------------------------------------------------------
+
+// Build a Daemon with stubbed spawn+exit, no server/supervisors — just enough to
+// drive shutdown() in isolation.
+function mkShutdownDaemon() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tunlite-shutdown-'));
+  const spawned = [];
+  const exits = [];
+  const d = new Daemon({
+    configFile: path.join(dir, 'config.json'),
+    socketPath: path.join(dir, 'd.sock'),
+    pidFile: path.join(dir, 'd.pid'),
+    logDir: path.join(dir, 'logs'),
+    alerter: fakeAlerter(),
+    spawn: (cmd, args, opts) => { spawned.push({ cmd, args, opts }); return { unref() {} }; },
+    exit: (code) => { exits.push(code); },
+  });
+  return { d, dir, spawned, exits };
+}
+
+test('shutdown({relaunch:true}) spawns a detached successor, then exits', async () => {
+  const { d, dir, spawned, exits } = mkShutdownDaemon();
+  try {
+    await d.shutdown({ relaunch: true });
+    assert.equal(spawned.length, 1, 'must spawn exactly one successor');
+    const { args, opts } = spawned[0];
+    assert.deepEqual(args.slice(-2), ['daemon', 'run'], 'successor runs the daemon');
+    assert.equal(opts.detached, true, 'successor must be detached (survive a severed session)');
+    assert.equal(opts.stdio, 'ignore');
+    assert.deepEqual(exits, [0], 'exits cleanly after spawning');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('shutdown() without relaunch exits without spawning a successor', async () => {
+  const { d, dir, spawned, exits } = mkShutdownDaemon();
+  try {
+    await d.shutdown();
+    assert.equal(spawned.length, 0, 'a plain shutdown must NOT respawn');
+    assert.deepEqual(exits, [0]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

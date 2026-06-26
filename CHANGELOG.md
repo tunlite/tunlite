@@ -9,6 +9,31 @@ release process.
 > tunlite debuted publicly at **0.9.0**. Earlier `0.x` releases were a private
 > prototype and are not part of this public history.
 
+## [Unreleased]
+
+### Fixed
+- **Reinstalling could strand the daemon and lock you out** when the autostart
+  service was registered and you were reinstalling *over a tunlite tunnel* (e.g.
+  `npx tunlite@latest install -y` to recover a broken `update`). The macOS launchd
+  adapter refreshed an already-loaded service with `unload` then `load` — two
+  non-atomic steps. The `unload` stopped the daemon, dropping every tunnel; if the
+  reinstall rode one of those tunnels, its own session was severed and the process
+  was killed before `load` ran → the service was left unloaded with nothing to
+  relaunch it. Reinstall now restarts an already-loaded job with `launchctl
+  kickstart -k` (launchd owns the relaunch, so a severed session can't strand it).
+  The systemd adapter now applies new code via an init-owned `systemctl --user
+  restart` (the previous `enable --now` was a no-op on an already-running unit, so
+  the freshly anchored code never loaded).
+- **`tunlite update` could strand the daemon the same way** when no autostart
+  service was installed: it shut the daemon down and respawned it from the
+  foreground, so a restart that dropped the tunnel carrying your own session killed
+  the command before the respawn → daemon stranded. `update` and reinstall now share
+  one restart strategy: with a service, the OS service manager restarts the daemon
+  (`launchctl kickstart -k` / `systemctl --user restart`); without one, the daemon
+  relaunches **itself** — it spawns a fresh, detached successor as it exits, so the
+  relaunch is owned by the daemon, never by a caller whose session the restart may
+  sever.
+
 ## [0.10.2] - 2026-06-23
 
 ### Changed

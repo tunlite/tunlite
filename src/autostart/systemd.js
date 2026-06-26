@@ -42,19 +42,32 @@ function userctl(args, opts = {}) {
   return cp.spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8', ...opts });
 }
 
-function install(ctx) {
+function install(ctx, run = cp.spawnSync) {
+  const uctl = (args) => run('systemctl', ['--user', ...args], { encoding: 'utf8' });
   const { path: file, content } = render(ctx);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.mkdirSync(ctx.logDir, { recursive: true });
   fs.writeFileSync(file, content);
-  userctl(['daemon-reload']);
-  const r = userctl(['enable', '--now', unitName(ctx)]);
+  uctl(['daemon-reload']);
+  const en = uctl(['enable', unitName(ctx)]); // link for boot (no --now)
+  const r = restart(ctx, run); // apply new code via an init-owned restart (see below)
   return {
     path: file,
-    ok: r.status === 0,
-    output: (r.stderr || r.stdout || '').trim(),
+    ok: en.status === 0 && r.ok,
+    output: (r.output || (en.stderr || en.stdout || '')).trim(),
     note: 'For tunnels to start before login, run: loginctl enable-linger',
   };
+}
+
+// Restart the unit, owned by the systemd user manager — the shared "apply new
+// code" primitive for both reinstall and `update`. `restart` (not `enable --now`,
+// which no-ops on an already-running unit) forces the freshly anchored code to
+// load; and because systemd owns the restart, a severed caller session can't
+// strand the daemon (Restart=always is the backstop). It also starts a
+// not-yet-running unit, covering the fresh-install case.
+function restart(ctx, run = cp.spawnSync) {
+  const r = run('systemctl', ['--user', 'restart', unitName(ctx)], { encoding: 'utf8' });
+  return { ok: r.status === 0, output: (r.stderr || r.stdout || '').trim() };
 }
 
 function uninstall(ctx) {
@@ -80,4 +93,4 @@ function status(ctx) {
   };
 }
 
-module.exports = { render, install, uninstall, status, unitPath, unitName };
+module.exports = { render, install, restart, uninstall, status, unitPath, unitName };
