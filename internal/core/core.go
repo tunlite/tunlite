@@ -15,7 +15,10 @@ const (
 	Kind       = "Connection"
 )
 
-var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+var (
+	validName        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+	invalidLabelText = regexp.MustCompile(`[\x00\r\n]`)
+)
 
 type Connection struct {
 	APIVersion string         `json:"apiVersion"`
@@ -77,7 +80,7 @@ func NewPlanner(registry *Registry) *Planner {
 }
 
 func (p *Planner) Plan(ctx context.Context, connection Connection, options PlanOptions) (plan.ExecutionPlan, error) {
-	if err := validateEnvelope(connection); err != nil {
+	if err := ValidateConnection(connection); err != nil {
 		return plan.ExecutionPlan{}, err
 	}
 	driver, ok := p.registry.Driver(connection.Spec.Driver)
@@ -94,7 +97,7 @@ func (p *Planner) Plan(ctx context.Context, connection Connection, options PlanO
 	return executionPlan, nil
 }
 
-func validateEnvelope(connection Connection) error {
+func ValidateConnection(connection Connection) error {
 	if connection.APIVersion != APIVersion {
 		return fmt.Errorf("unsupported apiVersion %q", connection.APIVersion)
 	}
@@ -103,6 +106,17 @@ func validateEnvelope(connection Connection) error {
 	}
 	if !validName.MatchString(connection.Metadata.Name) {
 		return fmt.Errorf("invalid connection name %q", connection.Metadata.Name)
+	}
+	if connection.Metadata.Name == "all" {
+		return errors.New("connection name \"all\" is reserved for batch selection")
+	}
+	for key, value := range connection.Metadata.Labels {
+		if key == "" || len(key) > 253 || len(value) > 253 {
+			return fmt.Errorf("invalid connection label %q", key)
+		}
+		if invalidLabelText.MatchString(key) || invalidLabelText.MatchString(value) {
+			return fmt.Errorf("invalid connection label %q", key)
+		}
 	}
 	if connection.Spec.Driver == "" {
 		return errors.New("spec.driver is required")
