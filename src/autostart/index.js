@@ -46,6 +46,7 @@ function context(opts = {}) {
 const sandbox = {
   render: () => ({ path: '(sandbox)', content: '' }),
   install: () => ({ path: '(sandbox)', ok: true, sandbox: true }),
+  apply: () => ({ ok: true, sandbox: true }),
   restart: () => ({ ok: true, sandbox: true }),
   uninstall: () => ({ path: '(sandbox)', ok: true, removed: false, sandbox: true }),
   status: () => ({ platform: 'sandbox', installed: false, running: false }),

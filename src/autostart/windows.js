@@ -60,4 +60,4 @@ function startupShortcutDir() {
   return path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
 }
 
-module.exports = { render, install, restart, uninstall, status, taskName, runCommand, startupShortcutDir };
+module.exports = { render, install, apply: restart, restart, uninstall, status, taskName, runCommand, startupShortcutDir };

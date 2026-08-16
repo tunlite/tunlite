@@ -36,6 +36,20 @@ test('launchd parseRunning treats a live pid as running, not just state=running'
   assert.equal(parseRunning('last exit pid = (none)\n'), false);
 });
 
+test('launchd status distinguishes an installed plist from a loaded Job', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-la-status-'));
+  const c = { ...ctx, launchAgentsDir: dir };
+  fs.writeFileSync(autostart.launchd.plistPath(c), '<plist/>');
+  const stale = autostart.launchd.status(c, () => ({ status: 113, stdout: '' }));
+  assert.equal(stale.installed, true);
+  assert.equal(stale.loaded, false);
+  assert.equal(stale.running, false);
+
+  const loaded = autostart.launchd.status(c, () => ({ status: 0, stdout: 'pid = 42' }));
+  assert.equal(loaded.loaded, true);
+  assert.equal(loaded.running, true);
+});
+
 test('systemd unit has ExecStart and Restart=always', () => {
   const { path: p, content } = autostart.systemd.render(ctx);
   // Default unit name is the short `tunlite.service` (not the reverse-DNS launchd
@@ -72,6 +86,9 @@ test('launchd reinstall restarts via kickstart -k, never unload (no stranding wi
   // its own session and kills it before the `load` runs → daemon stranded.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-la-'));
   const c = { ...ctx, launchAgentsDir: dir, logDir: dir };
+  const rendered = autostart.launchd.render(c);
+  fs.mkdirSync(path.dirname(rendered.path), { recursive: true });
+  fs.writeFileSync(rendered.path, rendered.content);
   const calls = [];
   const run = (cmd, args) => {
     calls.push([cmd, ...args]);
@@ -83,6 +100,37 @@ test('launchd reinstall restarts via kickstart -k, never unload (no stranding wi
   const verbs = calls.map((c) => c[1]); // launchctl <verb> ...
   assert.ok(verbs.includes('kickstart'), 'reinstall must restart via kickstart -k');
   assert.ok(!verbs.includes('unload') && !verbs.includes('bootout'), 'must never tear the loaded job down');
+});
+
+test('launchd changed definition reloads through a detached helper', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-la-change-'));
+  const oldCtx = { ...ctx, launchAgentsDir: dir, logDir: dir };
+  const old = autostart.launchd.render(oldCtx);
+  fs.writeFileSync(old.path, old.content);
+  const calls = [];
+  const run = (_cmd, args) => ({ status: args[0] === 'print' ? 0 : 0, stdout: '', stderr: '' });
+  const spawn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return { unref() {} };
+  };
+  const changedCtx = { ...oldCtx, entry: '/opt/tunlite-v2/bin/tunlite.js' };
+  const rendered = autostart.launchd.render(changedCtx);
+  fs.writeFileSync(rendered.path, rendered.content);
+  const res = autostart.launchd.reloadDefinition(changedCtx, rendered.path, old.content, spawn);
+  assert.equal(res.ok, true);
+  assert.equal(res.reloading, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].opts.detached, true);
+  assert.equal(calls[0].opts.stdio, 'ignore');
+  assert.ok(calls[0].args.some((arg) => String(arg).endsWith('launchd-reload.js')));
+});
+
+test('launchd definition comparison ignores PATH-only changes but catches entry changes', () => {
+  const a = autostart.launchd.render({ ...ctx, pathEnv: '/one' }).content;
+  const b = autostart.launchd.render({ ...ctx, pathEnv: '/two' }).content;
+  const c = autostart.launchd.render({ ...ctx, entry: '/different/entry' }).content;
+  assert.equal(autostart.launchd.definitionChanged(a, b), false);
+  assert.equal(autostart.launchd.definitionChanged(a, c), true);
 });
 
 test('launchd fresh install bootstraps, never unload', () => {
@@ -132,6 +180,14 @@ test('adapter.restart uses the init-owned restart primitive (kickstart -k / syst
   assert.equal(autostart.windows.restart().unsupported, true);
   // The sandbox adapter no-ops (never touches the OS).
   assert.equal(autostart.sandbox.restart().ok, true);
+
+  // update must first converge the persisted service definition. This matters
+  // when anchor() selected a different stable Node path: restart alone would
+  // keep using launchd/systemd's stale command. Windows has no managed apply.
+  assert.equal(autostart.launchd.apply, autostart.launchd.install);
+  assert.equal(autostart.systemd.apply, autostart.systemd.install);
+  assert.equal(autostart.windows.apply, autostart.windows.restart);
+  assert.equal(autostart.sandbox.apply().ok, true);
 });
 
 test('windows task command is quoted', () => {

@@ -93,4 +93,4 @@ function status(ctx) {
   };
 }
 
-module.exports = { render, install, restart, uninstall, status, unitPath, unitName };
+module.exports = { render, install, apply: install, restart, uninstall, status, unitPath, unitName };

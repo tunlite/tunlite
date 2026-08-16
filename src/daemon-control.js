@@ -131,17 +131,25 @@ async function restartDaemonProcess(io) {
   if (!before) return { restarted: false, reason: 'not-running' };
   const oldPid = before.pid;
   const ctx = autostart.context();
-  const adapter = autostart.adapterFor();
+  let adapter = null;
   let serviceInstalled = false;
-  try { serviceInstalled = adapter.status(ctx).installed; } catch (_) {}
+  try {
+    adapter = autostart.adapterFor();
+    const status = adapter.status(ctx);
+    // A leftover launchd plist is not a managed service: only a loaded Job can
+    // own the restart. Other adapters do not expose `loaded`, so their installed
+    // state remains the best available signal.
+    serviceInstalled = status.loaded === undefined ? status.installed : status.loaded;
+  } catch (_) {}
   line(io, 'restarting daemon to apply new code (tunnels blip ~1s)…');
 
-  if (serviceInstalled) {
-    // Hand the restart to the OS service manager — the SAME primitive a reinstall
-    // uses (launchctl kickstart -k / systemctl --user restart). It owns the
-    // relaunch, so even if THIS process is killed mid-restart (e.g. the restart
-    // drops a tunnel carrying our own ssh session), the daemon still comes back.
-    const r = adapter.restart(ctx);
+  if (serviceInstalled && adapter) {
+    // Converge the service definition before restarting it. An update can select
+    // a different stable Node path; a bare restart would then keep launchd's or
+    // systemd's stale in-memory command. apply() rewrites/reloads the definition
+    // when needed and leaves the actual relaunch owned by the OS service manager,
+    // so it still survives this caller's tunnel dropping.
+    const r = adapter.apply ? adapter.apply(ctx) : adapter.restart(ctx);
     if (r && r.unsupported) return spawnRelaunch(); // e.g. Windows Task Scheduler
     if (!r || !r.ok) return { restarted: false, reason: 'service-restart-failed', output: r && r.output };
     for (let i = 0; i < 100; i++) {

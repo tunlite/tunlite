@@ -56,12 +56,14 @@ function isLoaded(ctx, run) {
 
 function install(ctx, run = cp.spawnSync) {
   const { path: file, content } = render(ctx);
+  let previous = null;
+  try { previous = fs.readFileSync(file, 'utf8'); } catch (_) {}
+  const loaded = isLoaded(ctx, run);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.mkdirSync(ctx.logDir, { recursive: true });
   fs.writeFileSync(file, content);
   const uid = process.getuid ? process.getuid() : 0;
   const domain = `gui/${uid}`;
-  const target = `${domain}/${ctx.label}`;
 
   // Reinstall over an already-loaded job: NEVER `unload` then `load`. Those are
   // two non-atomic steps and `unload` stops the daemon — which SIGTERMs every
@@ -71,13 +73,46 @@ function install(ctx, run = cp.spawnSync) {
   // → daemon stranded, locked out. `kickstart -k` makes launchd kill+relaunch
   // the job itself (launchd owns the relaunch, so a severed session can't strand
   // it), and the relaunched daemon picks up the freshly anchored code.
-  if (isLoaded(ctx, run)) return { path: file, ...restart(ctx, run) };
+  if (loaded) {
+    // kickstart restarts the in-memory launchd definition; it does NOT reread a
+    // changed plist. Most updates keep the same pinned entry and only replace
+    // its files, so kickstart is the safest fast path. If the executable/log
+    // paths changed (for example after replacing an nvm-managed Node), hand a
+    // bootout+bootstrap to a detached helper that survives this caller's tunnel
+    // dropping and rolls the old plist back if the new one cannot load.
+    if (definitionChanged(previous, content)) {
+      return { path: file, ...reloadDefinition(ctx, file, previous) };
+    }
+    return { path: file, ...restart(ctx, run) };
+  }
 
   // Fresh install (job not loaded): bootstrap (modern), fall back to legacy load.
   // No `unload` first — there's nothing loaded to unload.
   let r = run('launchctl', ['bootstrap', domain, file], { encoding: 'utf8' });
   if (r.status !== 0) r = run('launchctl', ['load', '-w', file], { encoding: 'utf8' });
   return { path: file, ok: r.status === 0, output: (r.stderr || r.stdout || '').trim() };
+}
+
+function reloadDefinition(ctx, file, previous, spawn = cp.spawn) {
+  const uid = process.getuid ? process.getuid() : 0;
+  const domain = `gui/${uid}`;
+  const target = `${domain}/${ctx.label}`;
+  const backup = `${file}.previous`;
+  if (previous !== null) fs.writeFileSync(backup, previous);
+  else { try { fs.unlinkSync(backup); } catch (_) {} }
+
+  try {
+    const helper = path.join(__dirname, 'launchd-reload.js');
+    const child = spawn(process.execPath, [helper, target, domain, file, backup], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return { ok: true, reloading: true, output: '' };
+  } catch (error) {
+    if (previous !== null) fs.writeFileSync(file, previous);
+    return { ok: false, reloading: false, output: error.message };
+  }
 }
 
 // Restart the loaded job, owned by launchd: `kickstart -k` kills and relaunches
@@ -110,13 +145,14 @@ function parseRunning(stdout) {
   return /state = running/.test(s) || /\bpid = \d+/.test(s);
 }
 
-function status(ctx) {
+function status(ctx, run = cp.spawnSync) {
   const file = plistPath(ctx);
   const installed = fs.existsSync(file);
   const uid = process.getuid ? process.getuid() : 0;
-  const r = cp.spawnSync('launchctl', ['print', `gui/${uid}/${ctx.label}`], { encoding: 'utf8' });
-  const running = r.status === 0 && parseRunning(r.stdout);
-  return { platform: 'launchd', installed, running, path: file };
+  const r = run('launchctl', ['print', `gui/${uid}/${ctx.label}`], { encoding: 'utf8' });
+  const loaded = r.status === 0;
+  const running = loaded && parseRunning(r.stdout);
+  return { platform: 'launchd', installed, loaded, running, path: file };
 }
 
 function escapeXml(s) {
@@ -126,4 +162,32 @@ function escapeXml(s) {
     .replace(/>/g, '&gt;');
 }
 
-module.exports = { render, install, restart, uninstall, status, plistPath, parseRunning, isLoaded };
+function definitionChanged(before, after) {
+  const a = definitionSignature(before);
+  const b = definitionSignature(after);
+  return a === null || b === null || a !== b;
+}
+
+function definitionSignature(content) {
+  if (!content) return null;
+  const args = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(content);
+  if (!args) return null;
+  const values = [...args[1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => unescapeXml(m[1]));
+  const out = valueForKey(content, 'StandardOutPath');
+  const err = valueForKey(content, 'StandardErrorPath');
+  return JSON.stringify({ values, out, err });
+}
+
+function valueForKey(content, key) {
+  const match = new RegExp(`<key>${key}<\\/key>\\s*<string>([\\s\\S]*?)<\\/string>`).exec(content);
+  return match ? unescapeXml(match[1]) : null;
+}
+
+function unescapeXml(s) {
+  return String(s).replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+}
+
+module.exports = {
+  render, install, apply: install, restart, reloadDefinition, uninstall, status, plistPath,
+  parseRunning, isLoaded, definitionChanged, definitionSignature,
+};
