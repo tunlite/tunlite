@@ -227,7 +227,7 @@ Payload: `{scope, tunnel, host, event, state, lastError, restarts, ts, machine, 
 ## Config import / export
 
 ```bash
-tunlite export --json > backup.json     # dump config (settings + tunnels); no secrets
+tunlite export --json > backup.json     # dump portable tunnels only; no machine-local settings
 tunlite import backup.json --json       # merge tunnels: {added, skipped, overwritten}
 tunlite import backup.json --force --json   # overwrite same-name tunnels
 ```

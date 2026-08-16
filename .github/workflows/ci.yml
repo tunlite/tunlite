@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Hard cap so a hung test can never run to GitHub's 6-hour default.
     # (`node --test` has no default per-test timeout, so a test that waits on
-    # something that never resolves would hang forever.) The full 341-case
+    # something that never resolves would hang forever.) The full 405-case
     # suite finishes in well under a minute.
     timeout-minutes: 5
     strategy:

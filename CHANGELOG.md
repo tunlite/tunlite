@@ -9,7 +9,10 @@ release process.
 > tunlite debuted publicly at **0.9.0**. Earlier `0.x` releases were a private
 > prototype and are not part of this public history.
 
-## [Unreleased]
+## [0.10.3] - 2026-08-16
+
+This is the final planned release of the Node.js implementation. The Node line is
+now frozen except for critical security, data-loss, or Go-migration fixes.
 
 ### Fixed
 - **Reinstalling could strand the daemon and lock you out** when the autostart
@@ -19,11 +22,17 @@ release process.
   non-atomic steps. The `unload` stopped the daemon, dropping every tunnel; if the
   reinstall rode one of those tunnels, its own session was severed and the process
   was killed before `load` ran → the service was left unloaded with nothing to
-  relaunch it. Reinstall now restarts an already-loaded job with `launchctl
-  kickstart -k` (launchd owns the relaunch, so a severed session can't strand it).
-  The systemd adapter now applies new code via an init-owned `systemctl --user
-  restart` (the previous `enable --now` was a no-op on an already-running unit, so
-  the freshly anchored code never loaded).
+  relaunch it. Reinstall now restarts an already-loaded, unchanged job with
+  `launchctl kickstart -k` (launchd owns the relaunch, so a severed session can't
+  strand it). If the pinned Node, entry, or log path changed, a detached one-shot
+  helper safely reloads the launchd definition, retries bootstrap, and restores the
+  previous plist if the new definition cannot load. The systemd adapter now applies
+  new code via an init-owned `systemctl --user restart` (the previous `enable
+  --now` was a no-op on an already-running unit, so the freshly anchored code never
+  loaded). Updates also converge the persisted service definition before the
+  restart, so changing the pinned Node path cannot leave launchd or systemd trying
+  to execute a stale binary. The detached launchd helper waits through launchd's
+  restart-throttle window, including an update immediately after installation.
 - **`tunlite update` could strand the daemon the same way** when no autostart
   service was installed: it shut the daemon down and respawned it from the
   foreground, so a restart that dropped the tunnel carrying your own session killed
@@ -33,6 +42,14 @@ release process.
   relaunches **itself** — it spawns a fresh, detached successor as it exits, so the
   relaunch is owned by the daemon, never by a caller whose session the restart may
   sever.
+- **A leftover launchd plist was mistaken for a loaded service.** An update then
+  attempted `kickstart`, which could not work, instead of using the safe
+  serviceless self-relaunch path. Status now distinguishes installed files from
+  loaded Jobs.
+
+### Docs
+- Corrected the bundled Agent Skill: `export` contains the portable tunnels only,
+  not machine-local settings.
 
 ## [0.10.2] - 2026-06-23
 
@@ -303,6 +320,7 @@ First public release.
   or a single quote before building the remote command, closing a shell-injection
   path through a crafted key comment.
 
+[0.10.3]: https://github.com/yuanyuanzijin/tunlite/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/yuanyuanzijin/tunlite/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/yuanyuanzijin/tunlite/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yuanyuanzijin/tunlite/compare/v0.9.5...v0.10.0

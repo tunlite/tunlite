@@ -1,0 +1,693 @@
+############################################################
+# tunlite full command transcript — 0.10.3 | node v20.20.2
+# resolved: /usr/local/bin/tunlite
+############################################################
+
+===== 0. PRE-INSTALL =====
+
+$ tunlite --version
+0.10.3
+[exit=0]
+
+$ tunlite list
+note: run `tunlite install` to anchor tunlite (survives node version switches)
+no tunnels defined. add one with: tunlite add <name> --to user@host -L ...
+[exit=0]
+
+===== 1. INSTALL / ONBOARDING =====
+
+$ tunlite install -y
+service installed: (sandbox)
+skill installed: /home/tester/.claude/skills/ssh-tunnel  (copy)
+open a new Claude Code session in that scope to load it.
+installed: /home/tester/.local/share/tunlite
+launcher:  /home/tester/.local/bin/tunlite -> /home/tester/.local/share/tunlite/bin/tunlite.js  (node: /usr/local/bin/node)
+alias:     /home/tester/.local/bin/tun  (short name: tun)
+completion: /home/tester/.bashrc  (reload: exec bash)
+tunlite ready — try: tunlite help
+[exit=0]
+
+$ tunlite list
+no tunnels defined. add one with: tunlite add <name> --to user@host -L ...
+[exit=0]
+
+$ tunlite install --service
+`--service` was removed. Use `tunlite install service`, or `tunlite install -y` to set up everything.
+[exit=2]
+
+$ tunlite install --no-skill
+`--no-skill` was removed. Bare `tunlite install` no longer installs the skill (pass -y to opt in), so there is nothing to turn off.
+[exit=2]
+
+$ tunlite install service
+service installed: (sandbox)
+[exit=0]
+
+$ tunlite install completion
+updated bash completion in /home/tester/.bashrc
+reload with:  exec bash
+[exit=0]
+
+$ tunlite install skill --dir cwd
+skill installed: /tmp/.claude/skills/ssh-tunnel  (copy)
+open a new Claude Code session in that scope to load it.
+[exit=0]
+
+===== 2. DEFINE (add / list) =====
+
+$ tunlite add web --to tester@localhost -L 18080:127.0.0.1:9000 -i /home/tester/.ssh/id_ed25519 --no-auto-key
+added "web" -> tester@localhost
+  local   127.0.0.1:18080 → 127.0.0.1:9000
+daemon not running — start it to bring this tunnel up:  tunlite enable web   (or: tunlite daemon start / tunlite install service)
+[exit=0]
+
+$ tunlite add rev --to tester@localhost -R 18081:127.0.0.1:9000 -i /home/tester/.ssh/id_ed25519 --no-auto-key
+added "rev" -> tester@localhost
+  remote  127.0.0.1:9000 ← 127.0.0.1:18081
+daemon not running — start it to bring this tunnel up:  tunlite enable rev   (or: tunlite daemon start / tunlite install service)
+[exit=0]
+
+$ tunlite add socks --to tester@localhost -D 11080 -i /home/tester/.ssh/id_ed25519 --no-auto-key
+added "socks" -> tester@localhost
+  dynamic  127.0.0.1:11080  (SOCKS5)
+daemon not running — start it to bring this tunnel up:  tunlite enable socks   (or: tunlite daemon start / tunlite install service)
+[exit=0]
+
+$ tunlite add multi --to tester@localhost -L 18082:127.0.0.1:9000 -D 11081 -i /home/tester/.ssh/id_ed25519 --no-auto-key --tag demo
+added "multi" -> tester@localhost
+  local   127.0.0.1:18082 → 127.0.0.1:9000
+  dynamic  127.0.0.1:11081  (SOCKS5)
+daemon not running — start it to bring this tunnel up:  tunlite enable multi   (or: tunlite daemon start / tunlite install service)
+[exit=0]
+
+$ tunlite list
+web	tester@localhost	local 127.0.0.1:18080 → 127.0.0.1:9000
+rev	tester@localhost	remote 127.0.0.1:9000 ← 127.0.0.1:18081
+socks	tester@localhost	dynamic 127.0.0.1:11080
+multi	tester@localhost	local,dynamic 127.0.0.1:18082 → 127.0.0.1:9000, 127.0.0.1:11081	[demo]
+[exit=0]
+
+$ tunlite list --tag demo
+multi	tester@localhost	local,dynamic 127.0.0.1:18082 → 127.0.0.1:9000, 127.0.0.1:11081	[demo]
+[exit=0]
+
+$ tunlite list --json
+[
+  {
+    "name": "web",
+    "host": "tester@localhost",
+    "port": 22,
+    "identityFile": "/home/tester/.ssh/id_ed25519",
+    "jump": [],
+    "tags": [],
+    "forwards": [
+      {
+        "type": "local",
+        "bind": "127.0.0.1",
+        "srcPort": 18080,
+        "destHost": "127.0.0.1",
+        "destPort": 9000
+      }
+    ],
+    "sshOptions": [],
+    "enabled": true,
+    "autoSetupKey": false
+  },
+  {
+    "name": "rev",
+    "host": "tester@localhost",
+    "port": 22,
+    "identityFile": "/home/tester/.ssh/id_ed25519",
+    "jump": [],
+    "tags": [],
+    "forwards": [
+      {
+        "type": "remote",
+        "bind": "127.0.0.1",
+        "srcPort": 18081,
+        "destHost": "127.0.0.1",
+        "destPort": 9000
+      }
+    ],
+    "sshOptions": [],
+    "enabled": true,
+    "autoSetupKey": false
+  },
+  {
+    "name": "socks",
+    "host": "tester@localhost",
+    "port": 22,
+    "identityFile": "/home/tester/.ssh/id_ed25519",
+    "jump": [],
+    "tags": [],
+    "forwards": [
+      {
+        "type": "dynamic",
+        "bind": "127.0.0.1",
+        "srcPort": 11080
+      }
+    ],
+    "sshOptions": [],
+    "enabled": true,
+    "autoSetupKey": false
+  },
+  {
+    "name": "multi",
+    "host": "tester@localhost",
+    "port": 22,
+    "identityFile": "/home/tester/.ssh/id_ed25519",
+    "jump": [],
+    "tags": [
+      "demo"
+    ],
+    "forwards": [
+      {
+        "type": "local",
+        "bind": "127.0.0.1",
+        "srcPort": 18082,
+        "destHost": "127.0.0.1",
+        "destPort": 9000
+      },
+      {
+        "type": "dynamic",
+        "bind": "127.0.0.1",
+        "srcPort": 11081
+      }
+    ],
+    "sshOptions": [],
+    "enabled": true,
+    "autoSetupKey": false
+  }
+]
+[exit=0]
+
+===== 2b. GUARDRAILS (required target + did-you-mean) =====
+
+$ tunlite enable
+specify a tunnel name, --tag <label>, or `all`
+[exit=2]
+
+$ tunlite up web
+unknown command: up — did you mean `enable`?
+run `tunlite help`
+[exit=2]
+
+$ tunlite stauts
+unknown command: stauts — did you mean `status`?
+run `tunlite help`
+[exit=2]
+
+$ tunlite add all --to tester@localhost -D 12000 -i /home/tester/.ssh/id_ed25519
+"all" is a reserved name (it selects every tunnel); pick another
+[exit=2]
+
+===== 3. KEYS (check / setup-key) =====
+
+$ tunlite check tester@localhost -i /home/tester/.ssh/id_ed25519
+tester@localhost: passwordless OK
+[exit=0]
+
+$ tunlite setup-key tester@localhost -i /home/tester/.ssh/id_ed25519
+tester@localhost: already passwordless, nothing to do.
+[exit=0]
+
+===== 4. CONTROL + REAL FORWARDS (up + curl) =====
+
+$ tunlite enable web
+daemon started (pid 409)
+web
+  state     ◌ starting
+  host      tester@localhost
+  ssh       port 22
+  type      local
+  listen    127.0.0.1:18080 (local)
+  target    127.0.0.1:9000 (reachable from server)
+  pid       416
+  up        —
+  restarts  0
+  exit      —
+  identity  /home/tester/.ssh/id_ed25519
+  options   —
+  autokey   off
+  enabled   yes
+[exit=0]
+[web connected]
+
+$ curl http://127.0.0.1:18080/
+[HTTP OK]
+
+$ tunlite enable rev
+rev
+  state     ● connected
+  host      tester@localhost
+  ssh       port 22
+  type      remote
+  listen    127.0.0.1:18081 (on server)
+  target    127.0.0.1:9000 (on this machine)
+  pid       418
+  up        5s
+  restarts  0
+  exit      —
+  identity  /home/tester/.ssh/id_ed25519
+  options   —
+  autokey   off
+  enabled   yes
+[exit=0]
+[rev connected]
+
+$ curl http://127.0.0.1:18081/
+[HTTP OK]
+
+$ tunlite enable socks
+socks
+  state     ● connected
+  host      tester@localhost
+  ssh       port 22
+  type      dynamic
+  listen    127.0.0.1:11080 (local SOCKS)
+  pid       419
+  up        9s
+  restarts  0
+  exit      —
+  identity  /home/tester/.ssh/id_ed25519
+  options   —
+  autokey   off
+  enabled   yes
+[exit=0]
+[socks connected]
+
+$ curl --socks5-hostname 127.0.0.1:11080 http://127.0.0.1:9000/
+[HTTP OK]
+
+$ tunlite enable multi
+multi
+  state     ● connected
+  host      tester@localhost
+  ssh       port 22
+  type      local
+  listen    127.0.0.1:18082 (local)
+  target    127.0.0.1:9000 (reachable from server)
+  type      dynamic
+  listen    127.0.0.1:11081 (local SOCKS)
+  pid       422
+  up        12s
+  restarts  0
+  exit      —
+  identity  /home/tester/.ssh/id_ed25519
+  options   —
+  autokey   off
+  enabled   yes
+  tags      demo
+[exit=0]
+[multi connected]
+
+$ curl http://127.0.0.1:18082/
+[HTTP OK]
+
+$ curl --socks5-hostname 127.0.0.1:11081 http://127.0.0.1:9000/
+[HTTP OK]
+
+===== 5. INSPECT (status / logs / doctor) =====
+
+$ tunlite status
+● daemon  pid 409 · v0.10.3 · up 17s
+  autostart: off · skill: installed
+
+NAME   STATE        HOST              TYPE           ROUTE                                     PID  UP   RESTARTS
+web    ● connected  tester@localhost  local          127.0.0.1:18080 → 127.0.0.1:9000          416  14s  0
+rev    ● connected  tester@localhost  remote         127.0.0.1:9000 ← 127.0.0.1:18081          418  14s  0
+socks  ● connected  tester@localhost  dynamic        127.0.0.1:11080                           419  14s  0
+multi  ● connected  tester@localhost  local,dynamic  127.0.0.1:18082 → 127.0.0.1:9000, 127.0…  422  13s  0
+[exit=0]
+
+$ tunlite status web --json
+{
+  "daemon": {
+    "running": true,
+    "pid": 409,
+    "version": "0.10.3",
+    "uptimeMs": 17680,
+    "uptime": "18s"
+  },
+  "tunnels": [
+    {
+      "name": "web",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "sshOptions": [],
+      "jump": [],
+      "tags": [],
+      "enabled": true,
+      "autoSetupKey": false,
+      "state": "connected",
+      "pid": 416,
+      "restarts": 0,
+      "uptimeMs": 14578,
+      "lastError": null,
+      "lastExitCode": null,
+      "forwards": [
+        {
+          "type": "local",
+          "bind": "127.0.0.1",
+          "srcPort": 18080,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        }
+      ],
+      "uptime": "15s"
+    }
+  ],
+  "service": {
+    "platform": "sandbox",
+    "installed": false,
+    "running": false
+  },
+  "skill": {
+    "installed": true,
+    "entries": [
+      {
+        "path": "/home/tester/.claude/skills/ssh-tunnel",
+        "present": true
+      },
+      {
+        "path": "/tmp/.claude/skills/ssh-tunnel",
+        "present": true
+      }
+    ]
+  }
+}
+[exit=0]
+
+$ tunlite status nope-xyz
+no such tunnel: nope-xyz
+[exit=3]
+
+$ tunlite logs web -n 5
+2026-08-16T14:22:34.926Z state -> starting
+2026-08-16T14:22:34.927Z starting ssh ssh -N -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -i /home/tester/.ssh/id_ed25519 -o IdentitiesOnly=yes -L 127.0.0.1:18080:127.0.0.1:9000 -- tester@localhost
+2026-08-16T14:22:37.976Z state -> connected
+[exit=0]
+
+$ tunlite doctor web
+
+environment
+  ✓ ssh client — found on PATH
+  ✓ ssh-keygen — found on PATH
+  ✓ SSH private key — using /home/tester/.ssh/id_ed25519
+
+install
+  ✓ anchored install — running from the anchored copy
+  ✓ on PATH — /home/tester/.local/bin is on PATH
+  ✓ pinned node — pinned node /usr/local/bin/node
+  ✓ agent skill — up to date (2 installs)
+  ✓ config file — valid (/home/tester/.config/tunlite/config.json)
+
+daemon & service
+  ✓ daemon — running
+  · autostart service — sandbox (service untouched)
+
+tunnel:web
+  · web: state — daemon reports: connected
+  ✓ web: reachability — tester@localhost: passwordless OK
+  ✓ web: 127.0.0.1:18080 — connected and accepting
+
+11 ok, 0 warnings, 0 problems
+[exit=0]
+
+===== 6. LIFECYCLE (restart / tag / set / rename) =====
+
+$ tunlite restart web
+restarted: web
+[exit=0]
+[web reconnected]
+
+$ tunlite disable --tag demo
+stopped: multi
+[exit=0]
+
+$ tunlite enable --tag demo
+● daemon  pid 409 · v0.10.3 · up 29s
+  autostart: off · skill: installed
+
+NAME   STATE       HOST              TYPE           ROUTE                                     PID  UP  RESTARTS
+multi  ◌ starting  tester@localhost  local,dynamic  127.0.0.1:18082 → 127.0.0.1:9000, 127.0…  819  —   0
+[exit=0]
+[multi reconnected]
+
+$ tunlite set web -L 18090:127.0.0.1:9000
+"web": updated forwards
+  local   127.0.0.1:18090 → 127.0.0.1:9000
+[exit=0]
+
+$ curl http://127.0.0.1:18090/
+[HTTP OK]
+
+$ tunlite rename web web-9000
+renamed "web" -> "web-9000"
+[exit=0]
+[web-9000 connected]
+
+$ tunlite enable all
+● daemon  pid 409 · v0.10.3 · up 45s
+  autostart: off · skill: installed
+
+NAME      STATE        HOST              TYPE           ROUTE                                     PID   UP   RESTARTS
+rev       ● connected  tester@localhost  remote         127.0.0.1:9000 ← 127.0.0.1:18081          418   41s  0
+socks     ● connected  tester@localhost  dynamic        127.0.0.1:11080                           419   41s  0
+multi     ● connected  tester@localhost  local,dynamic  127.0.0.1:18082 → 127.0.0.1:9000, 127.0…  819   13s  0
+web-9000  ● connected  tester@localhost  local          127.0.0.1:18090 → 127.0.0.1:9000          1012  3s   0
+[exit=0]
+[enable all ok]
+
+$ tunlite list
+rev	tester@localhost	remote 127.0.0.1:9000 ← 127.0.0.1:18081
+socks	tester@localhost	dynamic 127.0.0.1:11080
+multi	tester@localhost	local,dynamic 127.0.0.1:18082 → 127.0.0.1:9000, 127.0.0.1:11081	[demo]
+web-9000	tester@localhost	local 127.0.0.1:18090 → 127.0.0.1:9000
+[exit=0]
+
+===== 7. run (daemon-less foreground) =====
+$ tunlite run --to tester@localhost -L 19090:127.0.0.1:9000 -i KEY --name fg --json   (backgrounded)
+--- /tmp/run.log (NDJSON) ---
+{"ts":1786890200487,"name":"fg","state":"starting","pid":null,"restarts":0,"uptimeMs":0,"lastError":null,"lastExitCode":null}
+{"ts":1786890203311,"name":"fg","state":"connected","pid":1197,"restarts":0,"uptimeMs":0,"lastError":null,"lastExitCode":null}
+
+$ curl http://127.0.0.1:19090/
+[HTTP OK]
+
+===== 8. webhook =====
+
+$ tunlite webhook
+webhook: (not set)
+channel: generic
+enabled: no
+events:  down, recovered, needs-auth, failed, daemon-crash
+[exit=0]
+
+$ tunlite webhook set http://127.0.0.1:8899/hook
+webhook set: http://127.0.0.1:8899/…
+channel: generic (detected from URL)
+events:  down, recovered, needs-auth, failed, daemon-crash
+[exit=0]
+
+$ tunlite webhook events tunnel
+webhook events: up, down, recovered, needs-auth, failed, stopped
+[exit=0]
+
+$ tunlite webhook off
+webhook off
+[exit=0]
+
+$ tunlite webhook on
+webhook on
+[exit=0]
+
+$ tunlite webhook test
+test event sent to http://127.0.0.1:8899/… [generic] (HTTP 200)
+[exit=0]
+--- receiver got ---
+{"scope":"test","tunnel":"(test)","host":null,"event":"test","state":"test","lastError":null,"restarts":0,"ts":1786890207044,"machine":"4edcef8c2b2e","version":"0.10.3"}
+
+===== 9. CONFIG I/O (export / import) =====
+
+$ tunlite export
+{
+  "version": 1,
+  "tunnels": [
+    {
+      "name": "rev",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "remote",
+          "bind": "127.0.0.1",
+          "srcPort": 18081,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "socks",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "dynamic",
+          "bind": "127.0.0.1",
+          "srcPort": 11080
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "multi",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [
+        "demo"
+      ],
+      "forwards": [
+        {
+          "type": "local",
+          "bind": "127.0.0.1",
+          "srcPort": 18082,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        },
+        {
+          "type": "dynamic",
+          "bind": "127.0.0.1",
+          "srcPort": 11081
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "web-9000",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "local",
+          "bind": "127.0.0.1",
+          "srcPort": 18090,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    }
+  ]
+}
+[exit=0]
+(leak check) settings in export?
+absent (good)
+(leak check) webhook url in export?
+absent (good)
+
+$ tunlite import /tmp/cfg.json
+imported: +0 added, 0 overwritten, 4 skipped
+  skipped (exists — use --force to overwrite): rev, socks, multi, web-9000
+[exit=0]
+
+$ tunlite import /tmp/cfg.json --force
+imported: +0 added, 4 overwritten, 0 skipped
+  overwritten: rev, socks, multi, web-9000
+[exit=0]
+
+$ tunlite update --check
+current 0.10.3, latest 0.10.2 — up to date
+[exit=0]
+
+===== 10. daemon / monitor =====
+
+$ tunlite daemon status
+daemon running (pid 409, v0.10.3)
+[exit=0]
+
+$ tunlite daemon stop
+daemon stopping
+[exit=0]
+
+$ tunlite daemon status
+daemon not running
+[exit=0]
+
+$ tunlite daemon start
+daemon started (pid 1439)
+daemon running (pid 1439)
+[exit=0]
+
+$ tunlite daemon status
+daemon running (pid 1439, v0.10.3)
+[exit=0]
+
+$ tunlite monitor --interval 1   (non-tty)
+tunlite monitor needs an interactive terminal; for scripts use `tunlite status --json`
+[exit=2]
+
+===== 11. rm / uninstall =====
+
+$ tunlite disable all
+stopped: rev, socks, multi, web-9000
+[exit=0]
+
+$ tunlite rm socks
+removed "socks"
+[exit=0]
+
+$ tunlite daemon stop
+daemon stopping
+[exit=0]
+
+$ tunlite uninstall skill
+skill removed: /home/tester/.claude/skills/ssh-tunnel, /tmp/.claude/skills/ssh-tunnel
+[exit=0]
+
+$ tunlite uninstall completion bash
+removed bash completion from /home/tester/.bashrc
+[exit=0]
+
+$ tunlite uninstall service
+service uninstalled (no file)
+[exit=0]
+
+$ tunlite uninstall --force
+- daemon not running
+- service removed (none)
+- skill removed (none)
+- launcher removed (/home/tester/.local/bin/tunlite)
+- alias removed (/home/tester/.local/bin/tun)
+- lib removed (/home/tester/.local/share/tunlite)
+- kept config + state (use --purge to delete: /home/tester/.config/tunlite)
+tunlite removed.
+[exit=0]
+
+$ ls ~/.local/bin/tunlite ~/.local/share/tunlite
+ls: cannot access '/home/tester/.local/bin/tunlite': No such file or directory
+ls: cannot access '/home/tester/.local/share/tunlite': No such file or directory
+
+############### END OF TRANSCRIPT ###############

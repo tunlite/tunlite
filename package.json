@@ -1,6 +1,6 @@
 {
   "name": "tunlite",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Lightweight cross-platform SSH tunnel manager with auto-reconnect, OS autostart, and passwordless setup.",
   "type": "commonjs",
   "bin": {
