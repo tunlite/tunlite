@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tunlite.dev/schemas/connection-list-v1.schema.json",
+  "title": "Tunlite ConnectionList",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "items"],
+  "properties": {
+    "apiVersion": { "const": "tunlite.dev/v1" },
+    "kind": { "const": "ConnectionList" },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "connection-v1.schema.json" }
+    }
+  }
+}

@@ -40,9 +40,10 @@ type options struct {
 }
 
 type exitError struct {
-	code    int
-	kind    string
-	message string
+	code     int
+	kind     string
+	message  string
+	rendered bool
 }
 
 func (e *exitError) Error() string { return e.message }
@@ -65,10 +66,12 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		return renderError(streams, opts, usageError(err.Error()))
 	}
 	if len(cleaned) == 0 {
-		return renderError(streams, opts, usageError("usage: tunlite <add|list|set|rm|rename|run|version>"))
+		return renderError(streams, opts, usageError("usage: tunlite <command> (run `tunlite help` for commands)"))
 	}
 
 	switch cleaned[0] {
+	case "help", "--help", "-h":
+		err = help(streams, opts)
 	case "version", "--version", "-v":
 		if opts.JSON {
 			if err := writeJSON(streams.Out, map[string]any{
@@ -94,16 +97,40 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		err = remove(ctx, cleaned[1:], streams, opts)
 	case "rename":
 		err = rename(ctx, cleaned[1:], streams, opts)
+	case "export":
+		err = exportConnections(ctx, cleaned[1:], streams, opts)
+	case "import":
+		err = importConnections(ctx, cleaned[1:], streams, opts)
+	case "validate":
+		err = validateConnections(cleaned[1:], streams, opts)
+	case "check":
+		err = checkSSH(ctx, cleaned[1:], streams, opts)
+	case "doctor":
+		err = doctor(ctx, cleaned[1:], streams, opts)
+	case "schema":
+		err = schema(cleaned[1:], streams)
+	case "capabilities":
+		err = capabilities(cleaned[1:], streams, opts)
 	default:
 		err = usageError(fmt.Sprintf("unknown command %q", cleaned[0]))
 	}
 	if err == nil {
 		return 0
 	}
+	var rendered *exitError
+	if errors.As(err, &rendered) && rendered.rendered {
+		return rendered.code
+	}
 	return renderError(streams, opts, err)
 }
 
 func run(ctx context.Context, args []string, streams IO, opts options) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		if len(args) != 1 {
+			return usageError("usage: tunlite run <name> or tunlite run --to user@host -L/-R/-D ...")
+		}
+		return runNamed(ctx, args[0], streams, opts)
+	}
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var to, identity, jump, name string
@@ -163,6 +190,28 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 			Driver: sshdriver.ID, Lifecycle: "foreground", ConfigVersion: 1, Config: rawConfig,
 		},
 	}
+	return executeConnection(ctx, connection, streams, opts)
+}
+
+func runNamed(ctx context.Context, name string, streams IO, opts options) error {
+	store, err := connectionStore(opts)
+	if err != nil {
+		return err
+	}
+	document, err := store.Load()
+	if err != nil {
+		return err
+	}
+	_, stored := configstore.Find(&document, name)
+	if stored == nil {
+		return notFoundError(fmt.Sprintf("no such connection: %s", name))
+	}
+	connection := cloneConnection(*stored)
+	connection.Spec.Lifecycle = "foreground"
+	return executeConnection(ctx, connection, streams, opts)
+}
+
+func executeConnection(ctx context.Context, connection core.Connection, streams IO, opts options) error {
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
 		return err
@@ -302,6 +351,10 @@ func notFoundError(message string) error {
 
 func conflictError(message string) error {
 	return &exitError{code: 2, kind: "already_exists", message: message}
+}
+
+func renderedExit(code int) error {
+	return &exitError{code: code, rendered: true}
 }
 
 func connectionStore(opts options) (*configstore.Store, error) {

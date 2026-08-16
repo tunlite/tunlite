@@ -2,7 +2,7 @@
 
 - **状态：** 已接受
 - **适用范围：** Tunlite v1 及后续版本
-- **最后更新：** 2026-08-16
+- **最后更新：** 2026-08-17
 
 本文档是 Tunlite 产品方向与 v1 架构的唯一事实来源。README、当前实现和
 0.x 文档描述的是已经发布的 Node.js/daemon 产品；规划未来工作时，它们不能
@@ -791,6 +791,32 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 - 覆盖 SSH `-L`、`-R`、`-D`、多 Forward、Jump Host、Identity File 和前台运行。
 - 提供配置管理、`--json`、`--non-interactive`、`--dry-run` 和基础诊断。
 - 用 0.x 黑盒契约、真实 OpenSSH 端到端测试和测试用假 Driver 验证行为与扩展边界。
+
+#### 第一周实施进度
+
+截至 2026 年 8 月 17 日，前两阶段已经完成：
+
+- Go 单二进制、通用 Connection Envelope、Driver Registry、`ExecutionPlan` 和前台
+  进程生命周期已经建立。
+- SSH 继续通过内置 Driver 实现；核心 Planner 没有 SSH 特判，并由测试用假 Driver
+  证明扩展边界有效。
+- 已支持 SSH `-L`、`-R`、`-D`、多 Forward、Jump Host、Identity File、严格
+  `Key=Value` SSH Option，以及命名 Connection 的前台运行。
+- 已支持 `add`、`list`、`set`、`rename`、`rm`、`run`、`check`、`doctor`、
+  `import`、`export`、`validate`、`schema` 和 `capabilities`。
+- Connection 声明使用原子替换和短生命周期配置锁；检测到 0.x 配置时停止写入并返回
+  `migration_required`，不会静默覆盖旧数据。
+- 所有修改声明的命令支持 `--dry-run`；机器输出使用 `tunlite.cli/v1`，批量导入按项
+  返回结果，部分失败使用退出码 `6`。
+- 已发布到源码树并嵌入二进制的 Schema 包括 Connection、ConnectionList、SSH
+  configVersion 1 和 CLI v1；Skill 后续必须由这些契约生成或校验。
+- 已用语言无关的 0.10.3 黑盒 Fixture 固定 CRUD、Forward、标签和退出码行为。
+- 已在隔离的真实 OpenSSH Server 上，用同一个 `tunlite run` 同时建立 `-L`、`-R`、
+  `-D`，三类转发均通过真实 HTTP 流量验证。
+
+这一进度不代表 systemd、launchd 或持久 Connection 已完成。`capabilities` 必须继续
+如实报告原生持久服务不可用，直到第二周的 Service Adapter 验收通过。下一项工作是
+第三阶段：每 Connection 原生服务，不得在此之间重新引入中心 daemon。
 
 ### 第二周：8 月 24 日—8 月 30 日
 

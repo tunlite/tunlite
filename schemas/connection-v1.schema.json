@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tunlite.dev/schemas/connection-v1.schema.json",
+  "title": "Tunlite Connection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "tunlite.dev/v1" },
+    "kind": { "const": "Connection" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$", "not": { "const": "all" } },
+        "labels": {
+          "type": "object",
+          "propertyNames": { "type": "string", "minLength": 1, "maxLength": 253 },
+          "additionalProperties": { "type": "string", "maxLength": 253 }
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "lifecycle", "configVersion", "config"],
+      "properties": {
+        "driver": { "type": "string", "minLength": 1 },
+        "lifecycle": { "enum": ["foreground", "persistent"] },
+        "configVersion": { "type": "integer", "minimum": 1 },
+        "config": { "type": "object" }
+      }
+    }
+  }
+}

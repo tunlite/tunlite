@@ -97,6 +97,27 @@ func (s *Store) Update(ctx context.Context, change func(*Document) error) error 
 	return s.save(document)
 }
 
+func (s *Store) Write(ctx context.Context, document Document, overwrite bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	release, err := s.acquire(lockCtx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !overwrite {
+		if _, err := os.Stat(s.path); err == nil {
+			return fmt.Errorf("config file already exists: %s", s.path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return s.save(document)
+}
+
 func (s *Store) save(document Document) error {
 	if err := validateDocument(document); err != nil {
 		return err

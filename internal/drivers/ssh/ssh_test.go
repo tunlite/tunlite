@@ -152,6 +152,19 @@ func TestPlanRejectsUnsupportedConfigVersion(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsDuplicateListeningEndpoint(t *testing.T) {
+	config := Config{
+		Host: "me@host",
+		Forwards: []Forward{
+			{Type: "local", Bind: "127.0.0.1", SrcPort: 1080, DestHost: "localhost", DestPort: 80},
+			{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080},
+		},
+	}
+	if err := Validate(config); err == nil {
+		t.Fatal("duplicate listening endpoint was accepted")
+	}
+}
+
 func containsPair(values []string, first, second string) bool {
 	for i := 0; i+1 < len(values); i++ {
 		if values[i] == first && values[i+1] == second {
