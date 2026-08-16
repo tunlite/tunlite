@@ -22,6 +22,11 @@ trust.
 
 > 📖 **Full documentation → [tunlite.dev](https://tunlite.dev/)**
 
+> 🧭 **v1 project direction → [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md).**
+> This is the sole source of truth for the SSH-focused Go v1, daemon removal,
+> native service architecture, and the extension boundaries reserved for future
+> drivers. The rest of this README documents the currently released 0.x product.
+
 - **Agent-native** — `--json` + stable exit codes on every command, plus a bundled Agent skill: an AI Agent sets up, brings up, and troubleshoots tunnels end-to-end.
 - **Zero third-party dependencies** — pure Node.js standard library; all it needs on the box is **Node ≥ 18** and the system `ssh` it wraps.
 - **Auto-reconnect** — exponential backoff + jitter, keepalive, port health probes.

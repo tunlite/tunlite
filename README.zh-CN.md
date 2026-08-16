@@ -20,6 +20,10 @@
 
 > 📖 **完整文档 → [tunlite.dev](https://tunlite.dev/)**
 
+> 🧭 **v1 项目方向 → [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md)。**
+> 这是聚焦 SSH 的 Go v1、移除中心 daemon、采用原生系统服务并为未来 Driver
+> 预留扩展边界的唯一权威指引；本 README 其余内容描述的是当前已经发布的 0.x 产品。
+
 - **面向 Agent** —— 每个命令都讲 `--json`、退出码稳定,还随包发一份 Agent skill:AI Agent 能端到端地建好、拉起、排障隧道。
 - **零第三方依赖** —— 纯 Node.js 标准库;机器上只需 **Node ≥ 18** 和它封装的系统 `ssh`。
 - **自动重连** —— 指数退避 + 抖动、keepalive、端口健康探测。

@@ -3,6 +3,12 @@
 Thanks for your interest in improving tunlite! This document covers everything
 you need to get started.
 
+Before proposing architectural or v1 work, read the accepted
+[Project Direction](docs/PROJECT_DIRECTION.md). It is the sole source of truth
+for the SSH-focused Go v1, daemon removal, native service architecture, and the
+extension boundaries reserved for future drivers. The constraints below
+describe the currently released 0.x Node.js implementation where they differ.
+
 ## Project philosophy
 
 tunlite is deliberately small. Please keep these constraints in mind:
