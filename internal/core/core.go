@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
@@ -46,6 +47,34 @@ type Driver interface {
 
 type PlanOptions struct {
 	NonInteractive bool
+}
+
+type Action struct {
+	Type       string         `json:"type"`
+	Parameters map[string]any `json:"parameters"`
+}
+
+type Condition struct {
+	Code       string   `json:"code"`
+	Severity   string   `json:"severity"`
+	Message    string   `json:"message"`
+	Driver     string   `json:"driver,omitempty"`
+	Connection string   `json:"connection,omitempty"`
+	Actions    []Action `json:"actions"`
+}
+
+type CheckOptions struct {
+	Timeout time.Duration
+}
+
+type CheckReport struct {
+	Healthy    bool        `json:"healthy"`
+	ObservedAt time.Time   `json:"observedAt"`
+	Conditions []Condition `json:"conditions"`
+}
+
+type CheckDriver interface {
+	Check(context.Context, Connection, CheckOptions) (CheckReport, error)
 }
 
 type Registry struct {
@@ -97,6 +126,21 @@ func (p *Planner) Plan(ctx context.Context, connection Connection, options PlanO
 	return executionPlan, nil
 }
 
+func (p *Planner) Check(ctx context.Context, connection Connection, options CheckOptions) (CheckReport, error) {
+	if err := ValidateConnection(connection); err != nil {
+		return CheckReport{}, err
+	}
+	driver, ok := p.registry.Driver(connection.Spec.Driver)
+	if !ok {
+		return CheckReport{}, fmt.Errorf("driver %q is not installed", connection.Spec.Driver)
+	}
+	checker, ok := driver.(CheckDriver)
+	if !ok {
+		return CheckReport{}, fmt.Errorf("driver %q does not support check", connection.Spec.Driver)
+	}
+	return checker.Check(ctx, connection, options)
+}
+
 func ValidateConnection(connection Connection) error {
 	if connection.APIVersion != APIVersion {
 		return fmt.Errorf("unsupported apiVersion %q", connection.APIVersion)
@@ -129,6 +173,10 @@ func ValidateConnection(connection Connection) error {
 	}
 	if len(connection.Spec.Config) == 0 || !json.Valid(connection.Spec.Config) {
 		return errors.New("spec.config must be valid JSON")
+	}
+	var configObject map[string]json.RawMessage
+	if err := json.Unmarshal(connection.Spec.Config, &configObject); err != nil || configObject == nil {
+		return errors.New("spec.config must be a JSON object")
 	}
 	return nil
 }

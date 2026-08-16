@@ -90,3 +90,15 @@ func TestValidateConnectionReservesAllForBatchSelection(t *testing.T) {
 		t.Fatal("reserved connection name was accepted")
 	}
 }
+
+func TestValidateConnectionRequiresConfigObject(t *testing.T) {
+	connection := Connection{
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Metadata:   Metadata{Name: "bad-config"},
+		Spec:       ConnectionSpec{Driver: "example.test/fake", Lifecycle: "persistent", ConfigVersion: 1, Config: json.RawMessage(`[]`)},
+	}
+	if err := ValidateConnection(connection); err == nil {
+		t.Fatal("non-object driver config was accepted")
+	}
+}

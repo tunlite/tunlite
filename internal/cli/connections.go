@@ -31,6 +31,9 @@ type connectionFlags struct {
 	visited      map[string]bool
 }
 
+type action = core.Action
+type condition = core.Condition
+
 func add(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return usageError("usage: tunlite add <name> --to user@host[:port] -L/-R/-D ...")
@@ -59,18 +62,20 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 		if _, existing := configstore.Find(&document, name); existing != nil {
 			return conflictError(fmt.Sprintf("a connection named %q already exists", name))
 		}
-		return renderConnectionMutation(streams, opts, "add", "planned", connection)
+		return renderConnectionMutationWithConditions(streams, opts, "add", "planned", connection, endpointConflicts(&document, connection))
 	}
+	var conditions []condition
 	if err := store.Update(ctx, func(document *configstore.Document) error {
 		if _, existing := configstore.Find(document, name); existing != nil {
 			return conflictError(fmt.Sprintf("a connection named %q already exists", name))
 		}
+		conditions = endpointConflicts(document, connection)
 		document.Items = append(document.Items, connection)
 		return nil
 	}); err != nil {
 		return err
 	}
-	return renderConnectionMutation(streams, opts, "add", "applied", connection)
+	return renderConnectionMutationWithConditions(streams, opts, "add", "applied", connection, conditions)
 }
 
 func list(args []string, streams IO, opts options) error {
@@ -144,6 +149,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 	if err != nil {
 		return err
 	}
+	var conditions []condition
 	apply := func(document *configstore.Document) (core.Connection, error) {
 		_, connection := configstore.Find(document, name)
 		if connection == nil {
@@ -153,6 +159,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		if err != nil {
 			return core.Connection{}, err
 		}
+		conditions = endpointConflicts(document, updated)
 		*connection = updated
 		return updated, nil
 	}
@@ -165,7 +172,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		if err != nil {
 			return err
 		}
-		return renderConnectionMutation(streams, opts, "set", "planned", updated)
+		return renderConnectionMutationWithConditions(streams, opts, "set", "planned", updated, conditions)
 	}
 	var updated core.Connection
 	if err := store.Update(ctx, func(document *configstore.Document) error {
@@ -175,7 +182,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 	}); err != nil {
 		return err
 	}
-	return renderConnectionMutation(streams, opts, "set", "applied", updated)
+	return renderConnectionMutationWithConditions(streams, opts, "set", "applied", updated, conditions)
 }
 
 func remove(ctx context.Context, args []string, streams IO, opts options) error {
@@ -494,12 +501,20 @@ func hasAnyTag(labels map[string]string, tags []string) bool {
 }
 
 func renderConnectionMutation(streams IO, opts options, operation, outcome string, connection core.Connection) error {
+	return renderConnectionMutationWithConditions(streams, opts, operation, outcome, connection, nil)
+}
+
+func renderConnectionMutationWithConditions(streams IO, opts options, operation, outcome string, connection core.Connection, conditions []condition) error {
+	if conditions == nil {
+		conditions = []condition{}
+	}
 	if opts.JSON {
 		return writeJSON(streams.Out, map[string]any{
 			"contractVersion": ContractVersion,
 			"outcome":         outcome,
 			"operation":       operation,
 			"connection":      connection,
+			"conditions":      conditions,
 			"dryRun":          opts.DryRun,
 		})
 	}
@@ -508,7 +523,61 @@ func renderConnectionMutation(streams IO, opts options, operation, outcome strin
 		verb = "would be " + verb
 	}
 	fmt.Fprintf(streams.Out, "%s %q\n", verb, connection.Metadata.Name)
+	for _, item := range conditions {
+		fmt.Fprintf(streams.Err, "warning: %s\n", item.Message)
+	}
 	return nil
+}
+
+func endpointConflicts(document *configstore.Document, candidate core.Connection) []condition {
+	mine := endpointKeys(candidate)
+	if len(mine) == 0 {
+		return []condition{}
+	}
+	var conflicts []condition
+	for _, other := range document.Items {
+		if other.Metadata.Name == candidate.Metadata.Name {
+			continue
+		}
+		for key := range endpointKeys(other) {
+			if _, exists := mine[key]; !exists {
+				continue
+			}
+			conflicts = append(conflicts, condition{
+				Code:       "endpoint_conflict",
+				Severity:   "warning",
+				Message:    fmt.Sprintf("endpoint %s is also declared by connection %q", key, other.Metadata.Name),
+				Connection: candidate.Metadata.Name,
+				Driver:     candidate.Spec.Driver,
+				Actions: []core.Action{{
+					Type:       "change_forward",
+					Parameters: map[string]any{"endpoint": key, "otherConnection": other.Metadata.Name},
+				}},
+			})
+		}
+	}
+	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Message < conflicts[j].Message })
+	return conflicts
+}
+
+func endpointKeys(connection core.Connection) map[string]struct{} {
+	if connection.Spec.Driver != sshdriver.ID || connection.Spec.ConfigVersion != 1 {
+		return nil
+	}
+	config, err := sshdriver.DecodeConfig(connection.Spec.Config)
+	if err != nil {
+		return nil
+	}
+	keys := make(map[string]struct{}, len(config.Forwards))
+	for _, forward := range config.Forwards {
+		bind := defaultBind(forward.Bind)
+		key := fmt.Sprintf("L:%s:%d", bind, forward.SrcPort)
+		if forward.Type == "remote" {
+			key = fmt.Sprintf("R:%s:%s:%d", config.Host, bind, forward.SrcPort)
+		}
+		keys[key] = struct{}{}
+	}
+	return keys
 }
 
 func describeConnection(connection core.Connection) string {

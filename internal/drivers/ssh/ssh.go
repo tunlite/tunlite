@@ -168,10 +168,23 @@ func Validate(config Config) error {
 	if len(config.Forwards) == 0 {
 		return errors.New("at least one SSH forward is required")
 	}
+	if strings.ContainsAny(config.IdentityFile, "\r\n\x00") {
+		return errors.New("identity file contains an invalid control character")
+	}
+	claimed := make(map[string]struct{}, len(config.Forwards))
 	for _, forward := range config.Forwards {
 		if err := validateForward(forward); err != nil {
 			return err
 		}
+		scope := "L"
+		if forward.Type == "remote" {
+			scope = "R"
+		}
+		key := fmt.Sprintf("%s:%s:%d", scope, defaultBind(forward.Bind), forward.SrcPort)
+		if _, exists := claimed[key]; exists {
+			return fmt.Errorf("duplicate SSH forward endpoint %s", key)
+		}
+		claimed[key] = struct{}{}
 	}
 	for _, option := range config.SSHOptions {
 		if err := validateSSHOption(option); err != nil {
@@ -181,6 +194,9 @@ func Validate(config Config) error {
 	for _, jump := range config.Jump {
 		if jump == "" || strings.HasPrefix(jump, "-") || strings.ContainsAny(jump, "\r\n\x00") {
 			return fmt.Errorf("invalid SSH jump host %q", jump)
+		}
+		if _, _, err := ParseTarget(jump); err != nil {
+			return fmt.Errorf("invalid SSH jump host %q: %w", jump, err)
 		}
 	}
 	return nil
@@ -316,6 +332,9 @@ func validateForward(forward Forward) error {
 	}
 	if !validPort(forward.SrcPort) {
 		return fmt.Errorf("invalid source port %d", forward.SrcPort)
+	}
+	if strings.ContainsAny(forward.Bind, "\r\n\x00") || strings.ContainsAny(forward.DestHost, "\r\n\x00") {
+		return errors.New("SSH forward contains an invalid control character")
 	}
 	if forward.Type != "dynamic" && (forward.DestHost == "" || !validPort(forward.DestPort)) {
 		return fmt.Errorf("forward %s requires a target host and port", forward.Type)
