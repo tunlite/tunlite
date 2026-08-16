@@ -1,10 +1,12 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -50,9 +52,12 @@ func NewWithLookup(lookup func(string) (string, error)) *Driver {
 func (d *Driver) ID() string { return ID }
 
 func (d *Driver) Plan(_ context.Context, connection core.Connection, options core.PlanOptions) (plan.ExecutionPlan, error) {
-	var config Config
-	if err := json.Unmarshal(connection.Spec.Config, &config); err != nil {
-		return plan.ExecutionPlan{}, fmt.Errorf("decode SSH config: %w", err)
+	if connection.Spec.ConfigVersion != 1 {
+		return plan.ExecutionPlan{}, fmt.Errorf("unsupported SSH configVersion %d", connection.Spec.ConfigVersion)
+	}
+	config, err := DecodeConfig(connection.Spec.Config)
+	if err != nil {
+		return plan.ExecutionPlan{}, err
 	}
 	if err := Validate(config); err != nil {
 		return plan.ExecutionPlan{}, err
@@ -128,6 +133,23 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 		Lifecycle: plan.Lifecycle{Restart: restart, RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
 		Endpoints: endpoints, HealthChecks: healthChecks, Redactions: []plan.Redaction{},
 	}, nil
+}
+
+func DecodeConfig(raw json.RawMessage) (Config, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var config Config
+	if err := decoder.Decode(&config); err != nil {
+		return Config{}, fmt.Errorf("decode SSH config: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("more than one JSON value")
+		}
+		return Config{}, fmt.Errorf("decode SSH config: %w", err)
+	}
+	return config, nil
 }
 
 func Validate(config Config) error {
@@ -208,6 +230,24 @@ func ParseTarget(value string) (host string, port int, err error) {
 		return userPrefix + parts[0], p, nil
 	}
 	return value, port, nil
+}
+
+func ParseJump(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return []string{}, nil
+	}
+	hops := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, _, err := ParseTarget(item); err != nil {
+			return nil, fmt.Errorf("invalid jump host: %w", err)
+		}
+		hops = append(hops, item)
+	}
+	return hops, nil
 }
 
 func ParseForward(flag, spec string) (Forward, error) {

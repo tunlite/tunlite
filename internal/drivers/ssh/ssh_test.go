@@ -135,6 +135,23 @@ func TestNonInteractiveRejectsBatchModeOverride(t *testing.T) {
 	}
 }
 
+func TestDecodeConfigRejectsUnknownFields(t *testing.T) {
+	_, err := DecodeConfig(json.RawMessage(`{"host":"me@host","forwards":[],"futureField":true}`))
+	if err == nil {
+		t.Fatal("unknown SSH config field was accepted")
+	}
+}
+
+func TestPlanRejectsUnsupportedConfigVersion(t *testing.T) {
+	config := Config{Host: "me@host", Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}}}
+	raw, _ := json.Marshal(config)
+	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "future"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 2, Config: raw}}
+	driver := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil })
+	if _, err := driver.Plan(context.Background(), connection, core.PlanOptions{}); err == nil {
+		t.Fatal("unsupported SSH config version was accepted")
+	}
+}
+
 func containsPair(values []string, first, second string) bool {
 	for i := 0; i+1 < len(values); i++ {
 		if values[i] == first && values[i+1] == second {

@@ -9,12 +9,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 	"github.com/yuanyuanzijin/tunlite/internal/execution"
+	appPaths "github.com/yuanyuanzijin/tunlite/internal/paths"
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
 
@@ -33,10 +36,12 @@ type options struct {
 	JSON           bool
 	NonInteractive bool
 	DryRun         bool
+	ConfigFile     string
 }
 
 type exitError struct {
 	code    int
+	kind    string
 	message string
 }
 
@@ -57,20 +62,40 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 	}
 	cleaned, opts, err := extractGlobalOptions(args)
 	if err != nil {
-		return renderError(streams, opts, &exitError{code: 2, message: err.Error()})
+		return renderError(streams, opts, usageError(err.Error()))
 	}
 	if len(cleaned) == 0 {
-		return renderError(streams, opts, &exitError{code: 2, message: "usage: tunlite <run|version>"})
+		return renderError(streams, opts, usageError("usage: tunlite <add|list|set|rm|rename|run|version>"))
 	}
 
 	switch cleaned[0] {
 	case "version", "--version", "-v":
+		if opts.JSON {
+			if err := writeJSON(streams.Out, map[string]any{
+				"contractVersion": ContractVersion,
+				"outcome":         "succeeded",
+				"version":         Version,
+			}); err != nil {
+				return renderError(streams, opts, err)
+			}
+			return 0
+		}
 		fmt.Fprintln(streams.Out, Version)
 		return 0
 	case "run":
 		err = run(ctx, cleaned[1:], streams, opts)
+	case "add":
+		err = add(ctx, cleaned[1:], streams, opts)
+	case "list":
+		err = list(cleaned[1:], streams, opts)
+	case "set":
+		err = set(ctx, cleaned[1:], streams, opts)
+	case "rm":
+		err = remove(ctx, cleaned[1:], streams, opts)
+	case "rename":
+		err = rename(ctx, cleaned[1:], streams, opts)
 	default:
-		err = &exitError{code: 2, message: fmt.Sprintf("unknown command %q", cleaned[0])}
+		err = usageError(fmt.Sprintf("unknown command %q", cleaned[0]))
 	}
 	if err == nil {
 		return 0
@@ -92,18 +117,18 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 	flags.Var(&dynamic, "D", "dynamic forward")
 	flags.Var(&sshOptions, "ssh-opt", "OpenSSH Key=Value option")
 	if err := flags.Parse(args); err != nil {
-		return &exitError{code: 2, message: err.Error()}
+		return usageError(err.Error())
 	}
 	if flags.NArg() != 0 {
-		return &exitError{code: 2, message: fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " "))}
+		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
 	}
 	if to == "" {
-		return &exitError{code: 2, message: "run requires --to user@host[:port]"}
+		return usageError("run requires --to user@host[:port]")
 	}
 
 	host, port, err := sshdriver.ParseTarget(to)
 	if err != nil {
-		return &exitError{code: 2, message: err.Error()}
+		return usageError(err.Error())
 	}
 	forwards := make([]sshdriver.Forward, 0, len(local)+len(remote)+len(dynamic))
 	for _, item := range []struct {
@@ -113,25 +138,22 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 		for _, value := range item.values {
 			forward, parseErr := sshdriver.ParseForward(item.flag, value)
 			if parseErr != nil {
-				return &exitError{code: 2, message: parseErr.Error()}
+				return usageError(parseErr.Error())
 			}
 			forwards = append(forwards, forward)
 		}
 	}
 	if len(forwards) == 0 {
-		return &exitError{code: 2, message: "run needs at least one forward (-L / -R / -D)"}
+		return usageError("run needs at least one forward (-L / -R / -D)")
 	}
 	if name == "" {
 		name = sanitizeName(host)
 	}
-	config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Forwards: forwards, SSHOptions: sshOptions}
-	if jump != "" {
-		for _, value := range strings.Split(jump, ",") {
-			if value = strings.TrimSpace(value); value != "" {
-				config.Jump = append(config.Jump, value)
-			}
-		}
+	jumpHosts, err := sshdriver.ParseJump(jump)
+	if err != nil {
+		return usageError(err.Error())
 	}
+	config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Jump: jumpHosts, Forwards: forwards, SSHOptions: sshOptions}
 	rawConfig, _ := json.Marshal(config)
 	connection := core.Connection{
 		APIVersion: core.APIVersion,
@@ -207,7 +229,8 @@ func renderPlan(streams IO, opts options, connection core.Connection, executionP
 func extractGlobalOptions(args []string) ([]string, options, error) {
 	cleaned := make([]string, 0, len(args))
 	var opts options
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch arg {
 		case "--json":
 			opts.JSON = true
@@ -215,9 +238,26 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 			opts.NonInteractive = true
 		case "--dry-run":
 			opts.DryRun = true
+		case "--config":
+			if i+1 >= len(args) {
+				return nil, opts, errors.New("--config needs a file path")
+			}
+			i++
+			opts.ConfigFile = args[i]
 		default:
-			cleaned = append(cleaned, arg)
+			if value, found := strings.CutPrefix(arg, "--config="); found {
+				opts.ConfigFile = value
+			} else {
+				cleaned = append(cleaned, arg)
+			}
 		}
+	}
+	if opts.ConfigFile != "" {
+		absolute, err := filepath.Abs(opts.ConfigFile)
+		if err != nil {
+			return nil, opts, err
+		}
+		opts.ConfigFile = absolute
 	}
 	return cleaned, opts, nil
 }
@@ -229,18 +269,51 @@ func renderError(streams IO, opts options, err error) int {
 	if errors.As(err, &typed) {
 		code = typed.code
 	}
+	kind := "internal_error"
+	if typed != nil && typed.kind != "" {
+		kind = typed.kind
+	}
+	var legacy *configstore.LegacyConfigError
+	if errors.As(err, &legacy) {
+		kind = "migration_required"
+	}
 	if opts.JSON {
 		_ = writeJSON(streams.Out, map[string]any{
 			"contractVersion": ContractVersion,
 			"outcome":         "failed",
 			"error": map[string]any{
-				"code": "error", "message": message, "requiresApproval": false, "actions": []any{},
+				"code": kind, "driver": nil, "connection": nil, "message": message,
+				"riskLevel": "low", "requiresApproval": false, "actions": []any{},
 			},
 		})
 	} else {
 		fmt.Fprintln(streams.Err, message)
 	}
 	return code
+}
+
+func usageError(message string) error {
+	return &exitError{code: 2, kind: "invalid_arguments", message: message}
+}
+
+func notFoundError(message string) error {
+	return &exitError{code: 3, kind: "not_found", message: message}
+}
+
+func conflictError(message string) error {
+	return &exitError{code: 2, kind: "already_exists", message: message}
+}
+
+func connectionStore(opts options) (*configstore.Store, error) {
+	path := opts.ConfigFile
+	if path == "" {
+		var err error
+		path, err = appPaths.ConfigFile()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return configstore.New(path), nil
 }
 
 func writeJSON(writer io.Writer, value any) error {

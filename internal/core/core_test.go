@@ -77,3 +77,16 @@ func TestPlannerRejectsInvalidDriverPlan(t *testing.T) {
 		t.Fatal("core accepted an invalid driver plan")
 	}
 }
+
+func TestValidateConnectionReservesAllForBatchSelection(t *testing.T) {
+	config, _ := json.Marshal(map[string]string{"value": "opaque"})
+	connection := Connection{
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Metadata:   Metadata{Name: "all"},
+		Spec:       ConnectionSpec{Driver: "example.test/fake", Lifecycle: "persistent", ConfigVersion: 1, Config: config},
+	}
+	if err := ValidateConnection(connection); err == nil {
+		t.Fatal("reserved connection name was accepted")
+	}
+}
