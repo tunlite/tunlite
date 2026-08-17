@@ -199,6 +199,23 @@ func TestLaunchdBuildRejectsXMLIncompatibleArguments(t *testing.T) {
 	}
 }
 
+func TestLaunchdMapsActiveStateToRunning(t *testing.T) {
+	properties := parseLaunchdProperties([]byte("state = active\npid = 123\n"))
+	if properties["state"] != "active" {
+		t.Fatalf("unexpected properties: %#v", properties)
+	}
+	adapter := NewLaunchd(t.TempDir(), t.TempDir(), 501, &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
+		if args[0] == "print" {
+			return []byte("state = active\npid = 123\n"), nil
+		}
+		return nil, nil
+	}})
+	observation, err := adapter.Inspect(context.Background(), "db")
+	if err != nil || observation.ProcessState != ProcessRunning {
+		t.Fatalf("observation=%#v err=%v", observation, err)
+	}
+}
+
 func TestLaunchdPlistPassesNativeValidation(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("native plutil validation is only available on macOS")

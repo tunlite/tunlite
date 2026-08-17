@@ -826,8 +826,9 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 - Publish 与非回环监听在持久启用或计划变化后需要显式 `--approve`；批准绑定精确计划
   摘要，不能被后续配置变化复用。
 - 本机服务记录声明来源，两个配置文件中的同名 Connection 不能争用同一个原生服务。
-- launchd plist 已通过 macOS 原生 `plutil` 校验；systemd 与 launchd 的命令调用、
-  生成物、回滚、状态映射和漂移修复均有无特权自动测试。
+- launchd plist 已通过 macOS 原生 `plutil` 校验，并用临时原生 Job 验证
+  `enable -> inspect -> restart -> disable` 全生命周期；systemd 与 launchd 的命令
+  调用、生成物、回滚、状态映射和漂移修复均有无特权自动测试。
 
 Windows Task Scheduler 仍是实验范围，不阻塞预览版。下一阶段集中完成 0.x 配置迁移、
 发布回滚、Agent Skill 契约校验和正式打包；不得在此之间重新引入中心 daemon。

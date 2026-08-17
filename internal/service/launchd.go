@@ -234,7 +234,7 @@ func (l *Launchd) Inspect(ctx context.Context, connection string) (Observation, 
 	}
 	state := properties["state"]
 	switch state {
-	case "running":
+	case "running", "active":
 		observation.ProcessState = ProcessRunning
 	case "spawn scheduled", "waiting":
 		observation.ProcessState = ProcessStarting
