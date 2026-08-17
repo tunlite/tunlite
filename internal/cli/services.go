@@ -16,6 +16,7 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 	appPaths "github.com/yuanyuanzijin/tunlite/internal/paths"
+	"github.com/yuanyuanzijin/tunlite/internal/plan"
 	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
@@ -268,7 +269,7 @@ func enableService(ctx context.Context, adapter service.Adapter, records *servic
 	if err != nil {
 		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, false, "low", nil)
 	}
-	conditions := approvalConditions(connection, artifact)
+	conditions := planApprovalConditions(connection, artifact.Plan, "enable")
 	approvalNeeded := len(conditions) > 0 && stored.ApprovedPlanDigest != artifact.PlanDigest
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
 	if approvalNeeded && !approved && !opts.DryRun {
@@ -420,7 +421,7 @@ func syncService(ctx context.Context, adapter service.Adapter, records *service.
 		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, false, "low", nil)
 	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
-	approval := approvalConditions(connection, artifact)
+	approval := planApprovalConditions(connection, artifact.Plan, "sync")
 	approvalNeeded := len(approval) > 0 && record.ApprovedPlanDigest != artifact.PlanDigest
 	if approvalNeeded && !approved && !opts.DryRun {
 		return failedServiceItem(connection.Metadata.Name, "approval_required", errors.New("the execution plan requires explicit --approve before sync"), true, "high",
@@ -463,9 +464,9 @@ func syncService(ctx context.Context, adapter service.Adapter, records *service.
 	return result
 }
 
-func approvalConditions(connection core.Connection, artifact service.Artifact) []core.Condition {
+func planApprovalConditions(connection core.Connection, executionPlan plan.ExecutionPlan, operation string) []core.Condition {
 	var reasons []string
-	for _, endpoint := range artifact.Plan.Endpoints {
+	for _, endpoint := range executionPlan.Endpoints {
 		if endpoint.Direction == "publish" {
 			reasons = append(reasons, "publishes a remote endpoint")
 			continue
@@ -486,8 +487,8 @@ func approvalConditions(connection core.Connection, artifact service.Artifact) [
 	reasons = compactStrings(reasons)
 	return []core.Condition{{
 		Code: "approval_required", Severity: "warning", Connection: connection.Metadata.Name, Driver: connection.Spec.Driver,
-		Message: "persistent connection " + strings.Join(reasons, " and "),
-		Actions: []core.Action{{Type: "approve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "operation": "enable", "riskLevel": "high"}}},
+		Message: "connection " + strings.Join(reasons, " and "),
+		Actions: []core.Action{{Type: "approve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "operation": operation, "riskLevel": "high"}}},
 	}}
 }
 

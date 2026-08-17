@@ -19,6 +19,7 @@ function Main {
   $repository = 'https://github.com/yuanyuanzijin/tunlite'
   $baseUrl = if ($env:TUNLITE_RELEASE_BASE_URL) { $env:TUNLITE_RELEASE_BASE_URL } else { "$repository/releases/download/$Version" }
   $temporary = Join-Path ([IO.Path]::GetTempPath()) ("tunlite-" + [guid]::NewGuid())
+  $staged = $null
   New-Item -ItemType Directory -Path $temporary | Out-Null
   try {
     $archive = Join-Path $temporary $asset
@@ -34,13 +35,17 @@ function Main {
     Expand-Archive -Path $archive -DestinationPath $temporary -Force
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $destination = Join-Path $InstallDir 'tunlite.exe'
-    Copy-Item -Force (Join-Path $temporary 'tunlite.exe') $destination
+    $staged = Join-Path $InstallDir ('.tunlite-install-' + [guid]::NewGuid() + '.exe')
+    Copy-Item -Force (Join-Path $temporary 'tunlite.exe') $staged
+    Move-Item -Force $staged $destination
+    $staged = $null
     & $destination version
     Write-Host "tunlite: 已安装到 $destination"
     if (($env:PATH -split ';') -notcontains $InstallDir) {
       Write-Host "tunlite: 请把 $InstallDir 加入 PATH"
     }
   } finally {
+    if ($staged) { Remove-Item -Force $staged -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
   }
 }

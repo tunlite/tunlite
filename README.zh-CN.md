@@ -70,8 +70,8 @@ tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-i
 ```
 
 状态同时包含 `desiredState`、`processState`、`health` 和 `syncState` 四个维度。
-批量操作逐项返回结果，部分失败使用退出码 `6`。公开监听和持久 Publish 计划必须获得
-与精确计划绑定的显式批准。
+批量操作逐项返回结果，部分失败使用退出码 `6`。公开监听和 Publish 计划必须获得显式
+批准；前台执行绑定本次调用，持久执行绑定精确计划。
 
 随仓库提供的 [SSH Agent Skill](skill/ssh-tunnel/SKILL.md) 会在测试中与 CLI 的命令、
 退出码、状态和 Schema 契约校验一致。
@@ -99,7 +99,7 @@ tunlite migrate --json --non-interactive
 
 - 内置 SSH `-L`、`-R`、`-D`，支持多 Forward、跳板机、Identity File、严格的
   OpenSSH `Key=Value` Option、检查、诊断、日志和漂移修复。
-- macOS 使用 launchd、Linux 使用 systemd 用户服务持久运行。
+- macOS 12+ 使用 launchd、Linux 使用 systemd 用户服务持久运行。
 - Windows amd64 支持配置和前台 CLI；首个预览版不提供持久服务。
 - 外部 Driver 和插件安装延后到真实非 SSH 需求得到验证之后。
 

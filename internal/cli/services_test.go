@@ -227,11 +227,15 @@ func TestSyncRequiresFreshApprovalWhenPlanBecomesPublish(t *testing.T) {
 	if code, _, stderr := invoke(t, "set", "edge", "-R", "19000:localhost:3000"); code != 0 {
 		t.Fatal(code, stderr)
 	}
-	code, out, _ := invoke(t, "sync", "edge", "--json", "--non-interactive")
+	code, out, stderr := invoke(t, "sync", "edge", "--dry-run", "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"operation":"sync"`) {
+		t.Fatalf("dry sync approval action exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	code, out, _ = invoke(t, "sync", "edge", "--json", "--non-interactive")
 	if code != 1 || !strings.Contains(out, `"requiresApproval":true`) || len(adapter.enableCalls) != 1 {
 		t.Fatalf("unapproved sync exit=%d stdout=%s calls=%v", code, out, adapter.enableCalls)
 	}
-	code, out, stderr := invoke(t, "sync", "edge", "--approve", "--json", "--non-interactive")
+	code, out, stderr = invoke(t, "sync", "edge", "--approve", "--json", "--non-interactive")
 	if code != 0 || !strings.Contains(out, `"syncState":"synced"`) || len(adapter.enableCalls) != 2 {
 		t.Fatalf("approved sync exit=%d stdout=%s stderr=%s calls=%v", code, out, stderr, adapter.enableCalls)
 	}

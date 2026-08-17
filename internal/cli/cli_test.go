@@ -56,6 +56,59 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	}
 }
 
+func TestRunRequiresExplicitApprovalForPublish(t *testing.T) {
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	code, out, stderr := invoke(t,
+		"run", "--to", "me@example.com", "-R", "19000:localhost:3000",
+		"--json", "--non-interactive",
+	)
+	if code != 1 || stderr != "" {
+		t.Fatalf("run exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var result struct {
+		Error struct {
+			Code             string        `json:"code"`
+			RiskLevel        string        `json:"riskLevel"`
+			RequiresApproval bool          `json:"requiresApproval"`
+			Actions          []core.Action `json:"actions"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Error.Code != "approval_required" || result.Error.RiskLevel != "high" || !result.Error.RequiresApproval {
+		t.Fatalf("unexpected approval error: %#v", result.Error)
+	}
+	if len(result.Error.Actions) != 1 || result.Error.Actions[0].Type != "approve_connection" || result.Error.Actions[0].Parameters["operation"] != "run" {
+		t.Fatalf("unexpected approval action: %#v", result.Error.Actions)
+	}
+}
+
+func TestRunDryRunReportsPublicListenRisk(t *testing.T) {
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	code, out, stderr := invoke(t,
+		"run", "--to", "me@example.com", "-D", "0.0.0.0:1080",
+		"--dry-run", "--json", "--non-interactive",
+	)
+	if code != 0 || stderr != "" {
+		t.Fatalf("run exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var result struct {
+		Outcome    string           `json:"outcome"`
+		Conditions []core.Condition `json:"conditions"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "planned" || len(result.Conditions) != 1 || result.Conditions[0].Code != "approval_required" {
+		t.Fatalf("unexpected plan conditions: %#v", result)
+	}
+	actions := result.Conditions[0].Actions
+	if len(actions) != 1 || actions[0].Parameters["operation"] != "run" || actions[0].Parameters["riskLevel"] != "high" {
+		t.Fatalf("unexpected plan approval action: %#v", actions)
+	}
+}
+
 func TestVersionJSONUsesMachineContract(t *testing.T) {
 	code, out, stderr := invoke(t, "version", "--json")
 	if code != 0 || stderr != "" {
@@ -92,6 +145,28 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	}
 	if capabilities["contractVersion"] != ContractVersion {
 		t.Fatalf("unexpected capabilities: %#v", capabilities)
+	}
+}
+
+func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("this assertion covers platforms with a native service adapter")
+	}
+	t.Setenv("PATH", t.TempDir())
+	code, out, stderr := invoke(t, "capabilities", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("capabilities exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var result struct {
+		PersistentServices struct {
+			Available bool `json:"available"`
+		} `json:"persistentServices"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.PersistentServices.Available {
+		t.Fatal("capabilities claimed a native service manager was available with an empty PATH")
 	}
 }
 

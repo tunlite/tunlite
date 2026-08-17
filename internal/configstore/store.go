@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
+	"github.com/yuanyuanzijin/tunlite/internal/filelock"
 )
 
 const Kind = "ConnectionList"
@@ -211,30 +212,14 @@ func (s *Store) saveRaw(raw []byte) error {
 }
 
 func (s *Store) acquire(ctx context.Context) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return nil, fmt.Errorf("create config directory: %w", err)
-	}
-	lockPath := s.path + ".lock"
-	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-			_ = file.Close()
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("lock config: %w", err)
-		}
-		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 30*time.Second {
-			_ = os.Remove(lockPath)
-			continue
-		}
-		select {
-		case <-ctx.Done():
+	release, err := filelock.Acquire(ctx, s.path+".lock")
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return nil, errors.New("config is busy; another Tunlite command may still be running")
-		case <-time.After(20 * time.Millisecond):
 		}
+		return nil, fmt.Errorf("lock config: %w", err)
 	}
+	return release, nil
 }
 
 func validateDocument(document Document) error {

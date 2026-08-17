@@ -49,8 +49,9 @@ scripts/package-release.sh v1.0.0-preview.1
 6. 获得明确发布授权后，才允许推送 Tag、创建 GitHub Release 和生成在线构建证明。
 7. 下载公开 Release 的产物重新校验 checksum 与 Attestation，再宣布发布完成。
 
-自动发布工作流拥有仓库写权限和 OIDC 身份，必须作为单独的安全开关审查。仅仅完成本地
-代码和打包工具，不等于已经获得推送 Tag 或创建 Release 的授权。
+自动发布工作流拥有仓库写权限和 OIDC 身份，已经作为单独的安全开关获得授权并完成审查。
+它只响应 `v1.0.0-preview.*` 和 `v1.0.0` Tag；普通 Push、Pull Request 和手工操作不能
+触发发布。加入工作流不等于获得推送 Tag 的授权，每次实际发布仍需由人明确决定。
 
 ## 稳定版条件
 
