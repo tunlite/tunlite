@@ -1,48 +1,41 @@
-tunlite — install the SSH-tunnel agent skill
-=============================================
+Tunlite v1：给 AI Agent 的安装与接入说明
+===========================================
 
-You are an AI agent. Follow these steps to install tunlite (a zero-dependency SSH
-tunnel manager) and REGISTER its agent skill, so you can set up and keep SSH tunnels
-alive — now and in every future session, not just this conversation. Tell the user
-what you're about to do before installing anything; don't install silently.
+Tunlite 是单文件 Go CLI，使用系统 OpenSSH 管理本地转发、远端转发和 SOCKS 代理。
+运行时不需要 Node.js、npm、账号或 Tunlite 服务端。
 
-Prerequisites: Node.js >= 18 and the system `ssh`, both on PATH. tunlite needs nothing
-else (no other npm packages, no server, no account).
+安装软件会修改本机。Agent 必须先告知用户版本、安装位置和来源，并取得明确同意，
+不能静默安装。
 
-1) Install and anchor the CLI:
-       npx tunlite install
-   Anchors a stable copy (pins node's path). NOTE: run non-interactively (as you are),
-   bare `install` only anchors — it can't show the y/N prompts — so do steps 2-4
-   explicitly below. (Already installed? Make sure `tunlite --version` is 0.10.0 or
-   newer; if older:  tunlite update)
+macOS / Linux：
 
-2) Register the agent skill — this is what makes it persist across sessions:
-       tunlite install skill            # into ~/.claude/skills/ssh-tunnel
-       # or: tunlite install skill --dir cwd   (into THIS project's ./.claude/skills)
+  curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
 
-3) Start tunnels at login / boot — OPTIONAL, and it registers a system autostart
-   service, so tell the user and get a yes first:
-       tunlite install service          # launchd (macOS) / systemd --user (Linux) / Task Scheduler (Windows)
-   Keeps the daemon — and your tunnels — alive across reboots and crashes.
+Windows PowerShell：
 
-4) Shell tab-completion — OPTIONAL, a convenience:
-       tunlite install completion       # auto-detects bash / zsh / fish
+  irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex
 
-5) Verify:
-       tunlite --version    # 0.10.0 or newer
-       tunlite doctor       # environment + skill health
+安装脚本下载 v1.0.0-preview.1 的平台二进制，并使用同一 GitHub Release 中的
+SHA256SUMS 校验。它只安装 CLI，不创建 Connection，也不启动任何持久服务。
 
-Express path (only if the user is fine registering a login autostart service):
-       npx tunlite install -y           # anchor + autostart + skill + completion, no prompts
+安装后先验证运行时契约：
 
-That's it — the skill is installed persistently. Open a new session in that scope to
-load it, then just ask in plain language: "forward a port over SSH", "keep this tunnel
-alive", "open a SOCKS proxy through host X", "make a reverse tunnel", "start my tunnels
-on boot", or "set up passwordless SSH to host Y". Drive every command with --json and
-branch on the stable exit codes (0 ok · 2 usage · 3 not-found · 4 needs-auth ·
-5 daemon-unreachable · 1 other).
+  tunlite version --json
+  tunlite capabilities --json
+  tunlite schema cli
 
-Full skill reference (the operating manual you just installed):
+Agent 的所有操作使用 --json --non-interactive；修改前优先使用 --dry-run。公开监听、
+远端转发、删除、覆盖导入和迁移回滚必须获得用户明确批准。批量操作退出 6 表示部分
+失败，必须检查每个 results[] 项。
+
+完整 Agent 操作手册：
+
   https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/skill/ssh-tunnel/SKILL.md
-Docs:   https://tunlite.dev/
-Source: https://github.com/yuanyuanzijin/tunlite
+
+预览版安装、支持矩阵和 0.10.3 迁移：
+
+  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md
+
+项目方向：
+
+  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/PROJECT_DIRECTION.md

@@ -1,69 +1,54 @@
-# Contributing to tunlite
+# 为 Tunlite 贡献代码
 
-Thanks for your interest in improving tunlite! This document covers everything
-you need to get started.
+提交架构或产品变更前，请先阅读 [项目方向](docs/PROJECT_DIRECTION.md)。它是 SSH 聚焦、
+Go 单文件、原生每 Connection 服务和未来 Driver 边界的唯一事实来源。
 
-Before proposing architectural or v1 work, read the accepted
-[Project Direction](docs/PROJECT_DIRECTION.md). It is the sole source of truth
-for the SSH-focused Go v1, daemon removal, native service architecture, and the
-extension boundaries reserved for future drivers. The constraints below
-describe the currently released 0.x Node.js implementation where they differ.
+## 基本原则
 
-## Project philosophy
+- v1 只正式交付内置 SSH Driver，但通用 Connection、ExecutionPlan 和 Service Adapter
+  不能写成 SSH 专用。
+- 不新增管理全部 Connection 的中心常驻进程、控制 socket 或全局 reconcile。
+- 不自造传输协议；继续调用用户已经信任的系统 Provider。
+- 机器接口必须保持 `--json`、稳定退出码、`--non-interactive`、`--dry-run`、结构化
+  action 和逐项部分失败语义。
+- 平台能力不同就通过 Capability 和支持矩阵如实表达，不能静默降级。
+- 外部 Driver 协议仍是未来实验范围，不能为了一个假想生态提前冻结。
 
-tunlite is deliberately small. Please keep these constraints in mind:
+## 开发环境
 
-- **Zero runtime dependencies.** tunlite uses only the Node.js standard library
-  and the system `ssh`. Pull requests that add an `npm` dependency will almost
-  always be declined — propose the idea in an issue first.
-- **Cross-platform.** Code should work on macOS, Linux, and Windows (Windows
-  support is currently beta — less verified, not yet covered by CI). Guard
-  platform-specific behavior behind `process.platform` checks.
-- **Agent- and script-friendly.** Commands support `--json` and use stable exit
-  codes. Preserve that contract when changing output.
-
-## Development setup
+需要 Go 1.22 或更高版本。运行时端到端测试还需要系统 OpenSSH。
 
 ```bash
 git clone https://github.com/yuanyuanzijin/tunlite.git
 cd tunlite
-node bin/tunlite.js --help   # run it straight from source — no install needed
+go run ./cmd/tunlite help
+go test ./...
+go test -race ./...
+go vet ./...
 ```
 
-Requirements: **Node.js ≥ 18**. There is nothing to `npm install` (no
-dependencies).
-
-## Running the tests
+普通测试不修改真实原生服务。真实测试必须显式开启：
 
 ```bash
-node --test          # or: npm test
+TUNLITE_REAL_SSH=1 go test ./internal/cli \
+  -run TestRealOpenSSHAllForwardTypes -count=1 -v
+
+TUNLITE_REAL_SERVICE=1 go test ./internal/service \
+  -run TestRealNativeServiceLifecycle -count=1 -v
 ```
 
-The suite runs entirely offline and never touches your real
-system:
+原生服务测试会使用临时、唯一名称并在测试结束后清理。新增平台逻辑时，必须同时提供无特权
+自动测试；真机测试不能替代可重复的普通测试。
 
-- A fake `ssh` (`fixtures/fake-ssh.js`) is injected via the `TUNLITE_SSH`
-  environment variable, so no real SSH connections are made.
-- Autostart/service code is neutralized via `TUNLITE_FAKE_AUTOSTART=1`, so no
-  real `launchd` / `systemd` / Task Scheduler entries are created.
+## 提交要求
 
-Please add or update tests for any behavior you change.
+1. 从默认分支创建独立分支。
+2. 修改公共 JSON 行为时同步更新 Schema、Capability、Agent Skill 契约测试和迁移说明。
+3. 修改原生服务时覆盖幂等、漂移、并发、失败回滚和声明所有权。
+4. 确认 test、race、vet 和相关真实测试通过。
+5. Pull Request 说明改变了什么、为什么，以及兼容和安全影响。
 
-## Submitting changes
+清晰的 Conventional Commit（`feat:`、`fix:`、`docs:` 等）推荐但不强制。
 
-1. Fork the repository and create a branch from the default branch.
-2. Make your change. Match the style of the surrounding code.
-3. Make sure `node --test` passes.
-4. Open a pull request with a clear description of **what** changed and **why**.
-   Link any related issue (e.g. `Closes #123`).
-
-Clear, conventional commit messages (`feat:`, `fix:`, `docs:`, …) are
-appreciated but not required.
-
-## Reporting bugs and security issues
-
-- **Bugs / feature requests:** open an [issue](https://github.com/yuanyuanzijin/tunlite/issues).
-- **Security vulnerabilities:** please report privately — see [SECURITY.md](SECURITY.md).
-
-By contributing, you agree that your contributions will be licensed under the
-[MIT License](LICENSE).
+Bug 和功能建议可以提交公开 Issue；安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+贡献内容按 [MIT License](LICENSE) 授权。

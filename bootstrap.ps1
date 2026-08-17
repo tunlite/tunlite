@@ -1,27 +1,48 @@
-# tunlite bootstrap (Windows) — irm <raw bootstrap.ps1> | iex
-# Body wrapped in a function invoked on the LAST line, mirroring bootstrap.sh's
-# main(): a truncated `irm | iex` pipe then defines an incomplete Main and never
-# reaches the call, so a partial script can't run.
+# 安装 Tunlite v1 单文件二进制；不会注册或启动任何 Connection。
 $ErrorActionPreference = 'Stop'
+
 function Main {
-  $repo = 'https://github.com/yuanyuanzijin/tunlite'
-  $ref  = if ($env:TUNLITE_REF) { $env:TUNLITE_REF } else { 'master' }
-  $url  = if ($env:TUNLITE_ARCHIVE_URL) { $env:TUNLITE_ARCHIVE_URL } else { "$repo/archive/$ref.tar.gz" }
-  if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'tunlite: Node.js >= 18 is required' }
-  node -e "process.exit(+process.versions.node.split('.')[0]>=18?0:1)"
-  if ($LASTEXITCODE -ne 0) { throw "tunlite: Node.js >= 18 is required (found $(node -v))" }
-  # Windows has no /dev/tty, so install can't prompt over the `irm | iex` pipe —
-  # default to registering autostart (the core of "install"). The agent skill and
-  # shell completion stay opt-in: add --skill user / --completion to include them.
-  $a = @($args)
-  if (-not ($a -contains '--service' -or $a -contains '--no-service')) { $a = @('--service') + $a }
-  $tmp  = Join-Path $env:TEMP ("tunlite-" + [guid]::NewGuid())
-  New-Item -ItemType Directory -Path $tmp | Out-Null
+  param(
+    [string]$Version = $(if ($env:TUNLITE_VERSION) { $env:TUNLITE_VERSION } else { 'v1.0.0-preview.1' }),
+    [string]$InstallDir = $(if ($env:TUNLITE_INSTALL_DIR) { $env:TUNLITE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Tunlite' })
+  )
+
+  if ($Version -notmatch '^v1\.0\.0(?:-preview\.[1-9][0-9]*)?$') {
+    throw "tunlite: 不支持的版本格式 $Version"
+  }
+  if (-not [Environment]::Is64BitOperatingSystem) {
+    throw 'tunlite: Windows 预览版仅支持 amd64'
+  }
+
+  $plainVersion = $Version.Substring(1)
+  $asset = "tunlite_${plainVersion}_windows_amd64.zip"
+  $repository = 'https://github.com/yuanyuanzijin/tunlite'
+  $baseUrl = if ($env:TUNLITE_RELEASE_BASE_URL) { $env:TUNLITE_RELEASE_BASE_URL } else { "$repository/releases/download/$Version" }
+  $temporary = Join-Path ([IO.Path]::GetTempPath()) ("tunlite-" + [guid]::NewGuid())
+  New-Item -ItemType Directory -Path $temporary | Out-Null
   try {
-    $tgz = Join-Path $tmp 'src.tar.gz'
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tgz
-    tar xz --strip-components=1 -C $tmp -f $tgz
-    node (Join-Path $tmp 'bin\tunlite.js') install @a
-  } finally { Remove-Item -Recurse -Force $tmp }
+    $archive = Join-Path $temporary $asset
+    $checksums = Join-Path $temporary 'SHA256SUMS'
+    Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/$asset" -OutFile $archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/SHA256SUMS" -OutFile $checksums
+    $line = Get-Content $checksums | Where-Object { $_ -match "^[0-9a-fA-F]{64}\s+$([regex]::Escape($asset))$" } | Select-Object -First 1
+    if (-not $line) { throw "tunlite: SHA256SUMS 中没有 $asset" }
+    $expected = ($line -split '\s+')[0].ToLowerInvariant()
+    $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw 'tunlite: 下载文件 checksum 不匹配' }
+
+    Expand-Archive -Path $archive -DestinationPath $temporary -Force
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $destination = Join-Path $InstallDir 'tunlite.exe'
+    Copy-Item -Force (Join-Path $temporary 'tunlite.exe') $destination
+    & $destination version
+    Write-Host "tunlite: 已安装到 $destination"
+    if (($env:PATH -split ';') -notcontains $InstallDir) {
+      Write-Host "tunlite: 请把 $InstallDir 加入 PATH"
+    }
+  } finally {
+    Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
+  }
 }
+
 Main @args

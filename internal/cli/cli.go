@@ -17,14 +17,16 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 	"github.com/yuanyuanzijin/tunlite/internal/execution"
+	legacyMigration "github.com/yuanyuanzijin/tunlite/internal/migration"
 	appPaths "github.com/yuanyuanzijin/tunlite/internal/paths"
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
 
 const (
-	Version         = "1.0.0-preview.1-dev"
 	ContractVersion = "tunlite.cli/v1"
 )
+
+var Version = "1.0.0-preview.1-dev"
 
 type IO struct {
 	Out io.Writer
@@ -40,10 +42,13 @@ type options struct {
 }
 
 type exitError struct {
-	code     int
-	kind     string
-	message  string
-	rendered bool
+	code             int
+	kind             string
+	message          string
+	rendered         bool
+	riskLevel        string
+	requiresApproval bool
+	actions          []core.Action
 }
 
 func (e *exitError) Error() string { return e.message }
@@ -103,6 +108,8 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		err = importConnections(ctx, cleaned[1:], streams, opts)
 	case "validate":
 		err = validateConnections(cleaned[1:], streams, opts)
+	case "migrate":
+		err = migrateConfig(ctx, cleaned[1:], streams, opts)
 	case "check":
 		err = checkSSH(ctx, cleaned[1:], streams, opts)
 	case "doctor":
@@ -330,13 +337,31 @@ func renderError(streams IO, opts options, err error) int {
 	if errors.As(err, &legacy) {
 		kind = "migration_required"
 	}
+	if errors.Is(err, legacyMigration.ErrDrifted) {
+		kind = "migration_drifted"
+	}
+	if errors.Is(err, legacyMigration.ErrNoMigration) {
+		kind = "migration_not_found"
+	}
 	if opts.JSON {
+		riskLevel := "low"
+		requiresApproval := false
+		actions := []core.Action{}
+		if typed != nil {
+			if typed.riskLevel != "" {
+				riskLevel = typed.riskLevel
+			}
+			requiresApproval = typed.requiresApproval
+			if typed.actions != nil {
+				actions = typed.actions
+			}
+		}
 		_ = writeJSON(streams.Out, map[string]any{
 			"contractVersion": ContractVersion,
 			"outcome":         "failed",
 			"error": map[string]any{
 				"code": kind, "driver": nil, "connection": nil, "message": message,
-				"riskLevel": "low", "requiresApproval": false, "actions": []any{},
+				"riskLevel": riskLevel, "requiresApproval": requiresApproval, "actions": actions,
 			},
 		})
 	} else {

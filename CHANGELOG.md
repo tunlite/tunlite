@@ -9,6 +9,41 @@ release process.
 > tunlite debuted publicly at **0.9.0**. Earlier `0.x` releases were a private
 > prototype and are not part of this public history.
 
+## [1.0.0-preview.1] - Unreleased
+
+This preview replaces the Node.js runtime with a single Go binary while keeping SSH
+as the product's focused entry point.
+
+### Added
+
+- Generic Connection, Driver, and deterministic ExecutionPlan boundaries with a
+  built-in OpenSSH driver for `-L`, `-R`, `-D`, multiple forwards, jump hosts,
+  identity files, and strict `Key=Value` SSH options.
+- Per-Connection systemd user services and launchd jobs with `enable`, `disable`,
+  `restart`, `status`, `logs`, and drift-repairing `sync`.
+- Versioned JSON contracts, embedded schemas, dry-run and non-interactive guarantees,
+  structured actions and approvals, batch partial-failure semantics, and four-axis
+  persistent state.
+- Safe 0.10.3 migration with a byte-for-byte checksum-addressed backup, a local
+  migration journal, interrupted-operation recovery, and drift-protected rollback.
+- Reproducible cross-platform release archives and `SHA256SUMS`; Go CI covers macOS,
+  Linux, Windows, the race detector, vet, and release packaging.
+
+### Changed
+
+- Persistent Connections are owned directly by the operating system and execute the
+  Provider command without a central Tunlite controller or IPC socket.
+- The installer downloads and verifies a platform Go binary; Node.js and npm are no
+  longer v1 runtime prerequisites.
+- The Agent Skill now follows the runtime capability and schema contract and is tested
+  against commands, exit codes, and state dimensions.
+
+### Removed
+
+- The central supervisor, IPC protocol, PID ownership, webhook monitor, automatic SSH
+  key installation, and the second layer of global lifecycle management from the v1
+  runtime.
+
 ## [0.10.3] - 2026-08-16
 
 This is the final planned release of the Node.js implementation. The Node line is

@@ -30,7 +30,7 @@ func capabilities(args []string, streams IO, opts options) error {
 		return usageError("usage: tunlite capabilities")
 	}
 	commands := []string{
-		"add", "capabilities", "check", "disable", "doctor", "enable", "export", "help", "import", "list", "logs", "rename", "restart", "rm", "run", "schema", "set", "status", "sync", "validate", "version",
+		"add", "capabilities", "check", "disable", "doctor", "enable", "export", "help", "import", "list", "logs", "migrate", "rename", "restart", "rm", "run", "schema", "set", "status", "sync", "validate", "version",
 	}
 	sort.Strings(commands)
 	result := map[string]any{
@@ -78,7 +78,7 @@ func help(streams IO, opts options) error {
 	fmt.Fprintln(streams.Out, "connections: add, list, set, rename, rm")
 	fmt.Fprintln(streams.Out, "foreground:  run, check, doctor")
 	fmt.Fprintln(streams.Out, "services:    enable, disable, restart, status, logs, sync")
-	fmt.Fprintln(streams.Out, "declarations: import, export, validate")
+	fmt.Fprintln(streams.Out, "declarations: import, export, validate, migrate")
 	fmt.Fprintln(streams.Out, "machine contract: schema, capabilities, version")
 	fmt.Fprintln(streams.Out, "")
 	fmt.Fprintln(streams.Out, "each enabled connection is owned directly by the native service manager; no daemon is used")

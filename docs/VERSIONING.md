@@ -1,77 +1,66 @@
-# Versioning & release policy
+# 版本与发布规则
 
-How we version and release **tunlite**. Keep this short and follow it every release.
+Tunlite v1 只使用两类版本名：
 
-## Scheme
+- `v1.0.0-preview.N`：公开预览版，`N` 从 1 递增。
+- `v1.0.0`：预览验证完成后的稳定版。
 
-- **Semantic Versioning 2.0.0** — `MAJOR.MINOR.PATCH`.
-- Git tags are the version prefixed with `v` — e.g. `v0.2.0`.
-- Versions are **monotonically increasing**: every release is strictly greater
-  than the last (`v0.1.0` < `v0.1.1` < `v0.2.0` < `v1.0.0`). Never reuse or move
-  a published tag.
+不增加 Alpha、Beta、RC 等层级，不移动或复用已经公开的 Tag。
 
-### What bumps what
+## 唯一权威
 
-While `0.x` (pre-1.0, the API/CLI may still shift):
+公开仓库的提交、Tag、GitHub Release 和构建证明是唯一发布事实。npm 中的 0.x 包只代表
+历史 Node 产品，不是 v1 运行时的来源，也不得继续声明为最新架构。
 
-| Bump | When | Example |
-|---|---|---|
-| **PATCH** (`0.1.0 → 0.1.1`) | bug fixes only, no new commands/flags | fix a reconnect race |
-| **MINOR** (`0.1.0 → 0.2.0`) | new commands/flags/behavior; may include breaking CLI changes (allowed in 0.x) | add a new command |
-| **MAJOR** (`0.x → 1.0.0`) | the CLI is declared stable | first stable release |
+发布版本由 Git Tag 注入 Go 二进制：
 
-After `1.0.0`, breaking changes require a MAJOR bump.
+```text
+v1.0.0-preview.1 -> tunlite version -> 1.0.0-preview.1
+```
 
-## Single source of truth
+开发构建使用 `1.0.0-preview.1-dev`，不能冒充发布产物。
 
-These three must always agree for a release:
+## 发布产物
 
-1. `package.json` `"version"`
-2. The top dated section in `CHANGELOG.md`
-3. The git tag `vX.Y.Z`
+每个版本固定提供：
 
-## Branch model
+- macOS：amd64、arm64 的 `.tar.gz`。
+- Linux：amd64、arm64 的 `.tar.gz`。
+- Windows：amd64 的 `.zip`。
+- 覆盖全部压缩包的 `SHA256SUMS`。
+- GitHub Actions 对产物生成的 Artifact Attestation。
 
-- **`dev`** — the trunk / always-latest. Routine work (features, fixes, docs) is
-  committed straight to `dev` and pushed.
-- **`master`** — released versions only. `tunlite update` and the unpinned default
-  install track `master`, so it must always equal the latest real release.
-- A **release** is the only thing that updates `master`: merge `dev → master`
-  (pull request or fast-forward), then tag that commit.
+本地和 CI 使用同一入口：
 
-## Release checklist
+```bash
+scripts/package-release.sh v1.0.0-preview.1
+```
 
-Everything below runs from `dev`.
+打包工具使用 `CGO_ENABLED=0`、`-trimpath`、固定归档时间和固定文件顺序，版本通过链接
+参数注入。相同源码、Go 工具链和版本应产生可复核的归档。
 
-1. `node --test` — all green (CI runs the same matrix on every push/PR).
-2. Decide the bump (PATCH / MINOR / MAJOR) from changes since the last tag:
-   `git log --oneline vLAST..origin/dev`.
-3. On `dev`, set the version in `package.json`.
-4. Move `CHANGELOG.md` "Unreleased" items into a new `## [X.Y.Z] - YYYY-MM-DD`
-   section (Added / Changed / Fixed) and update the compare links at the bottom.
-5. Commit on `dev`: `chore(release): vX.Y.Z`, then `git push origin dev`.
-6. Merge `dev` into `master` (PR or fast-forward) and push `master`.
-7. Tag the release commit on `master` and push the tag:
-   - `git checkout master && git pull`
-   - `git tag -a vX.Y.Z -m "tunlite vX.Y.Z" -m "<highlights>"`
-   - `git push origin vX.Y.Z`
-   - `git checkout dev`
-8. Create the **GitHub Release** for `vX.Y.Z` (paste the CHANGELOG section).
-9. Publish to npm: `npm publish --dry-run` to check the tarball, then `npm publish`.
-   Users can also install via `npx "github:yuanyuanzijin/tunlite#vX.Y.Z" install`,
-   the `curl … bootstrap.sh | sh` one-liner, or `tunlite update`.
+## 发布流程
 
-## Release notes
+1. 运行全部自动测试、race、vet、真实 OpenSSH 和当前平台原生服务测试。
+2. 在支持矩阵要求的平台做真机验收。
+3. 生成本地候选包，逐个校验嵌入版本、归档内容和 `SHA256SUMS`。
+4. 更新 CHANGELOG、预览版指南和支持矩阵，只记录已经验证的事实。
+5. 提交发布变更并完成人工审查。
+6. 获得明确发布授权后，才允许推送 Tag、创建 GitHub Release 和生成在线构建证明。
+7. 下载公开 Release 的产物重新校验 checksum 与 Attestation，再宣布发布完成。
 
-Every release MUST have a `CHANGELOG.md` entry **and** a matching annotated tag
-message and GitHub Release. Write notes for users (what changed and why it
-matters), grouped as Added / Changed / Fixed, in reverse-chronological order.
+自动发布工作流拥有仓库写权限和 OIDC 身份，必须作为单独的安全开关审查。仅仅完成本地
+代码和打包工具，不等于已经获得推送 Tag 或创建 Release 的授权。
 
-## Notes
+## 稳定版条件
 
-- `master` only ever moves by merging a release from `dev`; never commit straight
-  to `master`.
-- `npm version <patch|minor|major>` can bump `package.json` and tag in one go, but
-  on this repo author the CHANGELOG by hand and create the tag on `master` only
-  **after** the release is merged — not on `dev`.
-- Pre-release tags use a suffix: `v0.3.0-rc.1` (sorts before `v0.3.0`).
+`v1.0.0` 不以日期自动触发。至少满足：
+
+- SSH 核心行为和机器契约在多个预览版中没有破坏性漂移。
+- systemd 与 launchd 经真实用户和真机持续验证。
+- 0.10.3 迁移、失败恢复和人工回滚有真实案例。
+- 安装成功率、首次连接耗时、断线恢复和多隧道使用达到可接受水平。
+- 已知高风险问题均已关闭，升级文档能覆盖主流路径。
+
+外部 Driver 协议不属于 `v1.0.0` 稳定条件；它必须在后续经过多类 Provider 的真实使用
+验证后独立稳定。

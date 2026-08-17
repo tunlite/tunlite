@@ -1,27 +1,84 @@
 #!/bin/sh
-# tunlite bootstrap — fetch the runtime and run `tunlite install`.
-# `install` prompts on the terminal (via /dev/tty) even though stdin is the piped
-# script, so you get the same y/N questions as a direct run. Pre-answer with flags
-# to go non-interactive:
-#   curl -fsSL <raw bootstrap.sh> | sh                                        # interactive
-#   curl -fsSL <raw bootstrap.sh> | sh -s -- --service --no-skill --no-completion
-# Override: TUNLITE_REF=<tag>, TUNLITE_ARCHIVE_URL=<url>.
+# 安装 Tunlite v1 单文件二进制；不会注册或启动任何 Connection。
 set -eu
+
 main() {
-  REPO_URL="https://github.com/yuanyuanzijin/tunlite"
-  REF="${TUNLITE_REF:-master}"
-  URL="${TUNLITE_ARCHIVE_URL:-$REPO_URL/archive/$REF.tar.gz}"
-  command -v node >/dev/null 2>&1 || { echo "tunlite: Node.js >= 18 is required" >&2; exit 1; }
-  node -e 'process.exit(+process.versions.node.split(".")[0]>=18?0:1)' 2>/dev/null || {
-    echo "tunlite: Node.js >= 18 is required (found $(node -v 2>/dev/null))" >&2
-    echo "  upgrade Node, or with nvm:  nvm install 18 && nvm use 18" >&2
+  version="${TUNLITE_VERSION:-v1.0.0-preview.1}"
+  install_dir="${TUNLITE_INSTALL_DIR:-${HOME}/.local/bin}"
+  repository="https://github.com/yuanyuanzijin/tunlite"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --version)
+        [ "$#" -ge 2 ] || { echo "tunlite: --version 需要版本号" >&2; exit 2; }
+        version="$2"
+        shift 2
+        ;;
+      --install-dir)
+        [ "$#" -ge 2 ] || { echo "tunlite: --install-dir 需要目录" >&2; exit 2; }
+        install_dir="$2"
+        shift 2
+        ;;
+      *)
+        echo "tunlite: 未知参数 $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  case "$version" in
+    v1.0.0) ;;
+    v1.0.0-preview.*)
+      preview_number="${version#v1.0.0-preview.}"
+      case "$preview_number" in
+        ''|0|0*|*[!0-9]*) echo "tunlite: 不支持的版本格式 $version" >&2; exit 2 ;;
+      esac
+      ;;
+    *) echo "tunlite: 不支持的版本格式 $version" >&2; exit 2 ;;
+  esac
+
+  case "$(uname -s)" in
+    Darwin) target_os="darwin" ;;
+    Linux) target_os="linux" ;;
+    *) echo "tunlite: 当前安装脚本仅支持 macOS 和 Linux" >&2; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) target_arch="amd64" ;;
+    arm64|aarch64) target_arch="arm64" ;;
+    *) echo "tunlite: 不支持的 CPU 架构 $(uname -m)" >&2; exit 1 ;;
+  esac
+
+  plain_version="${version#v}"
+  asset="tunlite_${plain_version}_${target_os}_${target_arch}.tar.gz"
+  base_url="${TUNLITE_RELEASE_BASE_URL:-${repository}/releases/download/${version}}"
+  temporary="$(mktemp -d)"
+  trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+
+  command -v curl >/dev/null 2>&1 || { echo "tunlite: 需要 curl" >&2; exit 1; }
+  curl -fsSL "${base_url}/${asset}" -o "${temporary}/${asset}"
+  curl -fsSL "${base_url}/SHA256SUMS" -o "${temporary}/SHA256SUMS"
+
+  expected="$(awk -v name="$asset" '$2 == name { print $1 }' "${temporary}/SHA256SUMS")"
+  [ -n "$expected" ] || { echo "tunlite: SHA256SUMS 中没有 $asset" >&2; exit 1; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "${temporary}/${asset}" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "${temporary}/${asset}" | awk '{print $1}')"
+  else
+    echo "tunlite: 需要 sha256sum 或 shasum 来校验下载内容" >&2
     exit 1
-  }
-  TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" | tar xz --strip-components=1 -C "$TMP"
-  elif command -v wget >/dev/null 2>&1; then wget -qO- "$URL" | tar xz --strip-components=1 -C "$TMP"
-  else echo "tunlite: need curl or wget" >&2; exit 1; fi
-  node "$TMP/bin/tunlite.js" install "$@"
+  fi
+  [ "$actual" = "$expected" ] || { echo "tunlite: 下载文件 checksum 不匹配" >&2; exit 1; }
+
+  tar -xzf "${temporary}/${asset}" -C "$temporary" tunlite
+  mkdir -p "$install_dir"
+  install -m 0755 "${temporary}/tunlite" "${install_dir}/tunlite"
+  "${install_dir}/tunlite" version
+  echo "tunlite: 已安装到 ${install_dir}/tunlite"
+  case ":${PATH}:" in
+    *":${install_dir}:"*) ;;
+    *) echo "tunlite: 请把 ${install_dir} 加入 PATH" ;;
+  esac
 }
+
 main "$@"
