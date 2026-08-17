@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tunlite.dev/schemas/service-state-v1.schema.json",
+  "title": "Tunlite native service state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "connection",
+    "adapter",
+    "desiredState",
+    "processState",
+    "health",
+    "syncState",
+    "observedAt",
+    "endpoints",
+    "conditions"
+  ],
+  "properties": {
+    "connection": { "type": "string", "minLength": 1 },
+    "adapter": { "type": "string", "minLength": 1 },
+    "desiredState": { "enum": ["enabled", "disabled"] },
+    "processState": { "enum": ["inactive", "starting", "running", "failed", "unknown"] },
+    "health": { "enum": ["unknown", "healthy", "unhealthy"] },
+    "syncState": { "enum": ["synced", "drifted", "missing", "blocked"] },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "endpoints": { "type": "array" },
+    "conditions": {
+      "type": "array",
+      "items": { "$ref": "tunlite-cli-v1.schema.json#/$defs/condition" }
+    },
+    "platform": { "type": "object" }
+  }
+}

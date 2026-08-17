@@ -12,6 +12,7 @@ var Names = map[string]string{
 	"connection-list": "connection-list-v1.schema.json",
 	"ssh":             "ssh-config-v1.schema.json",
 	"cli":             "tunlite-cli-v1.schema.json",
+	"service-state":   "service-state-v1.schema.json",
 }
 
 func Read(name string) ([]byte, bool) {

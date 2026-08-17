@@ -107,6 +107,10 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		err = checkSSH(ctx, cleaned[1:], streams, opts)
 	case "doctor":
 		err = doctor(ctx, cleaned[1:], streams, opts)
+	case "enable", "disable", "restart", "status", "sync":
+		err = serviceCommand(ctx, cleaned[0], cleaned[1:], streams, opts)
+	case "logs":
+		err = serviceLogs(ctx, cleaned[1:], streams, opts)
 	case "schema":
 		err = schema(cleaned[1:], streams)
 	case "capabilities":

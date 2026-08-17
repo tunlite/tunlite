@@ -794,7 +794,7 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 
 #### 第一周实施进度
 
-截至 2026 年 8 月 17 日，前两阶段已经完成：
+截至 2026 年 8 月 17 日，前三阶段已经完成：
 
 - Go 单二进制、通用 Connection Envelope、Driver Registry、`ExecutionPlan` 和前台
   进程生命周期已经建立。
@@ -813,10 +813,24 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 - 已用语言无关的 0.10.3 黑盒 Fixture 固定 CRUD、Forward、标签和退出码行为。
 - 已在隔离的真实 OpenSSH Server 上，用同一个 `tunlite run` 同时建立 `-L`、`-R`、
   `-D`，三类转发均通过真实 HTTP 流量验证。
+- 已实现 Linux systemd user service 与 macOS launchd 的每 Connection Adapter；生成物
+  直接运行 `ExecutionPlan` 中的 Provider，不依赖 Tunlite 常驻，也不经过 Shell。
+- 已支持 `enable`、`disable`、`restart`、`status`、`logs` 和 `sync`，名称与标签选择
+  面向 Connection，批量操作逐项返回结果并保留部分失败语义。
+- 本机期望状态独立记录 `desiredState`，因此服务文件被误删时仍能准确报告
+  `enabled + missing`；`processState`、`health`、`syncState` 分轴输出并带观测时间。
+- 原生生成物使用计划摘要检测漂移；重复 `enable` 和 `sync` 在计划一致且进程运行时
+  不重启 Provider，缺失、漂移或失败状态才触发修复。
+- systemd unit 与 launchd plist 更新失败会恢复上一份生成物；同一 Connection 的服务
+  操作串行执行，删除和重命名会拒绝留下仍启用或未清理的原生服务。
+- Publish 与非回环监听在持久启用或计划变化后需要显式 `--approve`；批准绑定精确计划
+  摘要，不能被后续配置变化复用。
+- 本机服务记录声明来源，两个配置文件中的同名 Connection 不能争用同一个原生服务。
+- launchd plist 已通过 macOS 原生 `plutil` 校验；systemd 与 launchd 的命令调用、
+  生成物、回滚、状态映射和漂移修复均有无特权自动测试。
 
-这一进度不代表 systemd、launchd 或持久 Connection 已完成。`capabilities` 必须继续
-如实报告原生持久服务不可用，直到第二周的 Service Adapter 验收通过。下一项工作是
-第三阶段：每 Connection 原生服务，不得在此之间重新引入中心 daemon。
+Windows Task Scheduler 仍是实验范围，不阻塞预览版。下一阶段集中完成 0.x 配置迁移、
+发布回滚、Agent Skill 契约校验和正式打包；不得在此之间重新引入中心 daemon。
 
 ### 第二周：8 月 24 日—8 月 30 日
 
