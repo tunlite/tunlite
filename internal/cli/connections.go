@@ -190,6 +190,11 @@ func remove(ctx context.Context, args []string, streams IO, opts options) error 
 		return usageError("usage: tunlite rm <name>")
 	}
 	name := args[0]
+	releaseService, err := ensureServiceRemovable(ctx, name, !opts.DryRun)
+	if err != nil {
+		return err
+	}
+	defer releaseService()
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -225,6 +230,9 @@ func remove(ctx context.Context, args []string, streams IO, opts options) error 
 	}); err != nil {
 		return err
 	}
+	if err := removeServiceRecord(name); err != nil {
+		return err
+	}
 	return renderConnectionMutation(streams, opts, "rm", "applied", removed)
 }
 
@@ -233,6 +241,15 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		return usageError("usage: tunlite rename <old> <new>")
 	}
 	oldName, newName := args[0], args[1]
+	releaseService := func() {}
+	if oldName != newName {
+		var err error
+		releaseService, err = ensureServiceRemovable(ctx, oldName, !opts.DryRun)
+		if err != nil {
+			return err
+		}
+	}
+	defer releaseService()
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -273,6 +290,11 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		return err
 	}); err != nil {
 		return err
+	}
+	if oldName != newName {
+		if err := removeServiceRecord(oldName); err != nil {
+			return err
+		}
 	}
 	return renderConnectionMutation(streams, opts, "rename", "applied", updated)
 }
