@@ -17,6 +17,8 @@ import (
 
 const Kind = "ConnectionList"
 
+var ErrChanged = errors.New("config changed during operation")
+
 type Document struct {
 	APIVersion string            `json:"apiVersion"`
 	Kind       string            `json:"kind"`
@@ -119,14 +121,60 @@ func (s *Store) Write(ctx context.Context, document Document, overwrite bool) er
 }
 
 func (s *Store) save(document Document) error {
-	if err := validateDocument(document); err != nil {
+	raw, err := Encode(document)
+	if err != nil {
 		return err
 	}
-	items := make([]core.Connection, 0, len(document.Items))
-	document.Items = append(items, document.Items...)
+	return s.saveRaw(raw)
+}
+
+func Encode(document Document) ([]byte, error) {
+	if err := validateDocument(document); err != nil {
+		return nil, err
+	}
+	items := make([]core.Connection, len(document.Items))
+	copy(items, document.Items)
+	document.Items = items
 	sort.Slice(document.Items, func(i, j int) bool {
 		return document.Items[i].Metadata.Name < document.Items[j].Metadata.Name
 	})
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		return nil, fmt.Errorf("encode config: %w", err)
+	}
+	return buffer.Bytes(), nil
+}
+
+func (s *Store) ReplaceRawIfUnchanged(ctx context.Context, expected, replacement []byte, prepare func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	release, err := s.acquire(lockCtx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	current, err := os.ReadFile(s.path)
+	if err != nil {
+		return fmt.Errorf("read config %s: %w", s.path, err)
+	}
+	if !bytes.Equal(current, expected) {
+		return ErrChanged
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return err
+		}
+	}
+	return s.saveRaw(replacement)
+}
+
+func (s *Store) saveRaw(raw []byte) error {
 	directory := filepath.Dir(s.path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
@@ -146,11 +194,8 @@ func (s *Store) save(document Document) error {
 	if err := temporary.Chmod(0o600); err != nil {
 		return fmt.Errorf("protect temporary config: %w", err)
 	}
-	encoder := json.NewEncoder(temporary)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(document); err != nil {
-		return fmt.Errorf("encode config: %w", err)
+	if _, err := temporary.Write(raw); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		return fmt.Errorf("sync temporary config: %w", err)

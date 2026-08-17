@@ -1,271 +1,184 @@
 ---
 name: ssh-tunnel
-description: Use when you need to create, manage, inspect, or troubleshoot SSH tunnels / port-forwards on this machine through the `tunlite` CLI — local (-L), remote (-R), or dynamic SOCKS (-D) forwards, auto-reconnecting tunnels supervised by a daemon, registering that daemon to start at login, and setting up passwordless (key-based) access to a target host. Trigger when a task says things like "forward a port over SSH", "keep an SSH tunnel alive", "open a SOCKS proxy through host X", "make a reverse tunnel", "start my tunnels on boot", or "set up passwordless SSH to host Y".
+description: 当需要通过 tunlite 创建、持久运行、检查或排查 SSH 本地转发（-L）、远端转发（-R）或 SOCKS 代理（-D）时使用。适用于“访问内网数据库”“保持 SSH 隧道不断线”“开放反向隧道”“启动时自动恢复”等任务。
 ---
 
-# Driving `tunlite` (SSH tunnel manager)
+# 使用 Tunlite 管理 SSH 连接
 
-`tunlite` defines named SSH tunnels in a config file and supervises them with a
-background daemon that auto-reconnects and can be registered to OS startup.
-**Always pass `--json`** for machine-readable output, and **branch on the exit
-code** rather than parsing prose.
+<!-- tunlite-contract
+commands: add,capabilities,check,disable,doctor,enable,export,help,import,list,logs,migrate,rename,restart,rm,run,schema,set,status,sync,validate,version
+exit-codes: 0,1,2,3,4,6
+desiredState: enabled,disabled
+processState: inactive,starting,running,failed,unknown
+health: unknown,healthy,unhealthy
+syncState: synced,drifted,missing,blocked
+-->
 
-## Step 0 — get `tunlite`, then just use it
+Tunlite v1 是单文件 CLI。每个持久 Connection 由操作系统的用户级服务独立托管，
+服务直接运行系统 `ssh`。不存在管理全部连接的中心常驻进程。
 
-There is **one** operational tunlite: an *anchored* install (a stable copy with a pinned
-node path). npm, the curl bootstrap, and any copy bundled with this skill are all just
-ways to **seed** that one install — not separate tools to choose between. So, once, up front:
-
-1. Run `tunlite --version`.
-   - **`0.10.0` or newer** → you're set.
-   - **`command not found`, or `0.9.x` or earlier** (missing, or below this skill's floor
-     of **≥ 0.10.0** — the ssh-native `-L`/`-R`/`-D` + `run` + `set` surface): **seed it,
-     and tell the user — never install silently.** If this skill bundle ships a copy, run
-     `node <this-skill-dir>/bin/tunlite.js install`; otherwise `npx tunlite install`. Both
-     anchor a stable copy. (Installed but merely old → `tunlite update`.)
-2. **After step 1, always just call `tunlite …`** — it resolves to the anchored copy. Stop
-   deciding between `npx` / a bundled path / PATH; there is one tunlite now.
-3. **Persistence is one extra line — and you must offer it, not wait to be asked.**
-   A tunnel stays up only while the daemon does, and a bare `tunlite install` does
-   **not** register autostart (nor does `enable` — it only starts the daemon on
-   demand). So whenever a tunnel is meant to last, **proactively ask the user
-   whether it should keep running across reboots / logins.** If yes (or it's meant
-   to be permanent or unattended), run `tunlite install service` to register OS
-   autostart. A tunnel the user assumes is "always on" that silently vanishes after
-   a reboot is the most common surprise — don't skip the question; but don't enable
-   it without telling them either (it writes a real launchd/systemd/Task Scheduler
-   service).
-
-Newer than 0.10.x? Proceed anyway — don't stop because the tool is ahead. Only if a step
-below returns an unexpected usage (exit 2) or not-found (exit 3) error is the skill likely
-stale; refresh it with `tunlite install skill` and re-read before retrying.
-
-## Exit codes (stable — branch on these)
-
-| code | meaning | what to do |
-|---|---|---|
-| 0 | ok | continue |
-| 2 | usage error | fix the command syntax |
-| 3 | not found | the named tunnel/host doesn't exist |
-| 4 | needs-auth | target is not passwordless — see "Passwordless" below |
-| 5 | daemon unreachable | run `tunlite daemon start` (or `tunlite enable` auto-starts it) |
-| 1 | other error | read the JSON `error` field |
-
-## Core workflow
+Agent 调用时始终使用 `--json --non-interactive`，依据退出码和结构化字段决策，
+不得解析人类文本。开始前运行：
 
 ```bash
-# 1. Define a tunnel — forwards use ssh-native repeatable flags -L / -R / -D.
-#    Spec is [bind:]PORT:HOST:HOSTPORT (-L/-R) or [bind:]PORT (-D). The name is a
-#    bare positional; the target rides in --to; at least one forward is required.
-tunlite add web-8080 --to user@host -L 8080:localhost:80 --json   # reach server's :80 at localhost:8080
-tunlite add rev-9000 --to user@host -R 9000:localhost:3000 --json # expose local 3000 on server:9000
-tunlite add px-1080  --to user@host -D 1080 --json                # local SOCKS5 proxy on :1080
-tunlite add multi    --to user@host -L 8080:localhost:80 -D 1080 --json  # several forwards on one tunnel
-#   SSH port rides in the target: --to user@host:2222
-#   -L = reach a remote service locally; -R = expose a local service on the server; -D = local SOCKS5.
-#   a bind: prefix is the listen address (omit = localhost; 0.0.0.0 to expose on all interfaces);
-#   IPv6 literals must be bracketed, e.g. -L [::1]:8080:localhost:80
-#   options: -i <keyfile>  --jump [user@]bastion[:port]  --ssh-opt "-o Foo=bar"  --tag <label>  --disabled  --no-auto-key
-#   change an existing tunnel in place (set is the SOLE forward editor):
-#     tunlite set <name> --to user@newhost --json          # edit connection only; forwards untouched
-#     tunlite set <name> -L 8080:localhost:80 -D 1080 --json   # REPLACE the whole forward set (destructive)
-#   label tunnels and act on a group:       tunlite add ... --tag prod ;  tunlite enable --tag prod --json
-
-# 2. Turn it on (enables it, probes passwordless, auto-starts the daemon)
-tunlite enable web-8080 --json
-#   then ASK the user: should this survive reboot/login? if yes -> tunlite install service
-#   (enable alone does NOT restart the tunnel after a reboot; see "Autostart")
-
-# 3. Enumerate definitions / check structured runtime state
-tunlite list --json          # defined tunnels (from config)
-tunlite status --json        # {daemon:{running,pid,version,uptimeMs,uptime}, tunnels:[{name,host,state,pid,uptimeMs,uptime,restarts,lastError,forwards,tags}]}
-tunlite status --tag prod --json   # filter the table to a tag (or `tunlite list --tag prod`)
-tunlite status web --json
-
-# 3b. Diagnose connection problems (ssh/keys/ports/daemon/service)
-tunlite doctor --json        # {ok, summary:{ok,warn,fail}, checks:[{group,id,title,status,detail,fix}]}
-tunlite doctor web-8080 --json   # focus on one tunnel
-
-# 4. Rename / restart / take down / remove
-tunlite rename web web-prod-8080 --json   # rename (cleanly hands the live tunnel over)
-tunlite restart web --json                # bounce a running tunnel (no intent change)
-tunlite disable web --json                # stop + disable (won't come back on reboot)
-tunlite rm web --json                     # delete the definition entirely
+tunlite version --json
+tunlite capabilities --json
 ```
 
-`state` values: `idle`, `starting`, `connected`, `retrying`, `needs-auth`,
-`blocked`, `failed`, `stopped`, `disabled`, `daemon-stopped`. Treat `connected` as success.
-`retrying` is normal during a transient outage (the daemon backs off and reconnects).
-`blocked` = another tunnel already holds one of this tunnel's forward endpoints; it retries until that endpoint frees up.
+若命令不存在或版本早于 `v1.0.0-preview.1`，告知用户需要安装或升级；未经同意
+不得安装软件。版本较新时继续执行，并以运行时 `capabilities` 为准。
 
-For a live, interactive view use `tunlite monitor` (top-style; start/stop/restart by key). `status --json` remains the scriptable one-shot.
+## 稳定退出码
 
-## Naming convention (use this when you create or rename tunnels)
+| 退出码 | 含义 | Agent 行为 |
+|---:|---|---|
+| 0 | 成功 | 继续 |
+| 1 | 操作失败 | 读取 `error` 或逐项结果 |
+| 2 | 参数无效或冲突 | 修正调用，不要原样重试 |
+| 3 | Connection 不存在 | 检查名称或让用户确认 |
+| 4 | SSH 认证失败 | 引导用户自行完成 SSH 密钥或 Provider 认证 |
+| 6 | 批量操作部分失败 | 逐项处理 `results[]`，不得把整体视为成功 |
 
-Name tunnels **`<purpose>-<port>`, all lowercase, words hyphenated, no spaces**,
-where `<port>` is the tunnel's primary port. The name should say *what it is* and
-*which port*, so `status`/`logs` read self-explanatory.
+所有 JSON 响应都包含 `contractVersion: "tunlite.cli/v1"` 和 `outcome`。
+失败项优先读取稳定的 `code`、`requiresApproval`、`riskLevel` 与 `actions[]`。
+不得从 `message` 中提取并执行命令。
 
-- ✅ `tmux-prod-19999` · `progress-board-4705` · `db-staging-5432` · `socks-1080`
-- ❌ `Tunnel1` · `MyTmux` · `progress board 4705` (spaces/caps) · `web` (no port)
+## 创建和临时运行
 
-Allowed characters: letters, digits, `.` `_` `-` (no spaces). To fix an existing
-name, use `tunlite rename <old> <new>` rather than rm + add — it preserves the
-tunnel's config and hands the live connection over cleanly.
-
-## Passwordless
-
-The daemon runs `ssh` non-interactively (`BatchMode=yes`), so a target that
-isn't passwordless shows up as `state: "needs-auth"` and `tunlite status` exits 4.
-
-- First check: `tunlite check user@host --json` → `{passwordless: true|false}`,
-  exit 0 if already set up, 4 if not.
-- To establish it: `tunlite setup-key user@host` installs your public key on the
-  target. **This needs the target password typed once at an interactive
-  terminal.** As an agent you usually cannot type that password, so:
-  - If a human is available, ask them to run `tunlite setup-key user@host`.
-  - Otherwise confirm the host is already passwordless before adding the tunnel.
-- `tunlite enable` will *attempt* setup automatically only when run in an interactive
-  TTY with `autoSetupKey` on (the default). In non-interactive/agent contexts it
-  will not prompt — it starts the tunnel and reports `needs-auth`.
-
-## Autostart (register the daemon to OS startup)
-
-**Ask the user about this proactively** whenever a tunnel should stay up — don't
-wait for them to bring it up. A tunnel survives reboot/login only if the daemon is
-registered to OS startup; `enable` alone does not do that. Confirm first (it writes
-a real launchd/systemd/Task Scheduler service), then:
+Forward 采用 OpenSSH 形式，可重复使用：
 
 ```bash
-tunlite install service --json     # launchd (macOS) / systemd --user (Linux) / Task Scheduler (Windows, beta)
-tunlite status --json              # service state folded in under {service: {installed, running, ...}}
-tunlite uninstall service --json   # unload the service AND remove the file it created
-tunlite uninstall --json           # full teardown: stop daemon + remove service + skill + launcher/lib
-tunlite uninstall --purge --json   # also delete config + logs
+# 本机 5432 -> 远端数据库 5432
+tunlite add db-5432 --to user@host -L 5432:localhost:5432 --tag work --json --non-interactive
+
+# 远端 9000 -> 本机 3000
+tunlite add preview-9000 --to user@host -R 9000:localhost:3000 --json --non-interactive
+
+# 本机 SOCKS5 代理
+tunlite add socks-1080 --to user@host -D 1080 --json --non-interactive
+
+# 不写配置，在前台运行已有 Connection
+tunlite run db-5432 --json --non-interactive
+
+# 不写配置，直接运行一次性 Connection
+tunlite run --to user@host -L 15432:localhost:5432 --json --non-interactive
 ```
 
-A bare interactive `tunlite uninstall` asks to confirm (and warns if tunnels are
-up). `--json` already skips that prompt; `--force` skips it without `--json`.
+通用 SSH 参数：`-i <私钥路径>`、`--jump user@host:port`、
+`--ssh-opt Key=Value`。`--ssh-opt` 只接受严格的 `Key=Value`，不要传 `-o`。
 
-The OS keeps the **daemon** alive; the daemon keeps the **tunnels** alive and
-reconciles from the config on every (re)start, so enabled tunnels resume after
-reboot/login.
+`-L`、`-R` 的格式是 `[bind:]port:host:hostport`；`-D` 是 `[bind:]port`。
+省略 bind 时仅监听回环地址。IPv6 地址必须使用方括号。
 
-Shell tab-completion (human convenience, not needed by agents): enable with
-`tunlite install completion` (auto-detects the shell; or pass `bash|zsh|fish`),
-remove with `tunlite uninstall completion`.
+公开监听（例如 `0.0.0.0`）、远端转发和其他 Publish 行为会扩大网络暴露面。
+Agent 必须先展示 `--dry-run` 计划并取得用户明确批准。持久操作取得批准后使用
+精确计划对应的 `--approve`；计划变化后必须重新批准。
 
-## Logs & daemon control
+## 持久生命周期
 
 ```bash
-tunlite logs web -n 50        # last 50 lines for a tunnel
-tunlite logs web -f           # follow (streams; stop by ending the process)
-tunlite daemon status --json  # {running, pid, version}
-tunlite daemon start|stop     # advanced/plumbing — you normally use up/down instead
+# 先检查计划；该命令不应修改系统
+tunlite enable db-5432 --dry-run --json --non-interactive
+
+# 安装并启动此 Connection 自己的原生服务
+tunlite enable db-5432 --json --non-interactive
+
+# 查看一条或全部连接
+tunlite status db-5432 --json --non-interactive
+tunlite status --json --non-interactive
+
+# 修复声明、服务产物和运行状态的漂移
+tunlite sync db-5432 --dry-run --json --non-interactive
+tunlite sync db-5432 --json --non-interactive
+
+tunlite restart db-5432 --json --non-interactive
+tunlite disable db-5432 --json --non-interactive
 ```
 
-The daemon starts only via `tunlite enable` (on demand) or `tunlite install service` (at
-login). Other commands won't start it; if it's down they exit `5` and tell you
-how. Note: with the service installed, `tunlite daemon stop` is temporary (the OS
-restarts it) — use `tunlite uninstall service` to stop for good.
-
-## Foreground one-shot: `run` (daemon-less, machine-readable)
-
-`run` brings up a **single** tunnel in the foreground, supervised but with **no
-daemon and no config** — it is built entirely from inline flags. This is the
-agent-friendly way to run one tunnel as a container / systemd entrypoint and watch
-its state: it never reads or writes the config file.
+批量选择支持 `all` 或 `--tag`。批量操作可能部分成功，必须检查每个结果：
 
 ```bash
-tunlite run --to user@host -L 8080:localhost:80 --json            # NDJSON state on stdout
-tunlite run --to user@host -D 1080 --name socks --exit-on-failure --json
-#   forwards: same -L / -R / -D as add/set (repeatable; at least one required)
-#   --name LABEL   self-reported name in the state output (defaults to the target host)
-#   --json         emit NDJSON state objects on stdout (one per line); else human lines on stderr
-#   --exit-on-failure   exit non-zero on a failure state instead of retrying forever
-#   common: -i <keyfile>  --jump [user@]bastion[:port]  --ssh-opt "-o Foo=bar"
+tunlite enable all --json --non-interactive
+tunlite status --tag work --json --non-interactive
+tunlite sync --tag work --json --non-interactive
 ```
 
-- **State reporting:** with `--json`, each state transition is one NDJSON object on
-  **stdout**: `{ts, name, state, pid, restarts, uptimeMs, lastError, lastExitCode}`
-  — `ts` is epoch milliseconds; the other fields are the tunnel's changing state,
-  with the same names and `state` values as `tunlite status --json` (so one parser
-  fits both). Without `--json`, human-readable status lines go to **stderr**.
-- **Signals:** `SIGTERM`/`SIGINT` trigger a clean shutdown → exit `0`.
-- **Exit codes** (only enforced with `--exit-on-failure`; otherwise the supervisor
-  keeps retrying and only stops on a signal):
-  - `0` clean shutdown (signal) or normal stop
-  - `4` `needs-auth` (target not passwordless)
-  - `1` `blocked` / `failed` (e.g. listen port in use), or `ssh` binary not found
-  - `2` usage error (missing `--to`, no forward, or a bad target/jump/forward spec)
-- To keep one tunnel alive on this machine across reboots, prefer `add` + `up` +
-  `install service` (daemon-managed). Use `run` when something else (a container
-  runtime, systemd unit, CI job) owns the process lifecycle and you want the
-  tunnel's state streamed to that supervisor.
+持久状态必须同时读取四个维度，不能只看进程是否存在：
 
-## Disconnect alerts (webhook)
+- `desiredState`: `enabled`、`disabled`
+- `processState`: `inactive`、`starting`、`running`、`failed`、`unknown`
+- `health`: `unknown`、`healthy`、`unhealthy`
+- `syncState`: `synced`、`drifted`、`missing`、`blocked`
 
-The daemon can POST a JSON event to a webhook on tunnel and daemon lifecycle edges.
+`processState: running` 不代表端点健康；`health: unknown` 也不等于失败。
+结合 `conditions[]`、`observedAt` 和四维状态判断。
+
+## 修改、删除和日志
 
 ```bash
-tunlite webhook --json                                        # {url, channel, enabled, events}
-tunlite webhook set https://hook/x --json                     # set + enable (channel auto-detected from URL)
-tunlite webhook set https://hook/x --events tunnel,daemon-crash --json
-tunlite webhook events down,recovered --json                  # change subscribed events
-tunlite webhook off --json                                    # disable (use `webhook on` to re-enable)
-tunlite webhook test --json                                   # POST a test event -> {ok, status}
+tunlite list --json --non-interactive
+tunlite list --tag work --json --non-interactive
+
+# 只修改目标；未给出的字段保持不变
+tunlite set db-5432 --to deploy@new-host --json --non-interactive
+
+# 一旦出现任意 -L/-R/-D，会替换完整 Forward 集合，必须先 dry-run
+tunlite set db-5432 -L 5432:localhost:5432 -D 1080 --dry-run --json --non-interactive
+
+tunlite rename db-5432 staging-db-5432 --json --non-interactive
+tunlite logs staging-db-5432 --lines 100 --json --non-interactive
+
+# 已启用的 Connection 必须先 disable
+tunlite rm staging-db-5432 --dry-run --json --non-interactive
+tunlite rm staging-db-5432 --json --non-interactive
 ```
 
-Events are edge-triggered (a reconnect storm alerts once). Two scopes:
-- tunnel: `up`, `down`, `recovered`, `needs-auth`, `failed`, `stopped`
-- daemon: `daemon-up`, `daemon-down`, `daemon-crash`
+`logs --follow` 是流式人类输出，不能与 `--json` 同用。
 
-`webhook events` accepts names, the groups `tunnel`/`daemon`, `all`, or `none`.
-Default subscription: `down, recovered, needs-auth, failed, daemon-crash`.
-Payload: `{scope, tunnel, host, event, state, lastError, restarts, ts, machine, version}`.
-
-## Config import / export
+## 检查和诊断
 
 ```bash
-tunlite export --json > backup.json     # dump portable tunnels only; no machine-local settings
-tunlite import backup.json --json       # merge tunnels: {added, skipped, overwritten}
-tunlite import backup.json --force --json   # overwrite same-name tunnels
+# 可检查 Connection 名称，也可直接检查 SSH 目标
+tunlite check db-5432 --json --non-interactive
+tunlite check user@host --timeout 12 --json --non-interactive
+
+tunlite doctor --json --non-interactive
+tunlite doctor db-5432 --json --non-interactive
+tunlite doctor --offline --json --non-interactive
 ```
 
-`import` merges **tunnels only** (same-name skipped unless `--force`); it never
-changes local settings/alerts. A missing file exits 3; a malformed file exits 1
-and leaves the current config untouched.
+认证失败时 Tunlite 不会替用户写入远端 `authorized_keys`。让用户先在终端中完成
+正常 SSH 认证配置，再重试 `check`。不要索取、读取或复制用户私钥。
 
-## Tips / gotchas
+## 声明、迁移与机器契约
 
-- `enable`/`disable` are persistent (they flip the tunnel's `enabled` flag and survive
-  reboot). Use `restart` to bounce a running tunnel without changing intent.
-- The action verbs `enable`/`disable`/`restart` must name a target — a tunnel name,
-  `--tag <label>`, or the literal `all` (e.g. `tunlite enable all`). Bare (no target)
-  is a usage error (exit 2), not a silent "all" — `all` is a reserved tunnel name. The
-  read-only views `status`/`list`/`monitor` still default to all when bare.
-- A mistyped command suggests the nearest one (`tunlite stauts` → "did you mean
-  `status`?"); the old `up`/`down` point at `enable`/`disable`.
-- Tags group tunnels: `--tag <label>` (repeatable) on `add`/`set` labels a tunnel
-  (`set --no-tags` clears); `enable`/`disable`/`restart`/`status`/`list`/`monitor` accept
-  `--tag <label>` to act on every tunnel carrying it (multiple `--tag` = union). A
-  name and `--tag` are mutually exclusive (exit 2); for the one-shot commands
-  (`enable`/`disable`/`restart`/`status`/`list`) a tag that matches nothing exits 3
-  (`monitor` is a live view, so it just shows an empty dashboard instead).
-  Tags are metadata only — they never change the ssh command. Each tunnel's
-  `tags` array is in `list --json` / `status --json`.
-- Forwards use ssh-native flags on `add`/`set`/`run` (repeatable — one tunnel can
-  carry several): `-L [bind:]PORT:HOST:HOSTPORT` (reach a remote service locally:
-  you connect to `localhost:PORT`, it tunnels to `HOST:HOSTPORT` on the server
-  side), `-R [bind:]PORT:HOST:HOSTPORT` (expose a local service on the server: the
-  server listens on `PORT` and tunnels back to `HOST:HOSTPORT` reachable from your
-  machine), `-D [bind:]PORT` (local SOCKS5 proxy). A `bind:` prefix is the listen
-  address — omit it for `localhost`, write `0.0.0.0` to expose on all interfaces;
-  IPv6 literals must be bracketed (`[::1]`). `set <name> -L/-R/-D …` is the only
-  way to change a tunnel's forwards: passing any forward flag **replaces the whole
-  set** (destructive; the new set is echoed back), while `set` with no forward flag
-  leaves forwards untouched.
-- A `failed` state with an "address already in use" `lastError` means the listen
-  port is taken — pick another port; the daemon won't hot-loop on it.
-- Relocate all state for testing/sandboxing with env vars: `TUNLITE_HOME`,
-  `TUNLITE_CONFIG`, `TUNLITE_SOCKET`, `TUNLITE_SSH` (override the ssh binary).
+```bash
+tunlite export --output tunlite.json --json --non-interactive
+tunlite validate tunlite.json --json --non-interactive
+tunlite import tunlite.json --dry-run --json --non-interactive
+tunlite import tunlite.json --json --non-interactive
+
+# 0.x -> v1：先规划，再迁移；不会自动启动旧配置中 enabled 的连接
+tunlite migrate --dry-run --json --non-interactive
+tunlite migrate --json --non-interactive
+
+# 仅当迁移后的配置没有发生修改时，才允许字节级恢复
+tunlite migrate --rollback --dry-run --json --non-interactive
+tunlite migrate --rollback --json --non-interactive
+
+tunlite schema cli
+tunlite schema connection
+tunlite schema ssh
+```
+
+导入和迁移不会安装依赖、执行认证或启动 Connection。对迁移返回的
+`legacy_enabled_not_started`，应把 `enable_connection` 展示为后续建议，不能自动执行。
+
+## 安全规则
+
+- 所有修改操作优先运行 `--dry-run`；相同调用可重复执行，但仍需检查逐项结果。
+- 安装软件、公开监听、远端转发、删除声明、覆盖导入和回滚都需要用户明确同意。
+- `rm` 只删除本机声明与本机服务，不应推断为删除任何远端资源。
+- 不把私钥、令牌或 Secret 值写入参数、配置、日志或回复。
+- 运行时能力与本 Skill 不一致时，停止高风险操作，读取 `capabilities` 和 Schema，
+  并向用户报告契约不一致。

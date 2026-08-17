@@ -4,9 +4,8 @@
 - **适用范围：** Tunlite v1 及后续版本
 - **最后更新：** 2026-08-17
 
-本文档是 Tunlite 产品方向与 v1 架构的唯一事实来源。README、当前实现和
-0.x 文档描述的是已经发布的 Node.js/daemon 产品；规划未来工作时，它们不能
-覆盖本文档的决策。
+本文档是 Tunlite 产品方向与 v1 架构的唯一事实来源。0.x Release Notes、历史 Node.js
+源码和旧文档只描述已经冻结的 0.10.3 产品；规划未来工作时，它们不能覆盖本文档的决策。
 
 任何改变下述决策的提案，都必须在同一个 Pull Request 中修改本文档，并说明
 被改变的取舍。不得另外创建相互竞争的路线图或架构指引。
@@ -830,8 +829,29 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
   `enable -> inspect -> restart -> disable` 全生命周期；systemd 与 launchd 的命令
   调用、生成物、回滚、状态映射和漂移修复均有无特权自动测试。
 
-Windows Task Scheduler 仍是实验范围，不阻塞预览版。下一阶段集中完成 0.x 配置迁移、
-发布回滚、Agent Skill 契约校验和正式打包；不得在此之间重新引入中心 daemon。
+第四阶段的本地实现也已在 2026 年 8 月 17 日完成：
+
+- 新增 `tunlite migrate` 和 `migrate --rollback`。迁移器严格识别 0.x configVersion 1，
+  把每条 Tunnel 转为内置 SSH Connection，兼容历史 `sshOptions` 的 `Key=Value` 与
+  `-o` 分离形式，但拒绝无法安全表达的自由参数。
+- 迁移前保存按旧内容 SHA-256 命名、不可覆盖的字节级备份；本机 Journal 记录原路径、
+  前后摘要、来源版本和状态。配置替换与并发校验使用同一配置锁。
+- 迁移中断后可以根据摘要完成 Journal；重复迁移幂等。回滚只在当前文件仍等于迁移产物
+  时执行，检测到用户修改后返回 `migration_drifted`，并在仍有 v1 原生服务处于 enabled
+  状态时拒绝回滚。
+- 旧 `enabled` 只转为 `legacy_enabled_not_started` 和结构化 `enable_connection` 建议，
+  不会安装或启动服务；旧全局后台设置和 `autoSetupKey` 均明确报告为未迁移。
+- Agent Skill 已重写为 v1 命令、四维状态、审批和批量部分失败语义；测试从运行时
+  `capabilities --json` 校验 Skill 声明的命令、退出码和状态值，并禁止旧运行时契约回流。
+- 已加入单一 Go 打包入口，交叉构建五个平台产物，固定归档元数据、注入发布版本并生成
+  `SHA256SUMS`；Go CI 在 macOS、Linux、Windows 运行 test/vet，在 Linux 运行 race 与
+  打包检查。
+- 安装脚本已改为下载并校验单文件 Go 产物，不再要求 Node.js 或 npm；预览版指南明确
+  支持矩阵、0.10.3 退出顺序、迁移、人工回滚和发布门禁。
+
+Windows Task Scheduler 仍不进入首个预览版，CLI 必须通过 Capability 如实报告不支持。
+剩余发布工作是 Linux systemd 真机验收、全量门禁和获得明确授权后启用拥有仓库写权限的
+Release/Attestation 工作流；不得在此之间重新引入中心 daemon。
 
 ### 第二周：8 月 24 日—8 月 30 日
 
