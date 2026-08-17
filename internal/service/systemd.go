@@ -107,6 +107,12 @@ func (s *Systemd) Enable(ctx context.Context, artifact Artifact) error {
 	}
 	rollback := func(cause error) error {
 		var failures []error
+		if !existed {
+			output, err := s.run(ctx, "disable", "--now", artifact.UnitName)
+			if err != nil && !missingService(output) {
+				failures = append(failures, err)
+			}
+		}
 		if err := restoreArtifact(artifact.Path, previous, existed); err != nil {
 			failures = append(failures, err)
 		}
@@ -117,8 +123,6 @@ func (s *Systemd) Enable(ctx context.Context, artifact Artifact) error {
 			if _, err := s.run(ctx, "restart", artifact.UnitName); err != nil {
 				failures = append(failures, err)
 			}
-		} else {
-			_, _ = s.run(ctx, "disable", "--now", artifact.UnitName)
 		}
 		return errors.Join(append([]error{cause}, failures...)...)
 	}

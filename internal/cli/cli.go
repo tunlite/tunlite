@@ -137,14 +137,22 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 
 func run(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		if len(args) != 1 {
+		flags := flag.NewFlagSet("run", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		var approved bool
+		flags.BoolVar(&approved, "approve", false, "approve publish or public-listen risk")
+		if err := flags.Parse(args[1:]); err != nil {
+			return usageError(err.Error())
+		}
+		if flags.NArg() != 0 {
 			return usageError("usage: tunlite run <name> or tunlite run --to user@host -L/-R/-D ...")
 		}
-		return runNamed(ctx, args[0], streams, opts)
+		return runNamed(ctx, args[0], approved, streams, opts)
 	}
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var to, identity, jump, name string
+	var approved bool
 	var local, remote, dynamic, sshOptions stringsFlag
 	flags.StringVar(&to, "to", "", "SSH target")
 	flags.StringVar(&identity, "i", "", "identity file")
@@ -154,6 +162,7 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 	flags.Var(&remote, "R", "remote forward")
 	flags.Var(&dynamic, "D", "dynamic forward")
 	flags.Var(&sshOptions, "ssh-opt", "OpenSSH Key=Value option")
+	flags.BoolVar(&approved, "approve", false, "approve publish or public-listen risk")
 	if err := flags.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -201,10 +210,10 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 			Driver: sshdriver.ID, Lifecycle: "foreground", ConfigVersion: 1, Config: rawConfig,
 		},
 	}
-	return executeConnection(ctx, connection, streams, opts)
+	return executeConnection(ctx, connection, approved, streams, opts)
 }
 
-func runNamed(ctx context.Context, name string, streams IO, opts options) error {
+func runNamed(ctx context.Context, name string, approved bool, streams IO, opts options) error {
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -219,10 +228,10 @@ func runNamed(ctx context.Context, name string, streams IO, opts options) error 
 	}
 	connection := cloneConnection(*stored)
 	connection.Spec.Lifecycle = "foreground"
-	return executeConnection(ctx, connection, streams, opts)
+	return executeConnection(ctx, connection, approved, streams, opts)
 }
 
-func executeConnection(ctx context.Context, connection core.Connection, streams IO, opts options) error {
+func executeConnection(ctx context.Context, connection core.Connection, approved bool, streams IO, opts options) error {
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
 		return err
@@ -231,8 +240,20 @@ func executeConnection(ctx context.Context, connection core.Connection, streams 
 	if err != nil {
 		return err
 	}
+	conditions := planApprovalConditions(connection, executionPlan, "run")
 	if opts.DryRun {
-		return renderPlan(streams, opts, connection, executionPlan)
+		return renderPlan(streams, opts, connection, executionPlan, conditions)
+	}
+	if len(conditions) > 0 && !approved {
+		return &exitError{
+			code: 1, kind: "approval_required",
+			message:          "publish or public-listen access requires explicit --approve",
+			riskLevel:        "high",
+			requiresApproval: true,
+			actions: []core.Action{{Type: "approve_connection", Parameters: map[string]any{
+				"connection": connection.Metadata.Name, "operation": "run", "riskLevel": "high",
+			}}},
+		}
 	}
 
 	if opts.JSON {
@@ -268,13 +289,14 @@ func renderStopped(streams IO, opts options, connection, reason string) {
 	fmt.Fprintf(streams.Err, "stopped %s (%s)\n", connection, reason)
 }
 
-func renderPlan(streams IO, opts options, connection core.Connection, executionPlan plan.ExecutionPlan) error {
+func renderPlan(streams IO, opts options, connection core.Connection, executionPlan plan.ExecutionPlan, conditions []core.Condition) error {
 	if opts.JSON {
 		return writeJSON(streams.Out, map[string]any{
 			"contractVersion": ContractVersion,
 			"outcome":         "planned",
 			"connection":      connection,
 			"plan":            executionPlan,
+			"conditions":      conditions,
 			"dryRun":          true,
 		})
 	}

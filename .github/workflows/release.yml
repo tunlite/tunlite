@@ -1,0 +1,84 @@
+name: Go Release
+
+on:
+  push:
+    tags:
+      - 'v1.0.0-preview.*'
+      - 'v1.0.0'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test, package, and attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          # Go 1.22 can emit Darwin binaries rejected by current macOS dyld.
+          # Keep go.mod at 1.22 for source compatibility, but build releases
+          # with the current supported toolchain.
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Test
+        run: go test ./...
+      - name: Race detector
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+
+      - name: Package tagged version
+        run: scripts/package-release.sh "${GITHUB_REF_NAME}"
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+
+      - name: Preserve release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download attested artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist
+
+      - name: Publish preview Release
+        if: contains(github.ref_name, '-preview.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --verify-tag --prerelease --generate-notes --title "Tunlite ${GITHUB_REF_NAME}"
+
+      - name: Publish stable Release
+        if: ${{ !contains(github.ref_name, '-preview.') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --verify-tag --generate-notes --title "Tunlite ${GITHUB_REF_NAME}"

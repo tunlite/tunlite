@@ -74,8 +74,8 @@ tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-i
 
 State is intentionally four-dimensional: `desiredState`, `processState`, `health`,
 and `syncState`. Batch operations return per-item results and use exit code `6` for
-partial failure. Public listeners and persistent publish plans require explicit,
-plan-bound approval.
+partial failure. Public listeners and publish plans require explicit approval bound
+to the current invocation or persistent plan.
 
 The bundled [SSH Agent Skill](skill/ssh-tunnel/SKILL.md) is tested against the same
 command, exit-code, state, and Schema contract exposed by the CLI.
@@ -103,7 +103,7 @@ refuses to overwrite a v1 config changed after migration.
 
 - Built-in SSH `-L`, `-R`, and `-D`, multiple forwards, jump hosts, identity files,
   strict OpenSSH `Key=Value` options, checks, diagnosis, logs, and drift repair.
-- Native persistent services on macOS (launchd) and Linux (systemd user services).
+- Native persistent services on macOS 12+ (launchd) and Linux (systemd user services).
 - Windows amd64 supports the foreground/configuration CLI; persistent services are
   not part of the first preview.
 - External drivers and plugin installation are deliberately deferred until real user

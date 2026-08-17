@@ -850,8 +850,10 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
   支持矩阵、0.10.3 退出顺序、迁移、人工回滚和发布门禁。
 
 Windows Task Scheduler 仍不进入首个预览版，CLI 必须通过 Capability 如实报告不支持。
-剩余发布工作是 Linux systemd 真机验收、全量门禁和获得明确授权后启用拥有仓库写权限的
-Release/Attestation 工作流；不得在此之间重新引入中心 daemon。
+Tag 触发的 Release/Attestation 工作流已在明确授权后加入：它必须先通过 test、race、vet、
+五平台打包和 checksum 校验，再使用 GitHub OIDC 生成构建证明并创建 Release。剩余发布工作
+是 Linux systemd 真机验收、最终全量门禁以及由人明确决定何时推送发布 Tag；不得在此之间
+重新引入中心 daemon。
 
 ### 第二周：8 月 24 日—8 月 30 日
 

@@ -52,7 +52,8 @@ main() {
   asset="tunlite_${plain_version}_${target_os}_${target_arch}.tar.gz"
   base_url="${TUNLITE_RELEASE_BASE_URL:-${repository}/releases/download/${version}}"
   temporary="$(mktemp -d)"
-  trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+  install_temporary=""
+  trap 'rm -rf "$temporary"; if [ -n "$install_temporary" ]; then rm -f "$install_temporary"; fi' EXIT HUP INT TERM
 
   command -v curl >/dev/null 2>&1 || { echo "tunlite: 需要 curl" >&2; exit 1; }
   curl -fsSL "${base_url}/${asset}" -o "${temporary}/${asset}"
@@ -72,7 +73,10 @@ main() {
 
   tar -xzf "${temporary}/${asset}" -C "$temporary" tunlite
   mkdir -p "$install_dir"
-  install -m 0755 "${temporary}/tunlite" "${install_dir}/tunlite"
+  install_temporary="${install_dir}/.tunlite-install-$$"
+  install -m 0755 "${temporary}/tunlite" "$install_temporary"
+  mv -f "$install_temporary" "${install_dir}/tunlite"
+  install_temporary=""
   "${install_dir}/tunlite" version
   echo "tunlite: 已安装到 ${install_dir}/tunlite"
   case ":${PATH}:" in

@@ -118,7 +118,7 @@ AllowUsers %s
 			"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
 			"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
 			"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-			"--ssh-opt", "UserKnownHostsFile=/dev/null", "--json", "--non-interactive",
+			"--ssh-opt", "UserKnownHostsFile=/dev/null", "--approve", "--json", "--non-interactive",
 		}, IO{Out: stdout, Err: stderr})
 	}()
 

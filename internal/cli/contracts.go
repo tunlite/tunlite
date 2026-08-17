@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -33,6 +34,7 @@ func capabilities(args []string, streams IO, opts options) error {
 		"add", "capabilities", "check", "disable", "doctor", "enable", "export", "help", "import", "list", "logs", "migrate", "rename", "restart", "rm", "run", "schema", "set", "status", "sync", "validate", "version",
 	}
 	sort.Strings(commands)
+	persistentAvailable := nativeServiceManagerAvailable()
 	result := map[string]any{
 		"contractVersion": ContractVersion,
 		"outcome":         "succeeded",
@@ -41,7 +43,7 @@ func capabilities(args []string, streams IO, opts options) error {
 		"commands":        commands,
 		"executionModes":  []string{"direct"},
 		"persistentServices": map[string]any{
-			"available": runtime.GOOS == "linux" || runtime.GOOS == "darwin",
+			"available": persistentAvailable,
 			"adapters":  map[string]string{"linux": "systemd", "darwin": "launchd"},
 			"stateDimensions": map[string][]string{
 				"desiredState": {"enabled", "disabled"},
@@ -63,8 +65,22 @@ func capabilities(args []string, streams IO, opts options) error {
 	fmt.Fprintf(streams.Out, "Tunlite %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(streams.Out, "commands: %s\n", strings.Join(commands, ", "))
 	fmt.Fprintln(streams.Out, "driver: io.tunlite.ssh (access, publish, socks, multi-forward)")
-	fmt.Fprintf(streams.Out, "persistent services: %t (systemd on Linux, launchd on macOS)\n", runtime.GOOS == "linux" || runtime.GOOS == "darwin")
+	fmt.Fprintf(streams.Out, "persistent services: %t (systemd on Linux, launchd on macOS)\n", persistentAvailable)
 	return nil
+}
+
+func nativeServiceManagerAvailable() bool {
+	command := ""
+	switch runtime.GOOS {
+	case "linux":
+		command = "systemctl"
+	case "darwin":
+		command = "launchctl"
+	default:
+		return false
+	}
+	_, err := exec.LookPath(command)
+	return err == nil
 }
 
 func help(streams IO, opts options) error {

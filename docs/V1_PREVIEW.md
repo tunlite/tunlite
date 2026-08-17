@@ -7,7 +7,7 @@
 
 | 平台 | 架构 | 前台与配置 CLI | 持久 Connection | 当前验证等级 |
 |---|---|---:|---:|---|
-| macOS | arm64、amd64 | 支持 | launchd，支持 | 自动测试、plist 原生校验、真实生命周期测试 |
+| macOS 12+ | arm64、amd64 | 支持 | launchd，支持 | 自动测试、plist 原生校验、真实生命周期测试 |
 | Linux | arm64、amd64 | 支持 | systemd 用户服务，支持 | 自动测试与交叉编译；发布前补真实发行版验收 |
 | Windows | amd64 | 支持 | 不支持 | 自动测试与交叉编译 |
 
@@ -17,6 +17,16 @@
 
 首个预览版不承诺 Windows Task Scheduler。CLI 会通过 `capabilities --json` 如实返回
 当前平台是否具备持久服务，不能以文档假装平台能力一致。
+
+## 项目声明的预览限制
+
+当前 `--config` 指向一份完整的 Connection 声明文件，还没有实现“可提交的项目声明”与
+“不入库的本机 override”分层，也没有可迁移的 Identity 引用机制。`identityFile` 仍可能
+保存本机绝对路径，端口和其他设置也可能只适用于当前机器。
+
+因此，导出或通过 `--config` 创建的文件在提交 Git 前必须人工检查；包含绝对私钥路径、
+机器专用端口或其他本机信息时，不应直接提交。导入项目声明不会安装插件、启动 Connection
+或取得高风险操作批准。配置分层属于后续预览能力，当前版本不能宣称已经完成 GitOps。
 
 ## 安装与校验
 
@@ -140,6 +150,9 @@ TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -c
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
 scripts/package-release.sh v1.0.0-preview.1
 ```
+
+发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.22 仅表示源码采用的最低语言版本。
+不得用 Go 1.22 生成正式 macOS 产物，因为其链接结果会被当前 macOS dyld 拒绝。
 
 还必须在 Linux 真机完成 systemd 用户服务的 `enable → status → restart → sync → disable`
 验收，逐个平台解压产物并确认嵌入版本正确，核对 `SHA256SUMS`。没有完成的项目必须在

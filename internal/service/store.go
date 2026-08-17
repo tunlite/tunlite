@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/yuanyuanzijin/tunlite/internal/filelock"
 )
 
 type Store struct {
@@ -77,36 +79,19 @@ func (s *Store) Remove(connection string) error {
 }
 
 func (s *Store) Lock(ctx context.Context, connection string) (func(), error) {
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	release, err := filelock.Acquire(lockCtx, s.path(connection)+".lock")
+	if err != nil {
+		cancel()
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, errors.New("connection service is busy; another Tunlite command may still be running")
+		}
 		return nil, err
 	}
-	path := s.path(connection) + ".lock"
-	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	for {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
-			_ = file.Close()
-			return func() {
-				_ = os.Remove(path)
-				cancel()
-			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			cancel()
-			return nil, err
-		}
-		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > 30*time.Second {
-			_ = os.Remove(path)
-			continue
-		}
-		select {
-		case <-lockCtx.Done():
-			cancel()
-			return nil, errors.New("connection service is busy; another Tunlite command may still be running")
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
+	return func() {
+		release()
+		cancel()
+	}, nil
 }
 
 func (s *Store) path(connection string) string {

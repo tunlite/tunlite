@@ -64,6 +64,10 @@ tunlite run db-5432 --json --non-interactive
 tunlite run --to user@host -L 15432:localhost:5432 --json --non-interactive
 ```
 
+`run --json` 在连接存续期间输出逐行 JSON 事件流，而不是单个 JSON 文档。Agent 必须
+逐行读取 `starting`、`stopped` 等事件，并持续持有该前台进程；不能等待进程退出后再把
+完整 stdout 当成一个 JSON 对象解析。
+
 通用 SSH 参数：`-i <私钥路径>`、`--jump user@host:port`、
 `--ssh-opt Key=Value`。`--ssh-opt` 只接受严格的 `Key=Value`，不要传 `-o`。
 
@@ -72,7 +76,8 @@ tunlite run --to user@host -L 15432:localhost:5432 --json --non-interactive
 
 公开监听（例如 `0.0.0.0`）、远端转发和其他 Publish 行为会扩大网络暴露面。
 Agent 必须先展示 `--dry-run` 计划并取得用户明确批准。持久操作取得批准后使用
-精确计划对应的 `--approve`；计划变化后必须重新批准。
+精确计划对应的 `--approve`；前台 `run` 也必须在同一次调用中携带 `--approve`。
+计划变化后必须重新批准。
 
 ## 持久生命周期
 

@@ -128,6 +128,34 @@ func TestSystemdEnableRestoresPreviousArtifactOnFailure(t *testing.T) {
 	}
 }
 
+func TestSystemdFreshEnableDisablesBeforeRemovingFailedUnit(t *testing.T) {
+	runner := &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
+		if len(args) > 1 && args[1] == "restart" {
+			return nil, errors.New("restart failed")
+		}
+		return nil, nil
+	}}
+	adapter := NewSystemd(t.TempDir(), runner)
+	artifact, err := adapter.Build("db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Enable(context.Background(), artifact); err == nil {
+		t.Fatal("enable unexpectedly succeeded")
+	}
+	if _, err := os.Stat(artifact.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed fresh unit was not removed: %v", err)
+	}
+	commands := make([]string, 0, len(runner.calls))
+	for _, call := range runner.calls {
+		commands = append(commands, call.args[1])
+	}
+	want := []string{"daemon-reload", "enable", "restart", "disable", "daemon-reload"}
+	if strings.Join(commands, ",") != strings.Join(want, ",") {
+		t.Fatalf("rollback calls=%v want=%v", commands, want)
+	}
+}
+
 func TestSystemdInspectMapsNativeState(t *testing.T) {
 	runner := &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
 		switch args[1] {

@@ -89,7 +89,7 @@ func build(output, version string, item target) error {
 		goBinary = "go"
 	}
 	linkerFlags := "-s -w -X github.com/yuanyuanzijin/tunlite/internal/cli.Version=" + version
-	command := exec.Command(goBinary, "build", "-trimpath", "-ldflags", linkerFlags, "-o", output, "./cmd/tunlite")
+	command := exec.Command(goBinary, "build", "-buildvcs=false", "-trimpath", "-ldflags", linkerFlags, "-o", output, "./cmd/tunlite")
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+item.os, "GOARCH="+item.arch)
