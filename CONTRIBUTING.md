@@ -52,3 +52,9 @@ TUNLITE_REAL_SERVICE=1 go test ./internal/service \
 
 Bug 和功能建议可以提交公开 Issue；安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 贡献内容按 [MIT License](LICENSE) 授权。
+
+## 历史 Node 实现
+
+根目录的 `src/`、`test/`、`bin/` 和 `package.json` 仅保留用于审计 0.10.3、验证迁移和
+必要的严重修复。npm 包已标记为 private，旧 Node CI 只允许人工触发。v1 功能、测试和
+发布不得继续建立在这些文件上；普通贡献请修改 Go 实现。

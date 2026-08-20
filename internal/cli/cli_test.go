@@ -17,20 +17,27 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "staging", "--to", "me@example.com:2222", "-L", "8080:localhost:80", "-D", "1080"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
 	var out, stderr bytes.Buffer
-	code := Run([]string{
-		"run", "--to", "me@example.com:2222", "-L", "8080:localhost:80", "-D", "1080",
-		"--name", "staging", "--json", "--non-interactive", "--dry-run",
-	}, IO{Out: &out, Err: &stderr})
+	code := runContext(context.Background(), []string{
+		"run", "staging", "--json", "--non-interactive", "--dry-run",
+	}, IO{Out: &out, Err: &stderr}, func() (service.Adapter, error) { return adapter, nil })
 	if code != 0 {
 		t.Fatalf("exit %d, stderr=%s, stdout=%s", code, stderr.String(), out.String())
 	}
 	var result struct {
-		ContractVersion string `json:"contractVersion"`
+		ProtocolVersion int    `json:"protocolVersion"`
 		Outcome         string `json:"outcome"`
 		DryRun          bool   `json:"dryRun"`
 		Plan            struct {
@@ -44,7 +51,7 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
 	}
-	if result.ContractVersion != ContractVersion || result.Outcome != "planned" || !result.DryRun {
+	if result.ProtocolVersion != ProtocolVersion || result.Outcome != "planned" || !result.DryRun {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if result.Plan.Mode != "direct" || result.Plan.Exec.Program != "/usr/bin/ssh" {
@@ -56,38 +63,36 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	}
 }
 
-func TestRunRequiresExplicitApprovalForPublish(t *testing.T) {
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+func TestRunDoesNotBlockAcceptedPublishDeclaration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/true")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+	if code, out, stderr := invoke(t, "add", "publish", "--to", "me@example.com", "-R", "19000:localhost:3000"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
 	code, out, stderr := invoke(t,
-		"run", "--to", "me@example.com", "-R", "19000:localhost:3000",
+		"run", "publish",
 		"--json", "--non-interactive",
 	)
-	if code != 1 || stderr != "" {
+	if code != 0 || stderr != "" {
 		t.Fatalf("run exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
-	var result struct {
-		Error struct {
-			Code             string        `json:"code"`
-			RiskLevel        string        `json:"riskLevel"`
-			RequiresApproval bool          `json:"requiresApproval"`
-			Actions          []core.Action `json:"actions"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Error.Code != "approval_required" || result.Error.RiskLevel != "high" || !result.Error.RequiresApproval {
-		t.Fatalf("unexpected approval error: %#v", result.Error)
-	}
-	if len(result.Error.Actions) != 1 || result.Error.Actions[0].Type != "approve_connection" || result.Error.Actions[0].Parameters["operation"] != "run" {
-		t.Fatalf("unexpected approval action: %#v", result.Error.Actions)
+	if strings.Contains(out, "approval_required") || !strings.Contains(out, `"outcome":"starting"`) || !strings.Contains(out, `"outcome":"stopped"`) {
+		t.Fatalf("run was blocked or omitted lifecycle events: %s", out)
 	}
 }
 
 func TestRunDryRunReportsPublicListenRisk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+	if code, out, stderr := invoke(t, "add", "public", "--to", "me@example.com", "-D", "0.0.0.0:1080"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
 	code, out, stderr := invoke(t,
-		"run", "--to", "me@example.com", "-D", "0.0.0.0:1080",
+		"run", "public",
 		"--dry-run", "--json", "--non-interactive",
 	)
 	if code != 0 || stderr != "" {
@@ -100,12 +105,12 @@ func TestRunDryRunReportsPublicListenRisk(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != "planned" || len(result.Conditions) != 1 || result.Conditions[0].Code != "approval_required" {
+	if result.Outcome != "planned" || len(result.Conditions) != 1 || result.Conditions[0].Code != "network_exposure" {
 		t.Fatalf("unexpected plan conditions: %#v", result)
 	}
 	actions := result.Conditions[0].Actions
-	if len(actions) != 1 || actions[0].Parameters["operation"] != "run" || actions[0].Parameters["riskLevel"] != "high" {
-		t.Fatalf("unexpected plan approval action: %#v", actions)
+	if len(actions) != 0 {
+		t.Fatalf("risk warning unexpectedly required an action: %#v", actions)
 	}
 }
 
@@ -118,7 +123,7 @@ func TestVersionJSONUsesMachineContract(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["contractVersion"] != ContractVersion || result["version"] != Version {
+	if result["protocolVersion"] != float64(ProtocolVersion) || result["version"] != Version {
 		t.Fatalf("unexpected version result: %#v", result)
 	}
 }
@@ -135,6 +140,34 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	if schemaDocument["$id"] != "https://tunlite.dev/schemas/connection-v1.schema.json" {
 		t.Fatalf("unexpected schema: %#v", schemaDocument)
 	}
+	if _, exists := schemaDocument["protocolVersion"]; exists {
+		t.Fatalf("raw schema was wrapped in a CLI response: %#v", schemaDocument)
+	}
+	code, out, stderr = invoke(t, "schema", "connection", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema JSON exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var schemaResponse struct {
+		ProtocolVersion int            `json:"protocolVersion"`
+		Outcome         string         `json:"outcome"`
+		Schema          map[string]any `json:"schema"`
+	}
+	if err := json.Unmarshal([]byte(out), &schemaResponse); err != nil {
+		t.Fatal(err)
+	}
+	if schemaResponse.ProtocolVersion != ProtocolVersion || schemaResponse.Outcome != "succeeded" ||
+		schemaResponse.Schema["$id"] != "https://tunlite.dev/schemas/connection-v1.schema.json" {
+		t.Fatalf("unexpected schema response: %#v", schemaResponse)
+	}
+	schemaPath := filepath.Join(t.TempDir(), "connection.schema.json")
+	code, out, stderr = invoke(t, "schema", "connection", "--output", schemaPath, "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"protocolVersion":1`) {
+		t.Fatalf("schema output exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	writtenSchema, err := os.ReadFile(schemaPath)
+	if err != nil || !bytes.Contains(writtenSchema, []byte(`"$id": "https://tunlite.dev/schemas/connection-v1.schema.json"`)) {
+		t.Fatalf("schema output was not raw: %s err=%v", writtenSchema, err)
+	}
 	code, out, stderr = invoke(t, "capabilities", "--json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("capabilities exit=%d stdout=%s stderr=%s", code, out, stderr)
@@ -143,7 +176,7 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities["contractVersion"] != ContractVersion {
+	if capabilities["protocolVersion"] != float64(ProtocolVersion) {
 		t.Fatalf("unexpected capabilities: %#v", capabilities)
 	}
 }
@@ -158,14 +191,14 @@ func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
 		t.Fatalf("capabilities exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	var result struct {
-		PersistentServices struct {
+		NativeServices struct {
 			Available bool `json:"available"`
-		} `json:"persistentServices"`
+		} `json:"nativeServices"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.PersistentServices.Available {
+	if result.NativeServices.Available {
 		t.Fatal("capabilities claimed a native service manager was available with an empty PATH")
 	}
 }
@@ -173,6 +206,8 @@ func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
 func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com:2222",
 		"-L", "5432:localhost:5432", "--tag", "work,db", "--json")
@@ -180,14 +215,14 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 		t.Fatalf("add exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
 	var added struct {
-		ContractVersion string          `json:"contractVersion"`
+		ProtocolVersion int             `json:"protocolVersion"`
 		Outcome         string          `json:"outcome"`
 		Connection      core.Connection `json:"connection"`
 	}
 	if err := json.Unmarshal([]byte(out), &added); err != nil {
 		t.Fatal(err)
 	}
-	if added.ContractVersion != ContractVersion || added.Outcome != "applied" || added.Connection.Metadata.Name != "db" {
+	if added.ProtocolVersion != ProtocolVersion || added.Outcome != "applied" || added.Connection.Metadata.Name != "db" {
 		t.Fatalf("unexpected add result: %#v", added)
 	}
 
@@ -196,13 +231,13 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 		t.Fatalf("list exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
 	var listed struct {
-		ContractVersion string            `json:"contractVersion"`
+		ProtocolVersion int               `json:"protocolVersion"`
 		Results         []core.Connection `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(out), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if listed.ContractVersion != ContractVersion || len(listed.Results) != 1 {
+	if listed.ProtocolVersion != ProtocolVersion || len(listed.Results) != 1 {
 		t.Fatalf("unexpected list result: %#v", listed)
 	}
 
@@ -224,17 +259,17 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	if sshConfig.Host != "deploy@db.internal" || len(sshConfig.Forwards) != 1 || sshConfig.Forwards[0].Type != "dynamic" {
 		t.Fatalf("unexpected SSH config: %#v", sshConfig)
 	}
-	if len(updated.Connection.Metadata.Labels) != 0 {
-		t.Fatalf("tags were not cleared: %#v", updated.Connection.Metadata.Labels)
+	if len(updated.Connection.Metadata.Tags) != 0 {
+		t.Fatalf("tags were not cleared: %#v", updated.Connection.Metadata.Tags)
 	}
 
 	code, _, stderr = invoke(t, "rename", "db", "database")
 	if code != 0 {
 		t.Fatalf("rename exit %d, stderr=%s", code, stderr)
 	}
-	code, out, stderr = invoke(t, "rm", "database", "--dry-run", "--json")
+	code, out, stderr = invoke(t, "remove", "database", "--dry-run", "--json")
 	if code != 0 {
-		t.Fatalf("dry-run rm exit %d, stdout=%s stderr=%s", code, out, stderr)
+		t.Fatalf("dry-run remove exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
 	var planned map[string]any
 	if err := json.Unmarshal([]byte(out), &planned); err != nil {
@@ -247,11 +282,11 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "database") {
 		t.Fatalf("dry-run changed config: exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
-	code, _, stderr = invoke(t, "rm", "database")
+	code, _, stderr = invoke(t, "remove", "database")
 	if code != 0 {
-		t.Fatalf("rm exit %d, stderr=%s", code, stderr)
+		t.Fatalf("remove exit %d, stderr=%s", code, stderr)
 	}
-	code, out, _ = invoke(t, "rm", "database", "--json")
+	code, out, _ = invoke(t, "remove", "database", "--json")
 	if code != 3 || !strings.Contains(out, `"code":"not_found"`) {
 		t.Fatalf("unexpected not-found result: exit=%d stdout=%s", code, out)
 	}
@@ -264,13 +299,16 @@ func TestAddDryRunDoesNotCreateConfig(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"outcome":"planned"`) {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
-	path := filepath.Join(home, "config", "config.json")
+	path := filepath.Join(home, "config", "connections.json")
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dry-run created config: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(home, "state")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run created local state: %v", err)
+	}
 }
 
-func TestLegacyConfigReturnsMigrationRequiredWithoutOverwrite(t *testing.T) {
+func TestLegacyConfigRequiresExplicitImportWithoutChangingIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
 	path := filepath.Join(home, "config", "config.json")
@@ -282,7 +320,10 @@ func TestLegacyConfigReturnsMigrationRequiredWithoutOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _ := invoke(t, "list", "--json")
-	if code != 1 || !strings.Contains(out, `"code":"migration_required"`) {
+	if code != 1 || !strings.Contains(out, `"code":"legacy_import_required"`) ||
+		!strings.Contains(out, `"type":"import_legacy_config"`) ||
+		!strings.Contains(out, `tunlite import`) ||
+		!strings.Contains(out, `"type":"review_upgrade_guide"`) {
 		t.Fatalf("exit=%d stdout=%s", code, out)
 	}
 	after, err := os.ReadFile(path)
@@ -292,20 +333,132 @@ func TestLegacyConfigReturnsMigrationRequiredWithoutOverwrite(t *testing.T) {
 	if string(after) != string(raw) {
 		t.Fatal("legacy config was overwritten")
 	}
+	if _, err := os.Stat(filepath.Join(home, "config", "connections.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only list created v1 config: %v", err)
+	}
 }
 
-func TestExplicitConfigFileSupportsProjectDeclarations(t *testing.T) {
+func TestImportAcceptsFrozenZeroXConfigWithoutChangingSourceOrRuntime(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+	legacyPath := filepath.Join(home, "config", "config.json")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{
+  "version": 1,
+  "settings": {"keepalive":{"intervalSec":9}},
+  "tunnels": [{
+    "name": "db", "host": "me@example.com", "port": 2222,
+    "identityFile": "~/.ssh/id_ed25519", "jump": "me@bastion:2200",
+    "tags": ["work", "db"],
+    "forwards": [{"type":"local","bind":"127.0.0.1","srcPort":5432,"destHost":"localhost","destPort":5432}],
+    "sshOptions": ["-o", "Compression=yes"], "enabled": true, "autoSetupKey": true
+  }]
+}`)
+	if err := os.WriteFile(legacyPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, stderr := invoke(t, "import", legacyPath, "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"sourceFormat":"tunlite-0.x"`) ||
+		!strings.Contains(out, `"code":"legacy_settings_ignored"`) ||
+		!strings.Contains(out, `"code":"legacy_running_state_ignored"`) {
+		t.Fatalf("import exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	unchanged, err := os.ReadFile(legacyPath)
+	if err != nil || !bytes.Equal(unchanged, legacy) {
+		t.Fatalf("legacy source changed: err=%v", err)
+	}
+	document, err := configstore.New(filepath.Join(home, "config", "connections.json")).Load()
+	if err != nil || len(document.Items) != 1 {
+		t.Fatalf("V1 config items=%d err=%v", len(document.Items), err)
+	}
+	connection := document.Items[0]
+	if !hasAllTags(connection.Metadata.Tags, []string{"work", "db"}) {
+		t.Fatalf("legacy tags were not imported: %#v", connection.Metadata.Tags)
+	}
+	sshConfig, err := sshdriver.DecodeConfig(connection.Spec.Config)
+	if err != nil || sshConfig.Port != 2222 || len(sshConfig.Jump) != 1 ||
+		len(sshConfig.SSHOptions) != 1 || sshConfig.SSHOptions[0] != "Compression=yes" {
+		t.Fatalf("legacy SSH fields were not imported: config=%#v err=%v", sshConfig, err)
+	}
+	if code, out, stderr = invoke(t, "status", "db", "--json"); code != 0 || stderr != "" || !strings.Contains(out, `"mode":"stopped"`) {
+		t.Fatalf("imported connection was not stopped: exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+}
+
+func TestImportRealZeroTenThreeExportFixtureIsReadOnlyAndStopped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	legacyPath := filepath.Join("..", "..", "testdata", "legacy", "tunlite-0.10.3-export.json")
+	original, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPath := filepath.Join(home, "config", "connections.json")
+
+	code, out, stderr := invoke(t, "import", legacyPath, "--dry-run", "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"sourceFormat":"tunlite-0.x"`) ||
+		!strings.Contains(out, `"dryRun":true`) {
+		t.Fatalf("dry-run exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run created V1 config: %v", err)
+	}
+	if len(adapter.artifacts) != 0 {
+		t.Fatalf("dry-run created native artifacts: %#v", adapter.artifacts)
+	}
+
+	code, out, stderr = invoke(t, "import", legacyPath, "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"outcome":"applied"`) {
+		t.Fatalf("import exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	after, err := os.ReadFile(legacyPath)
+	if err != nil || !bytes.Equal(after, original) {
+		t.Fatalf("real 0.10.3 fixture changed: err=%v", err)
+	}
+	document, err := configstore.New(targetPath).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Items) != 4 {
+		t.Fatalf("imported %d connections, want 4", len(document.Items))
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"rev", "socks", "multi", "web-9000"} {
+		record, exists, err := records.Load(name)
+		if err != nil || !exists || record.Mode != service.ModeStopped {
+			t.Fatalf("%s record=%#v exists=%t err=%v", name, record, exists, err)
+		}
+		observation := adapter.observed[name]
+		if !observation.Installed || observation.ProcessState != service.ProcessInactive || observation.AutoStart {
+			t.Fatalf("%s was not imported as a stopped service: %#v", name, observation)
+		}
+	}
+}
+
+func TestGlobalConfigFlagIsNotSupported(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	path := filepath.Join(t.TempDir(), "project", "tunlite.json")
-	code, _, stderr := invoke(t, "add", "project-db", "--to", "me@example.com", "-D", "1080", "--config", path)
-	if code != 0 {
-		t.Fatalf("add exit %d, stderr=%s", code, stderr)
+	code, out, stderr := invoke(t, "add", "project-db", "--to", "me@example.com", "-D", "1080", "--config", path, "--json")
+	if code != 2 || !strings.Contains(out, `"code":"invalid_arguments"`) {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("explicit config was not created: %v", err)
-	}
-	code, out, stderr := invoke(t, "list", "--config="+path, "--json")
-	if code != 0 || !strings.Contains(out, "project-db") {
-		t.Fatalf("list exit=%d stdout=%s stderr=%s", code, out, stderr)
+	code, out, stderr = invoke(t, "version", "--config", path, "--json")
+	if code != 2 || !strings.Contains(out, `"code":"invalid_arguments"`) {
+		t.Fatalf("version exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 }
 
@@ -313,6 +466,7 @@ func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	code, _, stderr := invoke(t, "add", "named-db", "--to", "me@example.com", "-L", "15432:localhost:5432")
 	if code != 0 {
 		t.Fatalf("add exit %d, stderr=%s", code, stderr)
@@ -327,15 +481,12 @@ func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 			Metadata struct {
 				Name string `json:"name"`
 			} `json:"metadata"`
-			Spec struct {
-				Lifecycle string `json:"lifecycle"`
-			} `json:"spec"`
 		} `json:"connection"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != "planned" || result.Connection.Metadata.Name != "named-db" || result.Connection.Spec.Lifecycle != "foreground" {
+	if result.Outcome != "planned" || result.Connection.Metadata.Name != "named-db" {
 		t.Fatalf("unexpected named run plan: %#v", result)
 	}
 }
@@ -343,6 +494,8 @@ func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 func TestEndpointConflictIsStructuredWarning(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	code, _, stderr := invoke(t, "add", "first", "--to", "me@one", "-L", "18080:localhost:80")
 	if code != 0 {
 		t.Fatalf("first add exit %d, stderr=%s", code, stderr)
@@ -364,20 +517,22 @@ func TestEndpointConflictIsStructuredWarning(t *testing.T) {
 
 func TestExportImportAndValidateDeclarations(t *testing.T) {
 	root := t.TempDir()
-	source := filepath.Join(root, "source.json")
-	target := filepath.Join(root, "target.json")
+	t.Setenv("TUNLITE_HOME", filepath.Join(root, "source-home"))
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(root, "source-native")))
+	target := filepath.Join(root, "target-home", "config", "connections.json")
 	project := filepath.Join(root, "project.json")
 
 	for _, item := range []struct {
 		name string
 		port string
 	}{{"a", "1080"}, {"b", "1081"}} {
-		code, out, stderr := invoke(t, "add", item.name, "--to", "me@example.com", "-D", item.port, "--config", source, "--json")
+		code, out, stderr := invoke(t, "add", item.name, "--to", "me@example.com", "-D", item.port, "--json")
 		if code != 0 {
 			t.Fatalf("source add exit=%d stdout=%s stderr=%s", code, out, stderr)
 		}
 	}
-	code, out, stderr := invoke(t, "export", "--output", project, "--config", source, "--json")
+	code, out, stderr := invoke(t, "export", "--output", project, "--json")
 	if code != 0 {
 		t.Fatalf("export exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -385,16 +540,43 @@ func TestExportImportAndValidateDeclarations(t *testing.T) {
 	if err != nil || len(document.Items) != 2 {
 		t.Fatalf("exported document invalid: items=%d err=%v", len(document.Items), err)
 	}
+	code, out, stderr = invoke(t, "export", "--output", "-")
+	if code != 0 || stderr != "" {
+		t.Fatalf("raw export exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var rawExport map[string]any
+	if err := json.Unmarshal([]byte(out), &rawExport); err != nil {
+		t.Fatal(err)
+	}
+	if rawExport["configVersion"] != float64(core.ConfigVersion) || rawExport["protocolVersion"] != nil {
+		t.Fatalf("raw export used the wrong envelope: %#v", rawExport)
+	}
+	code, out, stderr = invoke(t, "export", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("JSON export exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var exportResponse struct {
+		ProtocolVersion int                  `json:"protocolVersion"`
+		Document        configstore.Document `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(out), &exportResponse); err != nil {
+		t.Fatal(err)
+	}
+	if exportResponse.ProtocolVersion != ProtocolVersion || exportResponse.Document.ConfigVersion != core.ConfigVersion {
+		t.Fatalf("JSON export used the wrong envelopes: %#v", exportResponse)
+	}
 	code, out, stderr = invoke(t, "validate", project, "--json")
 	if code != 0 || !strings.Contains(out, `"outcome":"succeeded"`) {
 		t.Fatalf("validate exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 
-	code, _, stderr = invoke(t, "add", "a", "--to", "old@example.com", "-D", "2080", "--config", target)
+	t.Setenv("TUNLITE_HOME", filepath.Join(root, "target-home"))
+	invoke = useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(root, "target-native")))
+	code, _, stderr = invoke(t, "add", "a", "--to", "old@example.com", "-D", "2080")
 	if code != 0 {
 		t.Fatalf("target add exit=%d stderr=%s", code, stderr)
 	}
-	code, out, stderr = invoke(t, "import", project, "--config", target, "--json")
+	code, out, stderr = invoke(t, "import", project, "--json")
 	if code != exitPartial {
 		t.Fatalf("import exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -408,6 +590,11 @@ func TestExportImportAndValidateDeclarations(t *testing.T) {
 	if imported.Outcome != "partial" || len(imported.Results) != 2 {
 		t.Fatalf("unexpected import result: %#v", imported)
 	}
+	for _, result := range imported.Results {
+		if result.Outcome == "failed" && (result.RiskLevel == "" || result.Actions == nil) {
+			t.Fatalf("failed import item is missing its machine error contract: %#v", result)
+		}
+	}
 	targetDocument, err := configstore.New(target).Load()
 	if err != nil {
 		t.Fatal(err)
@@ -416,7 +603,7 @@ func TestExportImportAndValidateDeclarations(t *testing.T) {
 		t.Fatalf("partial import did not preserve successes: %#v", targetDocument.Items)
 	}
 
-	code, out, stderr = invoke(t, "import", project, "--force", "--dry-run", "--config", target, "--json")
+	code, out, stderr = invoke(t, "import", project, "--force", "--dry-run", "--json")
 	if code != 0 || !strings.Contains(out, `"dryRun":true`) {
 		t.Fatalf("dry-run force import exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -436,13 +623,13 @@ func TestValidateReportsInvalidSSHConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid.json")
 	rawConfig := json.RawMessage(`{"host":"me@example.com","forwards":[]}`)
 	document := configstore.Document{
-		APIVersion: core.APIVersion,
-		Kind:       configstore.Kind,
+		ConfigVersion: core.ConfigVersion,
+		Kind:          configstore.Kind,
 		Items: []core.Connection{{
-			APIVersion: core.APIVersion,
-			Kind:       core.Kind,
-			Metadata:   core.Metadata{Name: "broken"},
-			Spec:       core.ConnectionSpec{Driver: sshdriver.ID, Lifecycle: "persistent", ConfigVersion: 1, Config: rawConfig},
+			ConfigVersion: core.ConfigVersion,
+			Kind:          core.Kind,
+			Metadata:      core.Metadata{Name: "broken"},
+			Spec:          core.ConnectionSpec{Driver: sshdriver.ID, Config: rawConfig},
 		}},
 	}
 	if err := configstore.New(path).Write(context.Background(), document, false); err != nil {
@@ -465,14 +652,16 @@ func TestImportMissingFileIsNotFound(t *testing.T) {
 func TestFailedImportDoesNotCreateTarget(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source.json")
-	target := filepath.Join(root, "target.json")
+	home := filepath.Join(root, "target-home")
+	t.Setenv("TUNLITE_HOME", home)
+	target := filepath.Join(home, "config", "connections.json")
 	document := configstore.Document{
-		APIVersion: core.APIVersion,
-		Kind:       configstore.Kind,
+		ConfigVersion: core.ConfigVersion,
+		Kind:          configstore.Kind,
 		Items: []core.Connection{{
-			APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "broken"},
+			ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "broken"},
 			Spec: core.ConnectionSpec{
-				Driver: sshdriver.ID, Lifecycle: "persistent", ConfigVersion: 1,
+				Driver: sshdriver.ID,
 				Config: json.RawMessage(`{"host":"me@example.com","forwards":[]}`),
 			},
 		}},
@@ -480,9 +669,18 @@ func TestFailedImportDoesNotCreateTarget(t *testing.T) {
 	if err := configstore.New(source).Write(context.Background(), document, false); err != nil {
 		t.Fatal(err)
 	}
-	code, out, _ := invoke(t, "import", source, "--config", target, "--json")
-	if code != exitPartial || !strings.Contains(out, `"outcome":"failed"`) {
+	code, out, _ := invoke(t, "import", source, "--json")
+	if code != 1 || !strings.Contains(out, `"outcome":"failed"`) {
 		t.Fatalf("exit=%d stdout=%s", code, out)
+	}
+	var response struct {
+		Results []itemResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].RiskLevel != "low" || response.Results[0].Actions == nil {
+		t.Fatalf("failed import item is not structured: %#v", response.Results)
 	}
 	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed import created target: %v", err)
@@ -537,14 +735,15 @@ func TestCheckReportsMissingOpenSSH(t *testing.T) {
 }
 
 func TestDoctorOfflineChecksPlanAndEndpoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
-	home := t.TempDir()
-	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	code, _, stderr := invoke(t, "add", "doctor-db", "--to", "me@example.com", "-D", strconv.Itoa(port))
 	if code != 0 {
@@ -576,15 +775,21 @@ func TestRunForegroundStartsAndStopsProvider(t *testing.T) {
 	}
 	t.Setenv("TUNLITE_SSH", provider)
 	t.Setenv("TUNLITE_TEST_MARKER", marker)
+	t.Setenv("TUNLITE_HOME", temp)
+	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "foreground", "--to", "me@example.com", "-D", "1080"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var out, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
-		done <- RunContext(ctx, []string{
-			"run", "--to", "me@example.com", "-D", "1080", "--json", "--non-interactive",
-		}, IO{Out: &out, Err: &stderr})
+		done <- runContext(ctx, []string{
+			"run", "foreground", "--json", "--non-interactive",
+		}, IO{Out: &out, Err: &stderr}, func() (service.Adapter, error) { return adapter, nil })
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -635,7 +840,7 @@ func TestRunRejectsMissingForwardWithUsageExit(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("usage error was not JSON: %v", err)
 	}
-	if result["contractVersion"] != ContractVersion {
+	if result["protocolVersion"] != float64(ProtocolVersion) {
 		t.Fatalf("missing contract version: %#v", result)
 	}
 }

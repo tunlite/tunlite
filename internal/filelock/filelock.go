@@ -56,6 +56,33 @@ func Acquire(ctx context.Context, path string) (func(), error) {
 	}
 }
 
+// Active reports whether a lock is currently owned by a live process. It is a
+// read-only observation: stale locks are ignored and later reclaimed by
+// Acquire.
+func Active(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) != 2 {
+		return false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	return err == nil && pid > 0 && processAlive(pid)
+}
+
+// Held reports whether a lock file must still be treated as owned. Dead
+// owners are reclaimed; malformed recent files remain held for the grace
+// period so coordination never guesses that an ambiguous lock is safe.
+func Held(path string) (bool, error) {
+	reclaimed, err := reclaimDeadOwner(path)
+	if err != nil {
+		return false, err
+	}
+	return !reclaimed, nil
+}
+
 func ownerRecord() ([]byte, error) {
 	token := make([]byte, 16)
 	if _, err := rand.Read(token); err != nil {

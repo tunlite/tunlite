@@ -13,7 +13,8 @@ concurrency:
 jobs:
   build:
     name: Test, package, and attest
-    runs-on: ubuntu-latest
+    # Universal 2 packaging uses Apple's lipo after cross-compiling both slices.
+    runs-on: macos-latest
     timeout-minutes: 20
     permissions:
       contents: read
@@ -42,7 +43,7 @@ jobs:
         run: scripts/package-release.sh "${GITHUB_REF_NAME}"
       - name: Verify checksums
         working-directory: dist
-        run: sha256sum --check SHA256SUMS
+        run: shasum -a 256 --check SHA256SUMS
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2

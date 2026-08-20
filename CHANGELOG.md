@@ -19,15 +19,32 @@ as the product's focused entry point.
 - Generic Connection, Driver, and deterministic ExecutionPlan boundaries with a
   built-in OpenSSH driver for `-L`, `-R`, `-D`, multiple forwards, jump hosts,
   identity files, and strict `Key=Value` SSH options.
-- Per-Connection systemd user services and launchd jobs with `enable`, `disable`,
-  `restart`, `status`, `logs`, and drift-repairing `sync`.
-- Versioned JSON contracts, embedded schemas, dry-run and non-interactive guarantees,
-  structured actions and approvals, batch partial-failure semantics, and four-axis
-  persistent state.
-- Safe 0.10.3 migration with a byte-for-byte checksum-addressed backup, a local
-  migration journal, interrupted-operation recovery, and drift-protected rollback.
-- Reproducible cross-platform release archives and `SHA256SUMS`; Go CI covers macOS,
-  Linux, Windows, the race detector, vet, and release packaging.
+- Per-Connection systemd user services and launchd jobs with explicit foreground,
+  temporary background, and cross-login modes; `add` materializes a stopped native
+  service, while `start`/`stop` and `enable`/`disable` select how it runs.
+- Zero-interruption `manage`/`unmanage` for compatible native SSH services, plus
+  explicit two-way drift resolution through `resolve --use tunlite|system`.
+- Integer-versioned CLI response envelopes, versioned portable configuration,
+  embedded schemas, dry-run and non-interactive guarantees, structured actions and
+  risk warnings, batch partial-failure semantics, and five independent state dimensions.
+- Safe, explicit 0.10.3 import into a separate ConnectionList without modifying the
+  old configuration, stopping the old daemon, or starting imported Connections.
+- Reproducible macOS and Linux release archives and `SHA256SUMS`; macOS ships as one
+  Universal 2 binary for both Intel and Apple Silicon, while Linux keeps separate
+  x64 and arm64 archives. Go CI also keeps the future Windows core build compiling
+  without presenting it as a supported v1 preview artifact.
+- Color-aware aligned status output, per-Connection status details, an environment
+  and Connection `doctor`, and the foreground `tunlite monitor` dashboard. Human
+  output respects TTY detection and `NO_COLOR`; JSON never contains ANSI escapes.
+- One canonical configuration path, root-only `configVersion`, long-lived tags with
+  AND selection, and explicit `--all` batch selection.
+- A single native binary whose installation, upgrades, and removal are owned by the
+  release channel or package manager rather than the core CLI.
+- Shell completion is deliberately deferred from the v1 preview until ownership
+  across shells, platforms, and package managers has a durable design; the CLI does
+  not read or write shell startup files.
+- A standalone `use-tunlite` Agent Skill package whose CLI contract is checked in CI;
+  installation, updates, and removal remain owned by the Agent.
 
 ### Changed
 
@@ -38,11 +55,22 @@ as the product's focused entry point.
 - The Agent Skill now follows the runtime capability and schema contract and is tested
   against commands, exit codes, and state dimensions.
 
+### Deferred
+
+- Webhook connection alerts are intentionally deferred while v1 restores the core
+  CLI experience. The preview does not advertise or silently accept an inactive
+  webhook configuration; legacy settings remain in the untouched 0.x config and
+  migration backup.
+
 ### Removed
 
-- The central supervisor, IPC protocol, PID ownership, webhook monitor, automatic SSH
-  key installation, and the second layer of global lifecycle management from the v1
-  runtime.
+- The central supervisor, IPC protocol, PID ownership, daemon lifecycle alerts,
+  implicit lifecycle-triggered SSH key installation, and the second layer of global lifecycle
+  management from the v1 runtime.
+- CLI-managed Agent Skill installation; Tunlite no longer inspects Agent-specific
+  extension directories.
+- The preview-only `--config`, approval state, `setup-key`, `migrate`, self-install,
+  self-update, self-uninstall, `tun` alias, and global configuration migration gate.
 
 ## [0.10.3] - 2026-08-16
 

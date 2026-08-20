@@ -2,13 +2,11 @@ package main
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,37 +48,61 @@ func run(args []string) error {
 	}
 	defer os.RemoveAll(temporary)
 
+	darwinAMD64 := filepath.Join(temporary, "darwin-amd64-tunlite")
+	darwinARM64 := filepath.Join(temporary, "darwin-arm64-tunlite")
+	if err := build(darwinAMD64, plainVersion, target{os: "darwin", arch: "amd64"}); err != nil {
+		return err
+	}
+	if err := build(darwinARM64, plainVersion, target{os: "darwin", arch: "arm64"}); err != nil {
+		return err
+	}
+	darwinUniversal := filepath.Join(temporary, "macos-universal-tunlite")
+	if err := mergeDarwinUniversal(darwinUniversal, darwinAMD64, darwinARM64); err != nil {
+		return err
+	}
+	darwinArchive := filepath.Join(output, fmt.Sprintf("tunlite_%s_macos.tar.gz", plainVersion))
+	if err := writeTarGZ(darwinArchive, darwinUniversal, "tunlite"); err != nil {
+		return err
+	}
+
 	targets := []target{
-		{os: "darwin", arch: "amd64"},
-		{os: "darwin", arch: "arm64"},
 		{os: "linux", arch: "amd64"},
 		{os: "linux", arch: "arm64"},
-		{os: "windows", arch: "amd64"},
 	}
-	archives := make([]string, 0, len(targets))
+	archives := []string{darwinArchive}
 	for _, item := range targets {
 		binaryName := "tunlite"
-		if item.os == "windows" {
-			binaryName += ".exe"
-		}
 		binaryPath := filepath.Join(temporary, item.os+"-"+item.arch+"-"+binaryName)
 		if err := build(binaryPath, plainVersion, item); err != nil {
 			return err
 		}
-		baseName := fmt.Sprintf("tunlite_%s_%s_%s", plainVersion, item.os, item.arch)
+		publicArch := item.arch
+		if publicArch == "amd64" {
+			publicArch = "x64"
+		}
+		baseName := fmt.Sprintf("tunlite_%s_%s_%s", plainVersion, item.os, publicArch)
 		archivePath := filepath.Join(output, baseName+".tar.gz")
-		if item.os == "windows" {
-			archivePath = filepath.Join(output, baseName+".zip")
-			if err := writeZIP(archivePath, binaryPath, binaryName); err != nil {
-				return err
-			}
-		} else if err := writeTarGZ(archivePath, binaryPath, binaryName); err != nil {
+		if err := writeTarGZ(archivePath, binaryPath, binaryName); err != nil {
 			return err
 		}
 		archives = append(archives, archivePath)
 	}
 	sort.Strings(archives)
 	return writeChecksums(filepath.Join(output, "SHA256SUMS"), archives)
+}
+
+func mergeDarwinUniversal(output, amd64, arm64 string) error {
+	lipo, err := exec.LookPath("lipo")
+	if err != nil {
+		return errors.New("creating the macOS Universal 2 binary requires Apple's lipo; package releases on macOS")
+	}
+	command := exec.Command(lipo, "-create", "-output", output, amd64, arm64)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("create macOS Universal 2 binary: %w", err)
+	}
+	return nil
 }
 
 func build(output, version string, item target) error {
@@ -126,40 +148,6 @@ func writeTarGZ(path, binaryPath, binaryName string) error {
 		return err
 	}
 	if err := gzipWriter.Close(); err != nil {
-		return err
-	}
-	return file.Sync()
-}
-
-func writeZIP(path, binaryPath, binaryName string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	writer := zip.NewWriter(file)
-	for _, entry := range releaseEntries(binaryPath, binaryName) {
-		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
-		header.SetMode(os.FileMode(entry.mode))
-		header.SetModTime(time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC))
-		output, err := writer.CreateHeader(header)
-		if err != nil {
-			return err
-		}
-		input, err := os.Open(entry.source)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(output, input)
-		closeErr := input.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	if err := writer.Close(); err != nil {
 		return err
 	}
 	return file.Sync()

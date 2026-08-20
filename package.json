@@ -1,7 +1,8 @@
 {
   "name": "tunlite",
   "version": "0.10.3",
-  "description": "Lightweight cross-platform SSH tunnel manager with auto-reconnect, OS autostart, and passwordless setup.",
+  "private": true,
+  "description": "Archived Tunlite 0.10.3 Node.js runtime; v1 development uses the Go module in this repository.",
   "type": "commonjs",
   "bin": {
     "tunlite": "bin/tunlite.js"

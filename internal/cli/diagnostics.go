@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +18,7 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 func checkSSH(ctx context.Context, args []string, streams IO, opts options) error {
@@ -46,44 +50,9 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 	if err != nil {
 		return err
 	}
-	var connection core.Connection
-	if _, stored := configstore.Find(&document, target); stored != nil {
-		connection = cloneConnection(*stored)
-		connection.Spec.Lifecycle = "foreground"
-		if identity != "" || jump != "" {
-			if connection.Spec.Driver != sshdriver.ID || connection.Spec.ConfigVersion != 1 {
-				return usageError("SSH overrides can only be used with an SSH connection")
-			}
-			config, err := sshdriver.DecodeConfig(connection.Spec.Config)
-			if err != nil {
-				return err
-			}
-			if identity != "" {
-				config.IdentityFile = identity
-			}
-			if jump != "" {
-				config.Jump, err = sshdriver.ParseJump(jump)
-				if err != nil {
-					return usageError(err.Error())
-				}
-			}
-			connection.Spec.Config, _ = json.Marshal(config)
-		}
-	} else {
-		host, port, err := sshdriver.ParseTarget(target)
-		if err != nil {
-			return notFoundError(fmt.Sprintf("no such connection and invalid SSH target: %s", target))
-		}
-		jumps, err := sshdriver.ParseJump(jump)
-		if err != nil {
-			return usageError(err.Error())
-		}
-		config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Jump: jumps, Forwards: []sshdriver.Forward{}}
-		raw, _ := json.Marshal(config)
-		connection = core.Connection{
-			APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: sanitizeName("check-" + host)},
-			Spec: core.ConnectionSpec{Driver: sshdriver.ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw},
-		}
+	connection, err := resolveSSHConnection(document, target, identity, jump)
+	if err != nil {
+		return err
 	}
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
@@ -94,10 +63,9 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 		return err
 	}
 	if opts.JSON {
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         map[bool]string{true: "succeeded", false: "failed"}[report.Healthy],
-			"report":          report,
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome": map[bool]string{true: "succeeded", false: "failed"}[report.Healthy],
+			"report":  report,
 		})
 	} else {
 		for _, item := range report.Conditions {
@@ -113,6 +81,47 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 		return renderedExit(1)
 	}
 	return nil
+}
+
+func resolveSSHConnection(document configstore.Document, target, identity, jump string) (core.Connection, error) {
+	if _, stored := configstore.Find(&document, target); stored != nil {
+		connection := cloneConnection(*stored)
+		if connection.Spec.Driver != sshdriver.ID {
+			return core.Connection{}, usageError("command requires an SSH connection")
+		}
+		if identity == "" && jump == "" {
+			return connection, nil
+		}
+		config, err := sshdriver.DecodeConfig(connection.Spec.Config)
+		if err != nil {
+			return core.Connection{}, err
+		}
+		if identity != "" {
+			config.IdentityFile = identity
+		}
+		if jump != "" {
+			config.Jump, err = sshdriver.ParseJump(jump)
+			if err != nil {
+				return core.Connection{}, usageError(err.Error())
+			}
+		}
+		connection.Spec.Config, _ = json.Marshal(config)
+		return connection, nil
+	}
+	host, port, err := sshdriver.ParseTarget(target)
+	if err != nil {
+		return core.Connection{}, notFoundError(fmt.Sprintf("no such connection and invalid SSH target: %s", target))
+	}
+	jumps, err := sshdriver.ParseJump(jump)
+	if err != nil {
+		return core.Connection{}, usageError(err.Error())
+	}
+	config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Jump: jumps, Forwards: []sshdriver.Forward{}}
+	raw, _ := json.Marshal(config)
+	return core.Connection{
+		ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: sanitizeName("check-" + host)},
+		Spec: core.ConnectionSpec{Driver: sshdriver.ID, Config: raw},
+	}, nil
 }
 
 func doctor(ctx context.Context, args []string, streams IO, opts options) error {
@@ -141,24 +150,25 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 	if err != nil {
 		return err
 	}
-	document, err := store.Load()
-	if err != nil {
-		return err
-	}
+	document, loadErr := store.Load()
+	conditions := doctorEnvironmentConditions(store.Path(), loadErr, opts)
 	targets := document.Items
 	if name != "" {
-		_, connection := configstore.Find(&document, name)
-		if connection == nil {
-			return notFoundError(fmt.Sprintf("no such connection: %s", name))
+		if loadErr != nil {
+			targets = nil
+		} else {
+			_, connection := configstore.Find(&document, name)
+			if connection == nil {
+				return notFoundError(fmt.Sprintf("no such connection: %s", name))
+			}
+			targets = []core.Connection{*connection}
 		}
-		targets = []core.Connection{*connection}
 	}
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
 		return err
 	}
 	planner := core.NewPlanner(registry)
-	conditions := make([]core.Condition, 0)
 	for _, connection := range targets {
 		if err := validateKnownDriver(connection); err != nil {
 			conditions = append(conditions, diagnosticCondition(connection, "invalid_driver_config", "error", err.Error(), nil))
@@ -171,12 +181,12 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 			continue
 		}
 		foreground := cloneConnection(connection)
-		foreground.Spec.Lifecycle = "foreground"
 		if _, err := planner.Plan(ctx, foreground, core.PlanOptions{NonInteractive: true}); err != nil {
 			conditions = append(conditions, diagnosticCondition(connection, "execution_plan_failed", "error", err.Error(), nil))
 			continue
 		}
-		conditions = append(conditions, endpointAvailability(connection)...)
+		running := doctorConnectionRunning(ctx, connection, opts)
+		conditions = append(conditions, endpointAvailability(connection, running)...)
 		conditions = append(conditions, endpointConflicts(&document, connection)...)
 		if !offline {
 			report, err := planner.Check(ctx, foreground, core.CheckOptions{Timeout: timeout})
@@ -205,17 +215,31 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 		outcome = "failed"
 	}
 	result := map[string]any{
-		"contractVersion": ContractVersion, "outcome": outcome, "healthy": healthy,
+		"outcome": outcome, "healthy": healthy,
 		"observedAt": time.Now().UTC(), "conditions": conditions,
 	}
 	if opts.JSON {
-		_ = writeJSON(streams.Out, result)
+		_ = writeResponse(streams.Out, result)
 	} else if len(conditions) == 0 {
-		fmt.Fprintln(streams.Out, "no connections defined; configuration is valid")
+		glyph, shade := doctorStyle("info")
+		fmt.Fprintf(streams.Out, "%s no connections defined; configuration is valid\n", colorize(glyph, shade, outputUsesColor(streams, opts)))
 	} else {
+		color := outputUsesColor(streams, opts)
+		counts := map[string]int{}
 		for _, item := range conditions {
-			fmt.Fprintf(streams.Out, "%s\t%s\t%s\n", item.Severity, item.Connection, item.Message)
+			glyph, shade := doctorStyle(item.Severity)
+			counts[item.Severity]++
+			scope := item.Connection
+			if scope == "" {
+				scope = "system"
+			}
+			fmt.Fprintf(streams.Out, "%s %-16s %s\n", colorize(glyph, shade, color), scope, item.Message)
+			if fix := doctorFix(item); fix != "" {
+				fmt.Fprintln(streams.Out, colorize("    ↳ fix: "+fix, ansiDim, color))
+			}
 		}
+		fmt.Fprintf(streams.Out, "\n%d checks: %d passed, %d warnings, %d failed\n",
+			len(conditions), counts["info"], counts["warning"], counts["error"])
 	}
 	if !healthy {
 		return renderedExit(1)
@@ -223,7 +247,92 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 	return nil
 }
 
-func endpointAvailability(connection core.Connection) []core.Condition {
+func doctorFix(condition core.Condition) string {
+	for _, action := range condition.Actions {
+		switch action.Type {
+		case "setup_ssh_key":
+			target := fmt.Sprint(action.Parameters["host"])
+			if target != "" {
+				return "configure OpenSSH key authentication for " + target
+			}
+		case "repair_configuration":
+			return "inspect " + fmt.Sprint(action.Parameters["path"])
+		case "inspect_local_endpoint":
+			return "free or change local endpoint " + fmt.Sprint(action.Parameters["address"])
+		}
+	}
+	return ""
+}
+
+func doctorEnvironmentConditions(configPath string, configErr error, opts options) []core.Condition {
+	conditions := make([]core.Condition, 0, 6)
+	add := func(code, severity, message string, actions []core.Action) {
+		if actions == nil {
+			actions = []core.Action{}
+		}
+		conditions = append(conditions, core.Condition{Code: code, Severity: severity, Message: message, Actions: actions})
+	}
+	if configErr != nil {
+		add("config_invalid", "error", fmt.Sprintf("configuration %s is invalid: %v", configPath, configErr),
+			[]core.Action{{Type: "repair_configuration", Parameters: map[string]any{"path": configPath}}})
+	} else {
+		add("config_valid", "info", "configuration is valid ("+configPath+")", nil)
+	}
+	sshBinary := os.Getenv("TUNLITE_SSH")
+	if sshBinary == "" {
+		sshBinary = "ssh"
+	}
+	if resolved, err := exec.LookPath(sshBinary); err != nil {
+		add("ssh_client_missing", "error", fmt.Sprintf("OpenSSH client not found (%s)", sshBinary),
+			[]core.Action{{Type: "install_provider", Parameters: map[string]any{"provider": "openssh"}}})
+	} else {
+		add("ssh_client_found", "info", "OpenSSH client found at "+resolved, nil)
+	}
+	if resolved, err := exec.LookPath("ssh-keygen"); err != nil {
+		add("ssh_keygen_missing", "warning", "ssh-keygen is not available; existing keys and SSH agents still work", nil)
+	} else {
+		add("ssh_keygen_found", "info", "ssh-keygen found at "+resolved, nil)
+	}
+	if key := defaultSSHIdentity(); key != "" {
+		add("ssh_identity_found", "info", "default SSH identity found at "+key, nil)
+	} else if os.Getenv("SSH_AUTH_SOCK") != "" {
+		add("ssh_agent_found", "info", "SSH agent is available", nil)
+	} else {
+		add("ssh_identity_unknown", "warning", "no default SSH private key or SSH agent was detected; explicit identity files still work", nil)
+	}
+	if adapter, err := opts.newServiceAdapter(); err != nil {
+		add("native_service_unavailable", "warning", "native background services are unavailable: "+err.Error(), nil)
+	} else {
+		caps := adapter.Capabilities()
+		add("native_service_available", "info", fmt.Sprintf("native service adapter %s is available (background=%t, persistence=%t)", adapter.Name(), caps.Background, caps.Persistence), nil)
+	}
+	return conditions
+}
+
+func defaultSSHIdentity() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
+		path := filepath.Join(home, ".ssh", name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func doctorConnectionRunning(ctx context.Context, connection core.Connection, opts options) bool {
+	adapter, records, config, _, err := serviceDependencies(opts)
+	if err != nil {
+		return false
+	}
+	result := statusService(ctx, adapter, records, connection, config.Path())
+	return result.State != nil && result.State.ProcessState == service.ProcessRunning
+}
+
+func endpointAvailability(connection core.Connection, running bool) []core.Condition {
 	config, err := sshdriver.DecodeConfig(connection.Spec.Config)
 	if err != nil {
 		return nil
@@ -238,6 +347,11 @@ func endpointAvailability(connection core.Connection) []core.Condition {
 		address := net.JoinHostPort(defaultBind(forward.Bind), strconv.Itoa(forward.SrcPort))
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
+			if running {
+				conditions = append(conditions, diagnosticCondition(connection, "endpoint_accepting", "info",
+					fmt.Sprintf("local endpoint %s is occupied while the Connection is running", address), nil))
+				continue
+			}
 			conditions = append(conditions, diagnosticCondition(connection, "endpoint_in_use", "warning",
 				fmt.Sprintf("local endpoint %s is already in use", address),
 				[]core.Action{{Type: "inspect_local_endpoint", Parameters: map[string]any{"address": address}}}))

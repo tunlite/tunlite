@@ -9,21 +9,21 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 	"github.com/yuanyuanzijin/tunlite/internal/execution"
-	legacyMigration "github.com/yuanyuanzijin/tunlite/internal/migration"
 	appPaths "github.com/yuanyuanzijin/tunlite/internal/paths"
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 const (
-	ContractVersion = "tunlite.cli/v1"
+	ProtocolVersion = 1
 )
 
 var Version = "1.0.0-preview.1-dev"
@@ -32,23 +32,26 @@ type IO struct {
 	Out io.Writer
 	Err io.Writer
 	In  io.Reader
+	// Color and Terminal are optional test/embedding overrides. Normal CLI use
+	// detects both from the attached files and respects NO_COLOR.
+	Color    *bool
+	Terminal *bool
 }
 
 type options struct {
 	JSON           bool
 	NonInteractive bool
 	DryRun         bool
-	ConfigFile     string
+	serviceAdapter func() (service.Adapter, error)
 }
 
 type exitError struct {
-	code             int
-	kind             string
-	message          string
-	rendered         bool
-	riskLevel        string
-	requiresApproval bool
-	actions          []core.Action
+	code      int
+	kind      string
+	message   string
+	rendered  bool
+	riskLevel string
+	actions   []core.Action
 }
 
 func (e *exitError) Error() string { return e.message }
@@ -60,6 +63,10 @@ func Run(args []string, streams IO) int {
 }
 
 func RunContext(ctx context.Context, args []string, streams IO) int {
+	return runContext(ctx, args, streams, func() (service.Adapter, error) { return service.NewCurrent(nil) })
+}
+
+func runContext(ctx context.Context, args []string, streams IO, serviceAdapter func() (service.Adapter, error)) int {
 	if streams.Out == nil {
 		streams.Out = io.Discard
 	}
@@ -67,22 +74,31 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		streams.Err = io.Discard
 	}
 	cleaned, opts, err := extractGlobalOptions(args)
+	opts.serviceAdapter = serviceAdapter
 	if err != nil {
 		return renderError(streams, opts, usageError(err.Error()))
 	}
 	if len(cleaned) == 0 {
 		return renderError(streams, opts, usageError("usage: tunlite <command> (run `tunlite help` for commands)"))
 	}
-
+	if cleaned[0] != "help" && containsHelpFlag(cleaned[1:]) {
+		if err := commandHelp(cleaned[0], streams, opts); err != nil {
+			return renderError(streams, opts, err)
+		}
+		return 0
+	}
 	switch cleaned[0] {
 	case "help", "--help", "-h":
-		err = help(streams, opts)
+		err = help(cleaned[1:], streams, opts)
 	case "version", "--version", "-v":
+		if len(cleaned) != 1 {
+			err = usageError("usage: tunlite version")
+			break
+		}
 		if opts.JSON {
-			if err := writeJSON(streams.Out, map[string]any{
-				"contractVersion": ContractVersion,
-				"outcome":         "succeeded",
-				"version":         Version,
+			if err := writeResponse(streams.Out, map[string]any{
+				"outcome": "succeeded",
+				"version": Version,
 			}); err != nil {
 				return renderError(streams, opts, err)
 			}
@@ -98,7 +114,7 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		err = list(cleaned[1:], streams, opts)
 	case "set":
 		err = set(ctx, cleaned[1:], streams, opts)
-	case "rm":
+	case "remove":
 		err = remove(ctx, cleaned[1:], streams, opts)
 	case "rename":
 		err = rename(ctx, cleaned[1:], streams, opts)
@@ -108,22 +124,32 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 		err = importConnections(ctx, cleaned[1:], streams, opts)
 	case "validate":
 		err = validateConnections(cleaned[1:], streams, opts)
-	case "migrate":
-		err = migrateConfig(ctx, cleaned[1:], streams, opts)
 	case "check":
 		err = checkSSH(ctx, cleaned[1:], streams, opts)
 	case "doctor":
 		err = doctor(ctx, cleaned[1:], streams, opts)
-	case "enable", "disable", "restart", "status", "sync":
+	case "monitor":
+		err = monitor(ctx, cleaned[1:], streams, opts)
+	case "start", "stop", "enable", "disable", "restart", "status":
 		err = serviceCommand(ctx, cleaned[0], cleaned[1:], streams, opts)
 	case "logs":
 		err = serviceLogs(ctx, cleaned[1:], streams, opts)
+	case "manage":
+		err = manageConnection(ctx, cleaned[1:], streams, opts)
+	case "unmanage":
+		err = unmanageConnection(ctx, cleaned[1:], streams, opts)
+	case "resolve":
+		err = resolveConnection(ctx, cleaned[1:], streams, opts)
 	case "schema":
-		err = schema(cleaned[1:], streams)
+		err = schema(cleaned[1:], streams, opts)
 	case "capabilities":
 		err = capabilities(cleaned[1:], streams, opts)
 	default:
-		err = usageError(fmt.Sprintf("unknown command %q", cleaned[0]))
+		message := fmt.Sprintf("unknown command %q", cleaned[0])
+		if suggestion := suggestCommand(cleaned[0]); suggestion != "" {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		}
+		err = usageError(message)
 	}
 	if err == nil {
 		return 0
@@ -136,84 +162,21 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 }
 
 func run(ctx context.Context, args []string, streams IO, opts options) error {
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		flags := flag.NewFlagSet("run", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		var approved bool
-		flags.BoolVar(&approved, "approve", false, "approve publish or public-listen risk")
-		if err := flags.Parse(args[1:]); err != nil {
-			return usageError(err.Error())
-		}
-		if flags.NArg() != 0 {
-			return usageError("usage: tunlite run <name> or tunlite run --to user@host -L/-R/-D ...")
-		}
-		return runNamed(ctx, args[0], approved, streams, opts)
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return usageError("usage: tunlite run <name>")
 	}
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var to, identity, jump, name string
-	var approved bool
-	var local, remote, dynamic, sshOptions stringsFlag
-	flags.StringVar(&to, "to", "", "SSH target")
-	flags.StringVar(&identity, "i", "", "identity file")
-	flags.StringVar(&jump, "jump", "", "comma-separated jump hosts")
-	flags.StringVar(&name, "name", "", "connection name")
-	flags.Var(&local, "L", "local forward")
-	flags.Var(&remote, "R", "remote forward")
-	flags.Var(&dynamic, "D", "dynamic forward")
-	flags.Var(&sshOptions, "ssh-opt", "OpenSSH Key=Value option")
-	flags.BoolVar(&approved, "approve", false, "approve publish or public-listen risk")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(args[1:]); err != nil {
 		return usageError(err.Error())
 	}
 	if flags.NArg() != 0 {
-		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
+		return usageError("usage: tunlite run <name>")
 	}
-	if to == "" {
-		return usageError("run requires --to user@host[:port]")
-	}
-
-	host, port, err := sshdriver.ParseTarget(to)
-	if err != nil {
-		return usageError(err.Error())
-	}
-	forwards := make([]sshdriver.Forward, 0, len(local)+len(remote)+len(dynamic))
-	for _, item := range []struct {
-		flag   string
-		values []string
-	}{{"-L", local}, {"-R", remote}, {"-D", dynamic}} {
-		for _, value := range item.values {
-			forward, parseErr := sshdriver.ParseForward(item.flag, value)
-			if parseErr != nil {
-				return usageError(parseErr.Error())
-			}
-			forwards = append(forwards, forward)
-		}
-	}
-	if len(forwards) == 0 {
-		return usageError("run needs at least one forward (-L / -R / -D)")
-	}
-	if name == "" {
-		name = sanitizeName(host)
-	}
-	jumpHosts, err := sshdriver.ParseJump(jump)
-	if err != nil {
-		return usageError(err.Error())
-	}
-	config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Jump: jumpHosts, Forwards: forwards, SSHOptions: sshOptions}
-	rawConfig, _ := json.Marshal(config)
-	connection := core.Connection{
-		APIVersion: core.APIVersion,
-		Kind:       core.Kind,
-		Metadata:   core.Metadata{Name: name},
-		Spec: core.ConnectionSpec{
-			Driver: sshdriver.ID, Lifecycle: "foreground", ConfigVersion: 1, Config: rawConfig,
-		},
-	}
-	return executeConnection(ctx, connection, approved, streams, opts)
+	return runNamed(ctx, args[0], streams, opts)
 }
 
-func runNamed(ctx context.Context, name string, approved bool, streams IO, opts options) error {
+func runNamed(ctx context.Context, name string, streams IO, opts options) error {
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -227,11 +190,89 @@ func runNamed(ctx context.Context, name string, approved bool, streams IO, opts 
 		return notFoundError(fmt.Sprintf("no such connection: %s", name))
 	}
 	connection := cloneConnection(*stored)
-	connection.Spec.Lifecycle = "foreground"
-	return executeConnection(ctx, connection, approved, streams, opts)
+	records, err := serviceRecordStore()
+	if err != nil {
+		return err
+	}
+	if opts.DryRun {
+		if records.RunActive(name) {
+			return stateConflictError("connection is already running in the foreground")
+		}
+		if err := ensureForegroundNativeState(ctx, records, connection, opts); err != nil {
+			return err
+		}
+		return executeConnection(ctx, connection, streams, opts)
+	}
+	releaseService, err := records.Lock(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := ensureForegroundNativeState(ctx, records, connection, opts); err != nil {
+		releaseService()
+		return err
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	releaseRun, err := records.LockRun(lockCtx, name)
+	cancel()
+	releaseService()
+	if err != nil {
+		return stateConflictError(err.Error())
+	}
+	defer releaseRun()
+	return executeConnection(ctx, connection, streams, opts)
 }
 
-func executeConnection(ctx context.Context, connection core.Connection, approved bool, streams IO, opts options) error {
+func ensureForegroundNativeState(ctx context.Context, records *service.Store, connection core.Connection, opts options) error {
+	name := connection.Metadata.Name
+	record, exists, err := records.Load(name)
+	if err != nil || !exists {
+		return err
+	}
+	if record.Mode != service.ModeStopped {
+		return stateConflictError(fmt.Sprintf("connection %q is %s; stop or disable it before running in the foreground", name, record.Mode))
+	}
+	adapter, err := opts.newServiceAdapter()
+	if err != nil {
+		return capabilityError(fmt.Sprintf("cannot verify the stopped native service for %q: %v", name, err))
+	}
+	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+	if err != nil {
+		return err
+	}
+	state := service.Evaluate(ctx, adapter, record, &artifact)
+	if state.ConsistencyState != service.ConsistencyConsistent || state.ProcessState != service.ProcessInactive {
+		return stateConflictError(fmt.Sprintf("connection %q is not provably stopped and consistent; inspect status and resolve it before running in the foreground", name))
+	}
+	return nil
+}
+
+func (opts options) newServiceAdapter() (service.Adapter, error) {
+	if opts.serviceAdapter == nil {
+		return service.NewCurrent(nil)
+	}
+	return opts.serviceAdapter()
+}
+
+func compensationContext(parent context.Context) (context.Context, context.CancelFunc) {
+	// Recovery must still run after the initiating request was canceled, but it
+	// remains bounded so a broken service manager cannot hang the CLI forever.
+	return context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
+}
+
+func recoveryBlockedError(cause, recovery error, actions []core.Action) error {
+	if recovery == nil {
+		return cause
+	}
+	if actions == nil {
+		actions = []core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{}}}
+	}
+	return &exitError{
+		code: 1, kind: "recovery_blocked", riskLevel: "high", actions: actions,
+		message: errors.Join(cause, fmt.Errorf("automatic recovery failed: %w", recovery)).Error(),
+	}
+}
+
+func executeConnection(ctx context.Context, connection core.Connection, streams IO, opts options) error {
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
 		return err
@@ -240,25 +281,13 @@ func executeConnection(ctx context.Context, connection core.Connection, approved
 	if err != nil {
 		return err
 	}
-	conditions := planApprovalConditions(connection, executionPlan, "run")
+	conditions := planRiskConditions(connection, executionPlan)
 	if opts.DryRun {
 		return renderPlan(streams, opts, connection, executionPlan, conditions)
 	}
-	if len(conditions) > 0 && !approved {
-		return &exitError{
-			code: 1, kind: "approval_required",
-			message:          "publish or public-listen access requires explicit --approve",
-			riskLevel:        "high",
-			requiresApproval: true,
-			actions: []core.Action{{Type: "approve_connection", Parameters: map[string]any{
-				"connection": connection.Metadata.Name, "operation": "run", "riskLevel": "high",
-			}}},
-		}
-	}
-
 	if opts.JSON {
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion, "outcome": "starting", "connection": connection.Metadata.Name,
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome": "starting", "connection": connection.Metadata.Name,
 			"plan": executionPlan,
 		})
 	} else {
@@ -278,11 +307,10 @@ func executeConnection(ctx context.Context, connection core.Connection, approved
 
 func renderStopped(streams IO, opts options, connection, reason string) {
 	if opts.JSON {
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         "stopped",
-			"connection":      connection,
-			"reason":          reason,
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome":    "stopped",
+			"connection": connection,
+			"reason":     reason,
 		})
 		return
 	}
@@ -291,13 +319,12 @@ func renderStopped(streams IO, opts options, connection, reason string) {
 
 func renderPlan(streams IO, opts options, connection core.Connection, executionPlan plan.ExecutionPlan, conditions []core.Condition) error {
 	if opts.JSON {
-		return writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         "planned",
-			"connection":      connection,
-			"plan":            executionPlan,
-			"conditions":      conditions,
-			"dryRun":          true,
+		return writeResponse(streams.Out, map[string]any{
+			"outcome":    "planned",
+			"connection": connection,
+			"plan":       executionPlan,
+			"conditions": conditions,
+			"dryRun":     true,
 		})
 	}
 	fmt.Fprintf(streams.Out, "%s", executionPlan.Exec.Program)
@@ -320,26 +347,9 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 			opts.NonInteractive = true
 		case "--dry-run":
 			opts.DryRun = true
-		case "--config":
-			if i+1 >= len(args) {
-				return nil, opts, errors.New("--config needs a file path")
-			}
-			i++
-			opts.ConfigFile = args[i]
 		default:
-			if value, found := strings.CutPrefix(arg, "--config="); found {
-				opts.ConfigFile = value
-			} else {
-				cleaned = append(cleaned, arg)
-			}
+			cleaned = append(cleaned, arg)
 		}
-	}
-	if opts.ConfigFile != "" {
-		absolute, err := filepath.Abs(opts.ConfigFile)
-		if err != nil {
-			return nil, opts, err
-		}
-		opts.ConfigFile = absolute
 	}
 	return cleaned, opts, nil
 }
@@ -357,33 +367,24 @@ func renderError(streams IO, opts options, err error) int {
 	}
 	var legacy *configstore.LegacyConfigError
 	if errors.As(err, &legacy) {
-		kind = "migration_required"
-	}
-	if errors.Is(err, legacyMigration.ErrDrifted) {
-		kind = "migration_drifted"
-	}
-	if errors.Is(err, legacyMigration.ErrNoMigration) {
-		kind = "migration_not_found"
+		kind = "legacy_import_required"
 	}
 	if opts.JSON {
 		riskLevel := "low"
-		requiresApproval := false
 		actions := []core.Action{}
 		if typed != nil {
 			if typed.riskLevel != "" {
 				riskLevel = typed.riskLevel
 			}
-			requiresApproval = typed.requiresApproval
 			if typed.actions != nil {
 				actions = typed.actions
 			}
 		}
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         "failed",
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome": "failed",
 			"error": map[string]any{
 				"code": kind, "driver": nil, "connection": nil, "message": message,
-				"riskLevel": riskLevel, "requiresApproval": requiresApproval, "actions": actions,
+				"riskLevel": riskLevel, "actions": actions,
 			},
 		})
 	} else {
@@ -404,26 +405,69 @@ func conflictError(message string) error {
 	return &exitError{code: 2, kind: "already_exists", message: message}
 }
 
+func stateConflictError(message string) error {
+	return &exitError{code: 1, kind: "state_conflict", message: message}
+}
+
+func classifyConcurrentChange(err error) error {
+	if errors.Is(err, configstore.ErrChanged) {
+		return stateConflictError(err.Error() + "; retry after inspecting the latest Connection")
+	}
+	return err
+}
+
+func capabilityError(message string) error {
+	return &exitError{code: 1, kind: "capability_unsupported", message: message}
+}
+
 func renderedExit(code int) error {
 	return &exitError{code: code, rendered: true}
 }
 
 func connectionStore(opts options) (*configstore.Store, error) {
-	path := opts.ConfigFile
-	if path == "" {
-		var err error
-		path, err = appPaths.ConfigFile()
-		if err != nil {
-			return nil, err
-		}
+	store, err := unguardedConnectionStore(opts)
+	if err != nil {
+		return store, err
+	}
+	if err := requireLegacyMigration(store.Path()); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func unguardedConnectionStore(opts options) (*configstore.Store, error) {
+	_ = opts
+	path, err := appPaths.ConfigFile()
+	if err != nil {
+		return nil, err
 	}
 	return configstore.New(path), nil
 }
 
-func writeJSON(writer io.Writer, value any) error {
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	return encoder.Encode(value)
+func requireLegacyMigration(target string) error {
+	if _, err := os.Stat(target); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	legacy, err := appPaths.LegacyConfigFile()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(legacy); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return &exitError{
+		code: 1, kind: "legacy_import_required",
+		message:   "检测到 Tunlite 0.x 配置 " + legacy + "；运行 `tunlite import " + legacy + "` 导入 V1。旧配置和正在运行的 0.x 隧道不会被修改。升级说明：https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md",
+		riskLevel: "low",
+		actions: []core.Action{
+			{Type: "import_legacy_config", Parameters: map[string]any{"arguments": []string{"import", legacy}}},
+			{Type: "review_upgrade_guide", Parameters: map[string]any{"document": "docs/UPGRADE_FROM_0_X.md"}},
+		},
+	}
 }
 
 func sanitizeName(host string) string {
@@ -436,6 +480,21 @@ func sanitizeName(host string) string {
 		return value[:63]
 	}
 	return value
+}
+
+func writeJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(value)
+}
+
+func writeResponse(writer io.Writer, value map[string]any) error {
+	response := make(map[string]any, len(value)+1)
+	for key, item := range value {
+		response[key] = item
+	}
+	response["protocolVersion"] = ProtocolVersion
+	return writeJSON(writer, response)
 }
 
 type stringsFlag []string

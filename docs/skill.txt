@@ -11,31 +11,39 @@ macOS / Linux：
 
   curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
 
-Windows PowerShell：
-
-  irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex
-
 安装脚本下载 v1.0.0-preview.1 的平台二进制，并使用同一 GitHub Release 中的
 SHA256SUMS 校验。它只安装 CLI，不创建 Connection，也不启动任何持久服务。
+首个预览版不发布 Windows 产物。
+
+手动下载单文件时，把校验后的 `tunlite` 复制到 `~/.local/bin/tunlite` 或其他 PATH
+目录。安装、升级和卸载由发行渠道负责，核心 CLI 不提供相应命令，也不创建 `tun`
+短命令。替换 CLI 不会重启直接由原生服务运行的 SSH。V1 Preview 暂不提供 Shell
+自动补全，CLI 不读写 Shell 启动文件。Agent Skill 不由 CLI 安装；Agent 应从下方官方
+仓库目录安装 `use-tunlite` 包，并自行管理更新和卸载。
 
 安装后先验证运行时契约：
 
   tunlite version --json
-  tunlite capabilities --json
-  tunlite schema cli
+  tunlite capabilities --json --non-interactive
+  tunlite schema cli --json --non-interactive
 
 Agent 的所有操作使用 --json --non-interactive；修改前优先使用 --dry-run。公开监听、
-远端转发、删除、覆盖导入和迁移回滚必须获得用户明确批准。批量操作退出 6 表示部分
+远端转发、删除和覆盖导入必须获得用户明确同意。批量操作退出 5 表示部分
 失败，必须检查每个 results[] 项。
 
 完整 Agent 操作手册：
 
-  https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/skill/ssh-tunnel/SKILL.md
+  https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite
 
-预览版安装、支持矩阵和 0.10.3 迁移：
+从零安装与完整验收：
+
+  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md
+
+预览版边界和 0.10.3 迁移：
 
   https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md
 
-项目方向：
+两份并列主文档：
 
   https://github.com/yuanyuanzijin/tunlite/blob/master/docs/PROJECT_DIRECTION.md
+  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/ARCHITECTURE.md

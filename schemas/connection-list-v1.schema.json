@@ -4,9 +4,9 @@
   "title": "Tunlite ConnectionList",
   "type": "object",
   "additionalProperties": false,
-  "required": ["apiVersion", "kind", "items"],
+  "required": ["configVersion", "kind", "items"],
   "properties": {
-    "apiVersion": { "const": "tunlite.dev/v1" },
+    "configVersion": { "const": 1 },
     "kind": { "const": "ConnectionList" },
     "items": {
       "type": "array",

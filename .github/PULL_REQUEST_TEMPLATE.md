@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] Tests pass locally (`node --test`)
+- [ ] Go tests pass locally (`go test ./...`, `go test -race ./...`, `go vet ./...`)
 - [ ] Added or updated tests for the change
-- [ ] No new runtime dependencies (tunlite is zero-dependency by design)
+- [ ] No unnecessary runtime dependencies were added
 - [ ] Updated README / docs if behavior or commands changed

@@ -1,12 +1,33 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
+
+func TestLegacyLifecycleIsAcceptedButNotWrittenAgain(t *testing.T) {
+	raw := []byte(`{"apiVersion":"tunlite.dev/v1","kind":"Connection","metadata":{"name":"legacy"},"spec":{"driver":"example.test/fake","lifecycle":"persistent","configVersion":1,"config":{"value":"ok"}}}`)
+	var connection Connection
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&connection); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("lifecycle")) {
+		t.Fatalf("legacy lifecycle leaked back into the declaration: %s", encoded)
+	}
+	if bytes.Contains(encoded, []byte(`"configVersion"`)) || bytes.Contains(encoded, []byte(`"apiVersion"`)) {
+		t.Fatalf("legacy envelope was not normalized: %s", encoded)
+	}
+}
 
 type fakeDriver struct {
 	called bool
@@ -31,11 +52,11 @@ func TestPlannerUsesDriverWithoutProviderSpecialCases(t *testing.T) {
 	}
 	config, _ := json.Marshal(map[string]string{"value": "opaque-to-core"})
 	connection := Connection{
-		APIVersion: APIVersion,
-		Kind:       Kind,
-		Metadata:   Metadata{Name: "fake-connection"},
+		ConfigVersion: ConfigVersion,
+		Kind:          Kind,
+		Metadata:      Metadata{Name: "fake-connection"},
 		Spec: ConnectionSpec{
-			Driver: "example.test/fake", Lifecycle: "foreground", ConfigVersion: 1, Config: config,
+			Driver: "example.test/fake", Config: config,
 		},
 	}
 
@@ -66,11 +87,11 @@ func TestPlannerRejectsInvalidDriverPlan(t *testing.T) {
 	}
 	config, _ := json.Marshal(map[string]string{"value": "opaque-to-core"})
 	connection := Connection{
-		APIVersion: APIVersion,
-		Kind:       Kind,
-		Metadata:   Metadata{Name: "invalid-plan"},
+		ConfigVersion: ConfigVersion,
+		Kind:          Kind,
+		Metadata:      Metadata{Name: "invalid-plan"},
 		Spec: ConnectionSpec{
-			Driver: "example.test/invalid", Lifecycle: "foreground", ConfigVersion: 1, Config: config,
+			Driver: "example.test/invalid", Config: config,
 		},
 	}
 	if _, err := NewPlanner(registry).Plan(context.Background(), connection, PlanOptions{}); err == nil {
@@ -78,25 +99,25 @@ func TestPlannerRejectsInvalidDriverPlan(t *testing.T) {
 	}
 }
 
-func TestValidateConnectionReservesAllForBatchSelection(t *testing.T) {
+func TestValidateConnectionAllowsAllAsAnOrdinaryName(t *testing.T) {
 	config, _ := json.Marshal(map[string]string{"value": "opaque"})
 	connection := Connection{
-		APIVersion: APIVersion,
-		Kind:       Kind,
-		Metadata:   Metadata{Name: "all"},
-		Spec:       ConnectionSpec{Driver: "example.test/fake", Lifecycle: "persistent", ConfigVersion: 1, Config: config},
+		ConfigVersion: ConfigVersion,
+		Kind:          Kind,
+		Metadata:      Metadata{Name: "all"},
+		Spec:          ConnectionSpec{Driver: "example.test/fake", Config: config},
 	}
-	if err := ValidateConnection(connection); err == nil {
-		t.Fatal("reserved connection name was accepted")
+	if err := ValidateConnection(connection); err != nil {
+		t.Fatalf("ordinary connection name was rejected: %v", err)
 	}
 }
 
 func TestValidateConnectionRequiresConfigObject(t *testing.T) {
 	connection := Connection{
-		APIVersion: APIVersion,
-		Kind:       Kind,
-		Metadata:   Metadata{Name: "bad-config"},
-		Spec:       ConnectionSpec{Driver: "example.test/fake", Lifecycle: "persistent", ConfigVersion: 1, Config: json.RawMessage(`[]`)},
+		ConfigVersion: ConfigVersion,
+		Kind:          Kind,
+		Metadata:      Metadata{Name: "bad-config"},
+		Spec:          ConnectionSpec{Driver: "example.test/fake", Config: json.RawMessage(`[]`)},
 	}
 	if err := ValidateConnection(connection); err == nil {
 		t.Fatal("non-object driver config was accepted")
