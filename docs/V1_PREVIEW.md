@@ -123,8 +123,13 @@ go test -race ./...
 go vet ./...
 TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -count=1 -v
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
-scripts/package-release.sh v1.0.0-preview.1
+scripts/test-release-e2e.sh v1.0.0-preview.1
 ```
+
+最后一条门禁只在 macOS 上运行：它重新构建并独立校验完整 Release 目录，再使用归档中的
+原生二进制驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
+background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
+执行前必须确认该标签未被占用，结束后移除 plist 和进程。
 
 发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.25 是开发和源码兼容基线。发布只使用
 CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。

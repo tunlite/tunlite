@@ -2,7 +2,7 @@
 
 - **适用版本：** `v1.0.0-preview.1`
 - **适用平台：** macOS 12+、使用 systemd 用户服务的 Linux
-- **最后更新：** 2026-08-20
+- **最后更新：** 2026-08-21
 
 这份文档只保留用户视角的端到端验收：能否安装、能否连接用户自己的 SSH 服务器、
 真实流量能否通过隧道，以及操作系统能否正确托管它。
@@ -22,9 +22,10 @@
 | 隔离 sshd 下的真实 OpenSSH `-L`、`-R`、`-D` | 通过 |
 | Intel Mac 上的真实 launchd 生命周期、日志与崩溃恢复 | 通过，连续 3 次 |
 | Intel Mac 上的接管与交还零中断（Provider PID 不变） | 通过，连续 3 次 |
+| Intel Mac Release 二进制 + 隔离 sshd + launchd + `-L/-R/-D` 真实流量与崩溃恢复 | 通过 |
 | macOS x64/arm64、Linux x64/arm64 原生构建 | 通过 |
 | 三个发布归档的 SHA-256 | 通过 |
-| Intel Mac Release 二进制实际启动 | 通过 |
+| bootstrap 下载、校验、原子替换和真实 Release 安装 | 通过 |
 
 当前开发机是 Intel Mac，因此以下项目不能用交叉编译冒充真机通过：
 
