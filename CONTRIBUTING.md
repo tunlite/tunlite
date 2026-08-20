@@ -17,7 +17,8 @@
 
 ## 开发环境
 
-需要 Go 1.22 或更高版本。运行时端到端测试还需要系统 OpenSSH。
+需要 Go 1.25 或更高版本。Release 统一使用当前支持的 Go 1.26 工具链；运行时端到端测试
+还需要系统 OpenSSH。
 
 ```bash
 git clone https://github.com/yuanyuanzijin/tunlite.git
