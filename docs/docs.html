@@ -1,370 +1,149 @@
 <!doctype html>
-<html lang="en" data-lang="en">
+<html lang="en">
 <head>
-<meta http-equiv="refresh" content="0; url=https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Documentation · tunlite · 文档</title>
-<meta name="description" content="tunlite documentation — install, quick start, forwards, commands, jump hosts, tags, webhooks, and the Agent skill. tunlite 完整文档。">
-<meta name="theme-color" content="#07090a">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23090d0e'/%3E%3Cpath d='M9 11l5 5-5 5' fill='none' stroke='%2335e6c0' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M17 21h7' stroke='%2335e6c0' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
-<script>
-  (function () {
-    try {
-      var saved = localStorage.getItem('tunlite-lang');
-      var lang = saved || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
-      document.documentElement.lang = lang === 'zh' ? 'zh-Hans' : 'en';
-      document.documentElement.dataset.lang = lang;
-    } catch (e) {}
-  })();
-</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08110f">
+  <meta name="description" content="Tunlite v1 preview documentation and quick start.">
+  <title>Tunlite Docs — V1 Preview</title>
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
-  <div style="position:relative;z-index:100;padding:12px 20px;text-align:center;background:#2b2111;color:#ffe5a8;border-bottom:1px solid #75551d">
-    <strong>Tunlite v1 Preview:</strong>
-    <a href="INSTALL_AND_ACCEPTANCE.html" style="color:#fff0bd">从零安装与完整验收手册</a>。
-    本页其余内容暂时保留为 0.10.3 历史说明，不代表 v1 架构。
-  </div>
-<div class="grain" aria-hidden="true"></div>
+<body class="docs-page">
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav shell" aria-label="Primary navigation">
+      <a class="brand" href="index.html"><span>tun</span><b>lite</b><i></i></a>
+      <div class="nav-links"><a class="active" href="docs.html">Docs</a><a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md">Preview</a><a href="https://github.com/yuanyuanzijin/tunlite">GitHub</a></div>
+    </nav>
+  </header>
 
-<nav>
-  <div class="nav-in">
-    <a class="brand" href="index.html" aria-label="tunlite home">tun<span class="pr">lite</span><span class="cur" aria-hidden="true"></span></a>
-    <div class="nav-links">
-      <a class="navlink hide-sm" href="index.html"><span class="en">← Home</span><span class="zh">← 首页</span></a>
-      <div class="lang" role="group" aria-label="Language">
-        <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
-        <button type="button" data-set-lang="zh" aria-pressed="false">中文</button>
-      </div>
-      <a class="gh" href="https://github.com/yuanyuanzijin/tunlite" aria-label="GitHub" target="_blank" rel="noopener">
-        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      </a>
-    </div>
-  </div>
-</nav>
+  <div class="docs-shell shell">
+    <aside class="sidebar" aria-label="Documentation sections">
+      <p>V1 PREVIEW</p>
+      <a href="#install">Install</a>
+      <a href="#first-connection">First connection</a>
+      <a href="#lifecycle">Lifecycle</a>
+      <a href="#inspect">Inspect and repair</a>
+      <a href="#automation">Automation</a>
+      <a href="#migration">Upgrade from 0.x</a>
+      <a href="#support">Platform support</a>
+      <p>DEEP DIVES</p>
+      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/ARCHITECTURE.md">Architecture ↗</a>
+      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/PROJECT_DIRECTION.md">Product direction ↗</a>
+      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">Acceptance guide ↗</a>
+    </aside>
 
-<div class="docs-layout">
-  <!-- ============ SIDEBAR ============ -->
-  <aside class="sidebar">
-    <button class="sb-toggle" type="button" aria-label="Toggle navigation">
-      <span><span class="en">On this page</span><span class="zh">本页导航</span></span>
-      <span class="chev">▾</span>
-    </button>
-    <div class="sb-inner">
-      <div class="sb-group"><span class="en">Getting started</span><span class="zh">开始</span></div>
-      <a href="#install"><span class="en">Install</span><span class="zh">安装</span></a>
-      <a href="#quickstart"><span class="en">Quick start</span><span class="zh">快速开始</span></a>
-      <a href="#update"><span class="en">Update</span><span class="zh">升级</span></a>
-      <a href="#uninstall"><span class="en">Uninstall</span><span class="zh">卸载</span></a>
-
-      <div class="sb-group"><span class="en">Concepts</span><span class="zh">概念</span></div>
-      <a href="#how-it-works"><span class="en">How it works</span><span class="zh">工作原理</span></a>
-      <a href="#forwards"><span class="en">Forwards</span><span class="zh">转发模型</span></a>
-      <a href="#run"><span class="en">Daemon-less run</span><span class="zh">无守护进程 run</span></a>
-
-      <div class="sb-group"><span class="en">Reference</span><span class="zh">参考</span></div>
-      <a href="#commands"><span class="en">Commands</span><span class="zh">命令</span></a>
-      <a href="#jump-hosts"><span class="en">Jump hosts</span><span class="zh">跳板机</span></a>
-      <a href="#tags"><span class="en">Tags</span><span class="zh">标签</span></a>
-      <a href="#monitor"><span class="en">Live monitor</span><span class="zh">实时面板</span></a>
-      <a href="#exit-codes"><span class="en">Exit codes &amp; --json</span><span class="zh">退出码与 --json</span></a>
-
-      <div class="sb-group"><span class="en">Integrations</span><span class="zh">集成</span></div>
-      <a href="#webhooks"><span class="en">Webhooks</span><span class="zh">告警 webhook</span></a>
-      <a href="#import-export"><span class="en">Import / export</span><span class="zh">导入导出</span></a>
-      <a href="#completion"><span class="en">Shell completion</span><span class="zh">Shell 补全</span></a>
-      <a href="#Agents"><span class="en">For Agents</span><span class="zh">给 Agent 用</span></a>
-
-      <div class="sb-group"><span class="en">More</span><span class="zh">更多</span></div>
-      <a href="#config"><span class="en">Config paths</span><span class="zh">配置路径</span></a>
-      <a href="#versioning"><span class="en">Versioning</span><span class="zh">版本管理</span></a>
-    </div>
-  </aside>
-
-  <!-- ============ CONTENT ============ -->
-  <main class="docs-content">
-    <div class="docs-intro">
-      <h1>tun<span class="pr">lite</span> <span class="en">docs</span><span class="zh">文档</span></h1>
-      <p>
-        <span class="en">A lightweight, cross-platform SSH tunnel manager. Define named tunnels once; a tiny zero-dependency daemon keeps them connected, restarts them at login, and helps set up passwordless access. Every command supports <code>--json</code> and stable exit codes.</span>
-        <span class="zh">轻量、跨平台的 SSH 隧道管理器。一次定义命名隧道，由一个零依赖的小守护进程保持连接、开机自启、帮你打通免密。每个命令都支持 <code>--json</code> 和稳定退出码。</span>
-      </p>
-    </div>
-
-    <!-- INSTALL -->
-    <section id="install">
-      <h2><span class="en">Install</span><span class="zh">安装</span></h2>
-      <p class="lead"><span class="en">Prerequisite: <b>Node ≥ 18</b> and the system <code>ssh</code> it wraps, both on your PATH. Pick one — no global npm required.</span><span class="zh">前提：<b>Node ≥ 18</b> 和它封装的系统 <code>ssh</code>，都在 PATH 上。任选其一 —— 不依赖全局 npm。</span></p>
-
-      <div class="tabs" role="tablist" aria-label="Install method">
-        <button class="tab" role="tab" aria-selected="true"  data-tab="npx">npx</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="curl">curl <small>macOS · Linux</small></button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="ps">PowerShell <small>Windows · beta</small></button>
-      </div>
-      <div class="codeblock" data-panel="npx">
-        <span class="prompt">$</span>
-        <code>npx tunlite install</code>
-        <button class="copy" type="button">copy</button>
-      </div>
-      <div class="codeblock" data-panel="curl" hidden>
-        <span class="prompt">$</span>
-        <code>curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh</code>
-        <button class="copy" type="button">copy</button>
-      </div>
-      <div class="codeblock" data-panel="ps" hidden>
-        <span class="prompt">&gt;</span>
-        <code>irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex</code>
-        <button class="copy" type="button">copy</button>
+    <main id="content" class="docs-content">
+      <div class="docs-hero">
+        <p class="eyebrow"><span></span> V1.0.0-PREVIEW.1</p>
+        <h1>Start with one connection.</h1>
+        <p>Tunlite is a single Go binary that turns native OpenSSH forwards into named, OS-managed connections. The preview supports macOS and Linux; Windows is not published yet.</p>
       </div>
 
-      <p class="note"><span class="en"><code>tunlite install</code> copies the runtime to a fixed directory and writes a launcher that <b>pins node's absolute path</b> (switching nvm/fnm won't break it). Run interactively, it also offers to register login autostart and install the Agent skill. A short <code>tun</code> alias is added too (skipped with a notice if the name is already taken).</span><span class="zh"><code>tunlite install</code> 把运行时拷到固定目录，并写一个<b>钉死 node 绝对路径</b>的 launcher（切换 nvm/fnm 也不受影响）。交互运行时还会问你是否注册开机自启、安装 Agent skill。也会顺带写一个短别名 <code>tun</code>（若已被占用则跳过并提示）。</span></p>
+      <section id="install">
+        <p class="kicker">01 · INSTALL</p>
+        <h2>Install the native binary</h2>
+        <p>The only runtime dependency is the system <code>ssh</code>. The bootstrap downloads the platform archive and verifies its SHA-256 before installation.</p>
+        <pre class="code"><span>$</span> command -v ssh
+<span>$</span> curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+<span>$</span> ~/.local/bin/tunlite version --json</pre>
+        <div class="callout"><strong>Release not published yet?</strong> A 404 is expected before the Preview Release exists. Testers can install a supplied native binary with <code>install -m 0755 ./tunlite ~/.local/bin/tunlite</code>.</div>
+      </section>
 
-      <div class="callout warn"><span class="en"><b>Windows support is beta.</b> macOS and Linux are the primary, CI-tested platforms; Windows (Task Scheduler autostart, <code>.cmd</code> launcher, PATH setup) works but is less battle-tested — please report rough edges.</span><span class="zh"><b>Windows 支持目前为 beta。</b> macOS 和 Linux 是主力、有 CI 覆盖的平台；Windows（任务计划自启、<code>.cmd</code> launcher、PATH 设置）能用，但验证较少 —— 遇到问题欢迎反馈。</span></div>
-    </section>
+      <section id="first-connection">
+        <p class="kicker">02 · DECLARE</p>
+        <h2>Create your first connection</h2>
+        <p>Use the same forward syntax as OpenSSH. Forward flags are repeatable, and <code>add</code> creates a stopped native service—it does not open a connection.</p>
+        <pre class="code"><span>#</span> local TCP forward
+<span>$</span> tunlite add db --to deploy@app01 -L 5432:localhost:5432
 
-    <!-- QUICK START -->
-    <section id="quickstart">
-      <h2><span class="en">Quick start</span><span class="zh">快速开始</span></h2>
-      <p class="lead"><span class="en">Forwards use the standard ssh flags — <code>-L</code> / <code>-R</code> / <code>-D</code>, repeatable, so one tunnel can carry several (see <a class="ext" href="#forwards">Forwards</a>).</span><span class="zh">转发用原生 ssh 标志 —— <code>-L</code> / <code>-R</code> / <code>-D</code>，可重复，所以一条隧道可带多个（见<a class="ext" href="#forwards">转发模型</a>）。</span></p>
-<pre class="code"><span class="h"># reach the server's :80 on your local :8080</span>
-<span class="c">$</span> tunlite add web   --to me@host -L 8080:localhost:80
-<span class="h"># expose your local :3000 as server:9000</span>
-<span class="c">$</span> tunlite add rev   --to me@host -R 9000:localhost:3000
-<span class="h"># local SOCKS5 proxy (default :1080)</span>
-<span class="c">$</span> tunlite add socks --to me@host -D 1080
+<span>#</span> remote publish and SOCKS proxy
+<span>$</span> tunlite add preview --to deploy@app01 -R 9000:localhost:3000
+<span>$</span> tunlite add socks --to deploy@app01 -D 1080</pre>
+        <p>Identity files, jump hosts, tags, and safe OpenSSH <code>Key=Value</code> options are explicit fields:</p>
+        <pre class="code"><span>$</span> tunlite add private-db --to deploy@app01:2222 \
+    -i ~/.ssh/work_ed25519 --jump bastion@example.com \
+    -L 5432:localhost:5432 --tag work</pre>
+      </section>
 
-<span class="c">$</span> tunlite status             <span class="h"># aligned table of every tunnel</span>
-<span class="c">$</span> tunlite logs web -f        <span class="h"># follow logs</span>
-<span class="c">$</span> tunlite doctor             <span class="h"># why it won't connect (ssh/key/port/daemon)</span></pre>
-      <p class="note"><span class="en"><b>Upgrading from 0.9.x?</b> 0.10.0 leans into native <code>ssh</code>, so a couple of commands take a new shape — while your existing tunnel config keeps working, untouched. Forwards now speak ssh's own flags — <code>add web --to me@host -L 8080:localhost:80 -D 1080</code> (repeatable; <code>set &lt;name&gt;</code> edits them in place), and the earlier <code>add local/remote/dynamic</code> form gives way to this. Switching a tunnel on and off is now <code>enable</code> / <code>disable</code> (it was <code>up</code>/<code>down</code>), each naming what it acts on — a name, <code>--tag</code>, or <code>all</code>; a retired or mistyped verb gently points you to the right one (<code>tunlite up</code> → "did you mean <code>enable</code>?"). Run <code>tunlite update</code> (or <code>npx tunlite@latest install</code>) and confirm with <code>tunlite --version</code>.</span><span class="zh"><b>从 0.9.x 升级？</b>0.10.0 更拥抱原生 <code>ssh</code>，少数命令换了写法 —— 而你已有的隧道配置照常运行、纹丝不动。转发现在直接说 ssh 自己的标志 —— <code>add web --to me@host -L 8080:localhost:80 -D 1080</code>（可重复；用 <code>set &lt;名字&gt;</code> 就地编辑），早先的 <code>add local/remote/dynamic</code> 写法由此让位。开关一条隧道现在是 <code>enable</code> / <code>disable</code>（此前 <code>up</code>/<code>down</code>），每个都点明作用对象 —— 名字、<code>--tag</code> 或 <code>all</code>；打错或用了退役的词，会温和地指向正确的那个（<code>tunlite up</code> → "did you mean <code>enable</code>?"）。跑 <code>tunlite update</code>（或 <code>npx tunlite@latest install</code>）并用 <code>tunlite --version</code> 确认。</span></p>
-      <p class="note"><span class="en">When the target isn't passwordless yet, running <code>tunlite enable</code> in a terminal prompts for the password once and installs your key. Or do it explicitly: <code>tunlite check user@server</code> (exit 0 = already works) and <code>tunlite setup-key user@server</code>.</span><span class="zh">目标还没免密时，在终端跑 <code>tunlite enable</code> 会让你输一次密码并装好公钥。也可显式执行：<code>tunlite check user@server</code>（退出 0 = 已通）、<code>tunlite setup-key user@server</code>。</span></p>
-      <p class="note"><span class="en"><b>Autostart (optional):</b> <code>tunlite install service</code> registers the daemon to start at login — it also starts everything right away, so it <i>replaces</i> <code>enable</code> when you want tunnels up persistently.</span><span class="zh"><b>开机自启（可选）：</b><code>tunlite install service</code> 把守护进程注册成登录自启 —— 它当场也会把一切启动起来，所以想让隧道持久常驻时它<i>替代</i> <code>enable</code>，两者不用都做。</span></p>
-    </section>
-
-    <!-- UPDATE -->
-    <section id="update">
-      <h2><span class="en">Update</span><span class="zh">升级</span></h2>
-<pre class="code"><span class="c">$</span> tunlite update              <span class="h"># upgrade to the latest</span>
-<span class="c">$</span> tunlite update v0.9.0       <span class="h"># install / roll back to a tag</span>
-<span class="c">$</span> tunlite update --check      <span class="h"># compare vs latest, no change</span>
-<span class="c">$</span> tunlite update --no-restart <span class="h"># swap files only</span></pre>
-      <p class="note"><span class="en"><code>update</code> upgrades to the <b>latest release tag</b>: it fetches that tag's tarball and re-anchors in place (no npm, no git), then restarts the daemon — so the installed version is always a real published release. It only self-updates an anchored install; from a git checkout it points you to <code>git pull</code>, and from an <code>npm&nbsp;i&nbsp;-g</code> install to <code>npm&nbsp;i&nbsp;-g&nbsp;tunlite@latest</code>.</span><span class="zh"><code>update</code> 升级到<b>最新的 release tag</b>：拉那个 tag 的 tarball 就地重新锚定（不走 npm、不走 git）再重启 daemon —— 所以装上的永远是一个真实已发布的版本。它只自更新锚定安装；在 git 检出里提示你用 <code>git pull</code>，在 <code>npm&nbsp;i&nbsp;-g</code> 安装里提示你用 <code>npm&nbsp;i&nbsp;-g&nbsp;tunlite@latest</code>。</span></p>
-    </section>
-
-    <!-- UNINSTALL -->
-    <section id="uninstall">
-      <h2><span class="en">Uninstall</span><span class="zh">卸载</span></h2>
-<pre class="code"><span class="c">$</span> tunlite uninstall            <span class="h"># stop daemon + remove everything (confirms first)</span>
-<span class="c">$</span> tunlite uninstall --force    <span class="h"># skip the confirmation</span>
-<span class="c">$</span> tunlite uninstall --purge    <span class="h"># also remove config and logs</span>
-<span class="c">$</span> tunlite uninstall service    <span class="h"># remove autostart only</span></pre>
-      <p class="note"><span class="en">Interactive <code>uninstall</code> asks for confirmation and warns if any tunnels are currently up. <code>--force</code> (or <code>--json</code> for scripts/Agents) skips the prompt.</span><span class="zh">交互式 <code>uninstall</code> 会先确认，并在有隧道正在运行时提示。<code>--force</code>（脚本/Agent 用 <code>--json</code>）可跳过确认。</span></p>
-    </section>
-
-    <!-- HOW IT WORKS -->
-    <section id="how-it-works">
-      <h2><span class="en">How it works</span><span class="zh">工作原理</span></h2>
-      <p class="lead"><span class="en">Three roles, each with one job — think <b>remote</b>, <b>engine</b>, <b>guard</b>.</span><span class="zh">三个角色，各司一职 —— 可以理解成<b>遥控器</b>、<b>引擎</b>、<b>保安</b>。</span></p>
-      <div class="roles">
-        <div class="role">
-          <span class="tag"><span class="en">the remote</span><span class="zh">遥控器</span></span>
-          <h4>CLI <code>tunlite …</code></h4>
-          <p><span class="en">The commands you type. Edits <code>config.json</code>, talks to the daemon, then exits.</span><span class="zh">你敲的命令。改 <code>config.json</code>、和 daemon 通信，敲完即退。</span></p>
+      <section id="lifecycle">
+        <p class="kicker">03 · RUN</p>
+        <h2>Choose who owns the lifecycle</h2>
+        <div class="docs-table">
+          <div class="table-head"><span>Command</span><span>Mode</span><span>Ownership</span></div>
+          <div><code>tunlite run db</code><span>foreground</span><span>Current terminal; Ctrl-C stops it</span></div>
+          <div><code>tunlite start db</code><span>background</span><span>Native service for this login session</span></div>
+          <div><code>tunlite enable db</code><span>persistent</span><span>Native service now and on future logins</span></div>
         </div>
-        <div class="role">
-          <span class="tag"><span class="en">the engine</span><span class="zh">引擎</span></span>
-          <h4>daemon <code>daemon run</code></h4>
-          <p><span class="en">A long-lived process. Keeps every tunnel connected, reconnects on drop, serves status &amp; logs.</span><span class="zh">一个常驻进程。把每条隧道连着、断了重连、对外提供 status 和日志。</span></p>
+        <pre class="code"><span>$</span> tunlite check db --timeout 12
+<span>$</span> tunlite start db
+<span>$</span> tunlite status db
+<span>$</span> tunlite logs db --lines 100
+<span>$</span> tunlite stop db</pre>
+        <div class="callout">Use system OpenSSH tools to manage keys. Tunlite never generates credentials, copies public keys, weakens host-key checking, or modifies remote <code>authorized_keys</code>.</div>
+      </section>
+
+      <section id="inspect">
+        <p class="kicker">04 · OBSERVE</p>
+        <h2>State without guesswork</h2>
+        <p>Status separates five questions that older tunnel tools often collapse into one word:</p>
+        <div class="state-grid">
+          <div><code>serviceState</code><span>Is a native definition registered?</span></div>
+          <div><code>mode</code><span>Stopped, foreground, background, or persistent?</span></div>
+          <div><code>processState</code><span>Is the provider process actually running?</span></div>
+          <div><code>health</code><span>Do configured endpoint probes pass?</span></div>
+          <div><code>consistencyState</code><span>Does the system definition match Tunlite?</span></div>
         </div>
-        <div class="role">
-          <span class="tag"><span class="en">the guard</span><span class="zh">保安</span></span>
-          <h4>service <code>install service</code></h4>
-          <p><span class="en">A launchd / systemd / Task Scheduler entry. Keeps the daemon alive across boots and crashes.</span><span class="zh">launchd / systemd / 任务计划里的一条注册项。开机拉起、挂了重启，保活 daemon。</span></p>
+        <pre class="code"><span>$</span> tunlite doctor db --offline
+<span>$</span> tunlite resolve db --use tunlite --dry-run
+<span>$</span> tunlite resolve db --use system</pre>
+        <p>Drift repair always names the source of truth. There is no silent overwrite of a native service definition.</p>
+      </section>
+
+      <section id="automation">
+        <p class="kicker">05 · AUTOMATE</p>
+        <h2>A versioned interface for agents</h2>
+        <p>Use <code>--json --non-interactive</code> and verify <code>protocolVersion</code> before mutation. Use <code>--dry-run</code> whenever the command supports it.</p>
+        <pre class="code"><span>$</span> tunlite capabilities --json --non-interactive
+<span>$</span> tunlite schema cli --json --non-interactive
+<span>$</span> tunlite add db --to deploy@app01 -L 5432:localhost:5432 \
+    --dry-run --json --non-interactive</pre>
+        <p>Batch operations return one result per connection. Exit code <code>5</code> means partial failure; inspect every item instead of treating it as total failure or success.</p>
+        <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite">Use the official Agent Skill →</a></p>
+      </section>
+
+      <section id="migration">
+        <p class="kicker">06 · MIGRATE</p>
+        <h2>Move from 0.10.3 side by side</h2>
+        <p>Keep the old <code>tunlite</code> command and V1 binary separate. Import is one-way and read-only with respect to 0.x: it never edits the source file, stops the old daemon, or starts V1 connections.</p>
+        <pre class="code"><span>$</span> ./tunlite-v1 import ~/.config/tunlite/config.json \
+    --dry-run --json --non-interactive
+<span>$</span> ./tunlite-v1 import ~/.config/tunlite/config.json
+
+<span>#</span> switch one connection only after inspecting it
+<span>$</span> tunlite disable db
+<span>$</span> ./tunlite-v1 start db</pre>
+        <div class="callout warning-callout"><strong>Never run both versions of the same connection.</strong> Local ports conflict, and duplicate remote forwards can be ambiguous. Keep the old config until every connection has passed real traffic and login-recovery tests.</div>
+        <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md">Read the complete migration and rollback guide →</a></p>
+      </section>
+
+      <section id="support">
+        <p class="kicker">07 · SUPPORT</p>
+        <h2>Preview support matrix</h2>
+        <div class="docs-table support-table">
+          <div class="table-head"><span>Platform</span><span>Artifact</span><span>Native lifecycle</span></div>
+          <div><span>macOS 12+ · Intel / Apple Silicon</span><code>macos</code><span>launchd</span></div>
+          <div><span>Linux · x64</span><code>linux_x64</code><span>systemd user service</span></div>
+          <div><span>Linux · arm64</span><code>linux_arm64</code><span>systemd user service</span></div>
+          <div><span>Windows</span><span>not published</span><span>deferred pending real validation</span></div>
         </div>
-      </div>
-<pre class="flow"> you ── tunlite &lt;cmd&gt; (CLI) ──┬─ write config.json   (add/rm/up/down)
-                              ├─ NDJSON IPC → daemon  (status/logs/restart)
-                              └─ one-shot ssh         (check/setup-key)
-
- OS service ── runs ──▶ tunlite daemon run ──spawn──▶ ssh -N (-L/-R/-D)
-   ▲ created by `install service`        │ supervise + reconnect (backoff)
-   └ keeps the daemon alive              ▼
-                              config.json ◀── reconcile on (re)start</pre>
-      <p class="note"><span class="en"><code>config.json</code> is the single source of truth. The OS service keeps the daemon alive; the daemon keeps every tunnel alive and reconciles against the config on every start. The daemon starts only on <code>tunlite enable</code> (on demand) or <code>tunlite install service</code> (at login) — other commands won't start it; if it's down they exit <code>5</code> and tell you how.</span><span class="zh"><code>config.json</code> 是唯一事实来源。OS service 保活 daemon，daemon 保活每条隧道，每次启动还会与配置对账。daemon 只在 <code>tunlite enable</code>（按需）或 <code>tunlite install service</code>（开机）时启动 —— 其它命令不会启动它；它没在跑时会退出 <code>5</code> 并告诉你怎么启动。</span></p>
-    </section>
-
-    <!-- FORWARDS -->
-    <section id="forwards">
-      <h2><span class="en">Forwards</span><span class="zh">转发模型</span></h2>
-      <p class="lead"><span class="en">Forwards use the standard ssh flags, and they're repeatable — one tunnel can carry several over one connection. To change a tunnel's forwards, use <code>set &lt;name&gt;</code>: passing any <code>-L/-R/-D</code> <b>replaces the whole forward set</b> (<code>set</code> is the sole forward editor).</span><span class="zh">转发用原生 ssh 标志，且可重复 —— 一条隧道可在一条连接上承载多个。要改一条隧道的转发，用 <code>set &lt;name&gt;</code>：带上任意 <code>-L/-R/-D</code> 就会<b>替换整组转发</b>（<code>set</code> 是唯一的转发编辑入口）。</span></p>
-      <ul>
-        <li><span class="en"><code>-L [bind:]PORT:HOST:HOSTPORT</code> — <b>local forward</b>: reach a remote service from your machine.</span><span class="zh"><code>-L [bind:]PORT:HOST:HOSTPORT</code> —— <b>本地转发</b>：在本地访问远端服务。</span></li>
-        <li><span class="en"><code>-R [bind:]PORT:HOST:HOSTPORT</code> — <b>remote forward</b>: expose a local service on the server.</span><span class="zh"><code>-R [bind:]PORT:HOST:HOSTPORT</code> —— <b>远程转发</b>：把本地服务暴露到服务器。</span></li>
-        <li><span class="en"><code>-D [bind:]PORT</code> — <b>dynamic</b>: a local SOCKS5 proxy.</span><span class="zh"><code>-D [bind:]PORT</code> —— <b>动态</b>：本地 SOCKS5 代理。</span></li>
-      </ul>
-      <p><span class="en">The optional <code>bind:</code> prefix is the listen address (default <code>127.0.0.1</code>; use <code>0.0.0.0</code> to expose the listener to your LAN). Bracket IPv6 addresses: <code>[::1]</code>.</span><span class="zh">可选的 <code>bind:</code> 前缀是监听地址（默认 <code>127.0.0.1</code>；写 <code>0.0.0.0</code> 把监听暴露到局域网）。IPv6 地址要用方括号：<code>[::1]</code>。</span></p>
-      <p class="note"><span class="en">The SSH port rides in the target — <code>--to user@host:2222</code> (defaults to 22; must be an integer 1–65535 or it's a usage error). IPv6 literals with a port need brackets: <code>user@[::1]:2222</code>.</span><span class="zh">SSH 端口写进目标里 —— <code>--to user@host:2222</code>（默认 22；必须是 1–65535 的整数，否则报用法错）。IPv6 字面量带端口要加方括号：<code>user@[::1]:2222</code>。</span></p>
-    </section>
-
-    <!-- RUN -->
-    <section id="run">
-      <h2><span class="en">Daemon-less: <code>run</code></span><span class="zh">无守护进程：<code>run</code></span></h2>
-      <p class="lead"><span class="en">For containers and <code>systemd</code> entrypoints where a background daemon doesn't fit, <code>run</code> supervises one tunnel in the <b>foreground</b> (auto-reconnect, keepalive) and stays attached until stopped — no daemon, no <code>config.json</code> entry.</span><span class="zh">容器、<code>systemd</code> 入口这类不方便跑后台守护进程的场景，用 <code>run</code> 在<b>前台</b>监管一条隧道（自动重连、keepalive），一直挂着直到被停止 —— 不起守护进程，也不写进 <code>config.json</code>。</span></p>
-<pre class="code"><span class="c">$</span> tunlite run --to me@host -L 8080:localhost:80
-<span class="c">$</span> tunlite run --to me@host -R 9000:localhost:3000 --name rev --json --exit-on-failure</pre>
-      <p class="note"><span class="en"><code>--name</code> labels the tunnel for status lines (defaults to the target host). <code>--json</code> emits NDJSON state on stdout (one JSON object per state change). <code>--exit-on-failure</code> exits non-zero instead of retrying — <code>needs-auth</code> → <code>4</code>, <code>blocked</code>/<code>failed</code> → <code>1</code> — so a supervisor restarts it.</span><span class="zh"><code>--name</code> 为该临时隧道设置标签（默认使用目标主机名）。<code>--json</code> 在 stdout 输出 NDJSON 状态（每次状态变化一行 JSON）。<code>--exit-on-failure</code> 失败即以非零码退出而非重试 —— <code>needs-auth</code> → <code>4</code>、<code>blocked</code>/<code>failed</code> → <code>1</code> —— 方便上层 supervisor 重启。</span></p>
-    </section>
-
-    <!-- COMMANDS -->
-    <section id="commands">
-      <h2><span class="en">Commands</span><span class="zh">命令</span></h2>
-      <table class="tbl">
-        <thead><tr><th><span class="en">Command</span><span class="zh">命令</span></th><th><span class="en">What it does</span><span class="zh">作用</span></th></tr></thead>
-        <tbody>
-          <tr><td>add &lt;name&gt; --to user@host -L/-R/-D …</td><td><span class="en">Define a tunnel (<code>-L/-R/-D</code> repeatable for multiple forwards).</span><span class="zh">定义一条隧道（<code>-L/-R/-D</code> 可重复，带多个转发）。</span></td></tr>
-          <tr><td>set &lt;name&gt; [--to …] [-L/-R/-D …] [-i key] [--jump …]</td><td><span class="en">Edit a tunnel; passing <code>-L/-R/-D</code> replaces its whole forward set.</span><span class="zh">改隧道；带 <code>-L/-R/-D</code> 会替换整组转发。</span></td></tr>
-          <tr><td>rename &lt;old&gt; &lt;new&gt;</td><td><span class="en">Rename, handing off the live connection.</span><span class="zh">重命名，平滑交接活动连接。</span></td></tr>
-          <tr><td>rm &lt;name&gt; · list [--tag T]</td><td><span class="en">Delete (and stop) a tunnel · list defined tunnels.</span><span class="zh">删除（并停掉）隧道 · 列出已定义隧道。</span></td></tr>
-          <tr><td>run --to user@host -L/-R/-D … [--name LABEL] [--json]</td><td><span class="en">Daemon-less foreground tunnel (container / systemd entrypoint).</span><span class="zh">无守护进程的前台隧道（容器 / systemd 入口）。</span></td></tr>
-          <tr><td>enable · disable · restart &lt;name|--tag T|all&gt;</td><td><span class="en">Control. Name a target — a tunnel, <code>--tag</code> (every tunnel with that label), or <code>all</code>; bare is a usage error.</span><span class="zh">控制。必须指明对象 —— 隧道名、<code>--tag</code>（带该标签的所有隧道）或 <code>all</code>；不带对象会报用法错误。</span></td></tr>
-          <tr><td>status [name|--tag T]</td><td><span class="en">Structured status (no name = aligned table; with name = detail).</span><span class="zh">结构化状态（无名 = 对齐表格；有名 = 详情）。</span></td></tr>
-          <tr><td>monitor [--interval s] [--tag T]</td><td><span class="en">Full-screen live dashboard.</span><span class="zh">全屏实时面板。</span></td></tr>
-          <tr><td>logs &lt;name&gt; [-f] [-n N]</td><td><span class="en">View / follow logs.</span><span class="zh">查看 / 跟随日志。</span></td></tr>
-          <tr><td>doctor [name]</td><td><span class="en">One-shot health check: why it won't connect.</span><span class="zh">一键体检：为什么连不上。</span></td></tr>
-          <tr><td>check · setup-key &lt;user@host&gt;</td><td><span class="en">Probe passwordless / install your public key.</span><span class="zh">免密探测 / 安装你的公钥。</span></td></tr>
-          <tr><td>webhook [set|on|off|events|test]</td><td><span class="en">Drop alerts: view / set / toggle / pick events / test.</span><span class="zh">掉线告警：查看 / 设置 / 开关 / 挑事件 / 测试。</span></td></tr>
-          <tr><td>export · import &lt;file&gt; [--force]</td><td><span class="en">Export config (no keys) · merge tunnels back.</span><span class="zh">导出配置（不含密钥）· 合并导入隧道。</span></td></tr>
-          <tr><td>update [version]</td><td><span class="en">Update (or pin a tag) and restart the daemon.</span><span class="zh">升级（或锁定标签）并重启 daemon。</span></td></tr>
-          <tr><td>install [service|skill|completion]</td><td><span class="en">Anchor runtime; add autostart / skill / completion.</span><span class="zh">锚定运行时；加自启 / skill / 补全。</span></td></tr>
-          <tr><td>uninstall [target] [--purge] [--force]</td><td><span class="en">Uninstall (no target = everything; confirms first, <code>--force</code> skips; <code>--purge</code> drops config/state).</span><span class="zh">卸载（不带目标 = 全部；先确认、<code>--force</code> 跳过；<code>--purge</code> 连配置/状态一起删）。</span></td></tr>
-          <tr><td>daemon run|start|stop|status</td><td><span class="en">Daemon lifecycle (<code>run</code> = foreground, for the service).</span><span class="zh">daemon 生命周期（<code>run</code> = 前台，供服务调用）。</span></td></tr>
-        </tbody>
-      </table>
-      <p class="note"><span class="en">Naming convention: <code>&lt;purpose&gt;-&lt;port&gt;</code>, all-lowercase, hyphen-separated — e.g. <code>tmux-prod-19999</code>, <code>db-staging-5432</code>. That way <code>status</code>/<code>logs</code> read self-explanatory.</span><span class="zh">命名规范：<code>&lt;用途&gt;-&lt;端口&gt;</code>、全小写、连字符分隔 —— 例如 <code>tmux-prod-19999</code>、<code>db-staging-5432</code>。这样 <code>status</code>/<code>logs</code> 一眼自解释。</span></p>
-    </section>
-
-    <!-- JUMP HOSTS -->
-    <section id="jump-hosts">
-      <h2><span class="en">Jump hosts</span><span class="zh">跳板机</span></h2>
-      <p><span class="en">Reach a target through one or more bastions with <code>--jump [user@]host[:port][,…]</code> (ssh <code>-J</code> / ProxyJump) on <code>add</code>, <code>set</code>, <code>check</code>, and <code>setup-key</code>. It's stored per-tunnel and used for the auth probe too.</span><span class="zh">用 <code>--jump [user@]host[:port][,…]</code>（ssh <code>-J</code> / ProxyJump）经一个或多个堡垒机到达目标，<code>add</code> / <code>set</code> / <code>check</code> / <code>setup-key</code> 都支持。它按隧道保存，免密探测也走它。</span></p>
-<pre class="code"><span class="c">$</span> tunlite add db-5432 --to me@db -L 5432:localhost:5432 --jump me@bastion
-<span class="c">$</span> tunlite set web-8080 --jump me@b1,me@b2   <span class="h"># chain multiple hops</span></pre>
-    </section>
-
-    <!-- TAGS -->
-    <section id="tags">
-      <h2><span class="en">Tags</span><span class="zh">标签</span></h2>
-      <p><span class="en">Label tunnels with <code>--tag</code> (repeatable) on <code>add</code>, edit with <code>set --tag</code> (replaces the set) or <code>set --no-tags</code> (clears). Then act on a whole group: <code>enable</code>/<code>disable</code>/<code>restart</code>/<code>status</code>/<code>list</code>/<code>monitor</code> all accept <code>--tag &lt;label&gt;</code> (multiple <code>--tag</code> = union). A name and <code>--tag</code> are mutually exclusive. Tags are metadata only — they never change the ssh command.</span><span class="zh">用 <code>--tag</code>（可重复）在 <code>add</code> 时贴标签，用 <code>set --tag</code>（整组替换）或 <code>set --no-tags</code>（清空）修改。之后对一整组批量操作：<code>enable</code>/<code>disable</code>/<code>restart</code>/<code>status</code>/<code>list</code>/<code>monitor</code> 都支持 <code>--tag &lt;标签&gt;</code>（多个 <code>--tag</code> 取并集）。名字与 <code>--tag</code> 不能同时给。标签只是元数据，不改变 ssh 命令。</span></p>
-<pre class="code"><span class="c">$</span> tunlite add api-9001 --to me@host -R 9001:localhost:9001 --tag prod
-<span class="c">$</span> tunlite enable --tag prod</pre>
-    </section>
-
-    <!-- MONITOR -->
-    <section id="monitor">
-      <h2><span class="en">Live monitor</span><span class="zh">实时面板</span></h2>
-      <p><span class="en"><code>tunlite monitor</code> (alias <code>mon</code>) opens a top-style full-screen dashboard: daemon status and tunnel counts up top, a colour-coded tunnel table below.</span><span class="zh"><code>tunlite monitor</code>（别名 <code>mon</code>）打开 top 风格的全屏面板：顶部 daemon 状态与隧道计数，下面是上色的隧道表。</span></p>
-      <ul>
-        <li><span class="en"><code>↑/k</code> <code>↓/j</code> select, <code>s</code> start, <code>x</code> stop, <code>r</code> restart (<code>y/N</code> confirm).</span><span class="zh"><code>↑/k</code> <code>↓/j</code> 选择，<code>s</code> 启动，<code>x</code> 停止，<code>r</code> 重启（<code>y/N</code> 确认）。</span></li>
-        <li><span class="en"><code>?</code> help, <code>q</code> quit, <code>--interval &lt;seconds&gt;</code> sets the refresh rate (default 1s).</span><span class="zh"><code>?</code> 帮助，<code>q</code> 退出，<code>--interval &lt;秒&gt;</code> 调刷新间隔（默认 1s）。</span></li>
-      </ul>
-      <p class="note"><span class="en">Requires an interactive terminal; in scripts use <code>tunlite status --json</code>.</span><span class="zh">需要交互式终端；脚本里用 <code>tunlite status --json</code>。</span></p>
-    </section>
-
-    <!-- EXIT CODES -->
-    <section id="exit-codes">
-      <h2><span class="en">Exit codes &amp; --json</span><span class="zh">退出码与 --json</span></h2>
-      <p><span class="en">Add <code>--json</code> to any command for machine-readable output. Branch on the exit code rather than parsing prose:</span><span class="zh">任意命令加 <code>--json</code> 得到机器可读输出。按退出码分支，而不是解析人话：</span></p>
-      <div class="exit-codes">
-        <span class="ec"><b>0</b> <span class="en">ok</span><span class="zh">成功</span></span>
-        <span class="ec"><b>2</b> <span class="en">usage error</span><span class="zh">用法错</span></span>
-        <span class="ec"><b>3</b> <span class="en">not found</span><span class="zh">找不到</span></span>
-        <span class="ec"><b>4</b> <span class="en">needs auth</span><span class="zh">需打通</span></span>
-        <span class="ec"><b>5</b> <span class="en">daemon unreachable</span><span class="zh">连不上 daemon</span></span>
-        <span class="ec"><b>1</b> <span class="en">other error</span><span class="zh">其它错误</span></span>
-      </div>
-      <p class="note"><span class="en"><code>state</code> values: <code>idle</code>, <code>starting</code>, <code>connected</code>, <code>retrying</code>, <code>needs-auth</code>, <code>blocked</code>, <code>failed</code>, <code>stopped</code>, <code>disabled</code>, <code>daemon-stopped</code>. Treat <code>connected</code> as success; <code>retrying</code> is normal during a transient outage.</span><span class="zh"><code>state</code> 取值：<code>idle</code>、<code>starting</code>、<code>connected</code>、<code>retrying</code>、<code>needs-auth</code>、<code>blocked</code>、<code>failed</code>、<code>stopped</code>、<code>disabled</code>、<code>daemon-stopped</code>。<code>connected</code> 即成功；<code>retrying</code> 是短暂断网时的正常状态。</span></p>
-    </section>
-
-    <!-- WEBHOOKS -->
-    <section id="webhooks">
-      <h2><span class="en">Webhooks</span><span class="zh">告警 webhook</span></h2>
-      <p class="lead"><span class="en">When a tunnel drops, the daemon POSTs an alert to a webhook you configure, formatted per <b>channel</b> (currently <code>generic</code> + WeCom <code>wecom</code>). The channel is detected from the URL, or set with <code>--channel</code>. Pure Node built-in http/https — no new dependencies.</span><span class="zh">隧道掉线时，daemon 往你配的 webhook POST 一条告警，按<b>渠道</b>排版（目前 <code>generic</code> + 企业微信 <code>wecom</code>）。渠道从 URL 自动识别，或用 <code>--channel</code> 指定。纯 Node 内置 http/https，无新依赖。</span></p>
-<pre class="code"><span class="c">$</span> tunlite webhook            <span class="h"># show current config</span>
-<span class="c">$</span> tunlite webhook set &lt;url&gt;   <span class="h"># set + enable (channel auto)</span>
-<span class="c">$</span> tunlite webhook events down,recovered  <span class="h"># change events</span>
-<span class="c">$</span> tunlite webhook off        <span class="h"># disable (keeps the URL)</span>
-<span class="c">$</span> tunlite webhook test       <span class="h"># POST a test event</span></pre>
-      <p><span class="en">Events are edge-triggered (a reconnect storm fires once), in two scopes:</span><span class="zh">事件按状态边沿触发（重连风暴只报一次），分两类：</span></p>
-      <ul>
-        <li><span class="en"><b>tunnel</b>: <code>up</code>, <code>down</code>, <code>recovered</code>, <code>needs-auth</code>, <code>failed</code>, <code>stopped</code>.</span><span class="zh"><b>隧道级</b>：<code>up</code>、<code>down</code>、<code>recovered</code>、<code>needs-auth</code>、<code>failed</code>、<code>stopped</code>。</span></li>
-        <li><span class="en"><b>daemon</b>: <code>daemon-up</code>, <code>daemon-down</code>, <code>daemon-crash</code>.</span><span class="zh"><b>daemon 级</b>：<code>daemon-up</code>、<code>daemon-down</code>、<code>daemon-crash</code>。</span></li>
-      </ul>
-      <p class="note"><span class="en"><code>webhook events</code> accepts names, the groups <code>tunnel</code>/<code>daemon</code>, <code>all</code>, or <code>none</code>. Default: <code>down, recovered, needs-auth, failed, daemon-crash</code>. Payload: <code>{scope, tunnel, host, event, state, lastError, restarts, ts, machine, version}</code>.</span><span class="zh"><code>webhook events</code> 接受名称、组 <code>tunnel</code>/<code>daemon</code>、<code>all</code>、<code>none</code>。默认：<code>down, recovered, needs-auth, failed, daemon-crash</code>。载荷：<code>{scope, tunnel, host, event, state, lastError, restarts, ts, machine, version}</code>。</span></p>
-    </section>
-
-    <!-- IMPORT / EXPORT -->
-    <section id="import-export">
-      <h2><span class="en">Import / export</span><span class="zh">导入导出</span></h2>
-<pre class="code"><span class="c">$</span> tunlite export &gt; backup.json        <span class="h"># dump config (no secrets)</span>
-<span class="c">$</span> tunlite import backup.json          <span class="h"># merge tunnels</span>
-<span class="c">$</span> tunlite import backup.json --force  <span class="h"># overwrite same-name</span></pre>
-      <p class="note"><span class="en"><code>import</code> merges <b>tunnels only</b> — it never changes your local settings/alerts. A missing file exits 3; a malformed file exits 1 and leaves the current config untouched.</span><span class="zh"><code>import</code> <b>只合并隧道</b> —— 不会动你本地的 settings/告警。文件不存在退出 3；文件损坏退出 1，且不改动当前配置。</span></p>
-    </section>
-
-    <!-- COMPLETION -->
-    <section id="completion">
-      <h2><span class="en">Shell completion</span><span class="zh">Shell 补全</span></h2>
-<pre class="code"><span class="c">$</span> tunlite install completion       <span class="h"># auto-detect the shell</span>
-<span class="c">$</span> tunlite install completion zsh   <span class="h"># or name it: bash/zsh/fish</span>
-<span class="c">$</span> tunlite uninstall completion     <span class="h"># disable</span></pre>
-      <p class="note"><span class="en">Once on, it completes subcommands; for <code>up/down/restart/status/logs/rm/rename</code> it also completes defined tunnel names, for both <code>tunlite</code> and the short <code>tun</code>. Reopen the shell or <code>exec zsh</code> to take effect.</span><span class="zh">开启后补全子命令；对 <code>up/down/restart/status/logs/rm/rename</code> 还会补全已定义的隧道名，<code>tunlite</code> 和短别名 <code>tun</code> 都能补。重开 shell 或 <code>exec zsh</code> 生效。</span></p>
-    </section>
-
-    <!-- FOR AGENTS -->
-    <section id="Agents">
-      <h2><span class="en">For Agents</span><span class="zh">给 Agent 用</span></h2>
-      <p><span class="en">Agents are a first-class user. Every command takes <code>--json</code> and returns a stable exit code, so an Agent acts on results without scraping prose. The standalone <code>use-tunlite</code> Skill package tells an Agent exactly how to drive <code>tunlite</code>. Give its repository directory to the Agent and let the Agent manage installation, updates, and removal through its own extension system; the Tunlite CLI never inspects Agent-specific directories.</span><span class="zh">Agent 是一等用户。每个命令都接受 <code>--json</code> 并返回稳定退出码，Agent 拿到结果就能直接判断，不用解析人话。独立的 <code>use-tunlite</code> Skill 包告诉 Agent 如何驱动 <code>tunlite</code>。把仓库目录交给 Agent，由 Agent 使用自己的扩展体系完成安装、更新和卸载；Tunlite CLI 不读取 Agent 私有目录。</span></p>
-      <p><a class="ext" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite" target="_blank" rel="noopener"><span class="en">Open the use-tunlite Skill package →</span><span class="zh">打开 use-tunlite Skill 包 →</span></a></p>
-    </section>
-
-    <!-- CONFIG PATHS -->
-    <section id="config">
-      <h2><span class="en">Config paths</span><span class="zh">配置路径</span></h2>
-      <ul>
-        <li><span class="en">Config: <code>$XDG_CONFIG_HOME/tunlite/config.json</code> · <code>%APPDATA%\tunlite\config.json</code></span><span class="zh">配置：<code>$XDG_CONFIG_HOME/tunlite/config.json</code> · <code>%APPDATA%\tunlite\config.json</code></span></li>
-        <li><span class="en">State/logs: <code>$XDG_STATE_HOME/tunlite</code> · <code>%LOCALAPPDATA%\tunlite</code></span><span class="zh">状态/日志：<code>$XDG_STATE_HOME/tunlite</code> · <code>%LOCALAPPDATA%\tunlite</code></span></li>
-        <li><span class="en">Use <code>TUNLITE_HOME</code> to put everything under one root (handy for testing).</span><span class="zh">用 <code>TUNLITE_HOME</code> 把所有东西归到一个根目录下（测试很方便）。</span></li>
-      </ul>
-    </section>
-
-    <!-- VERSIONING -->
-    <section id="versioning">
-      <h2><span class="en">Versioning</span><span class="zh">版本管理</span></h2>
-      <p><span class="en">Follows SemVer (<code>vMAJOR.MINOR.PATCH</code>). Release notes are in the <a class="ext" href="https://github.com/yuanyuanzijin/tunlite/blob/master/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>; the source lives on <a class="ext" href="https://github.com/yuanyuanzijin/tunlite" target="_blank" rel="noopener">GitHub</a>. Licensed MIT.</span><span class="zh">遵循 SemVer（<code>vMAJOR.MINOR.PATCH</code>）。发布说明见 <a class="ext" href="https://github.com/yuanyuanzijin/tunlite/blob/master/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>；源码在 <a class="ext" href="https://github.com/yuanyuanzijin/tunlite" target="_blank" rel="noopener">GitHub</a>。MIT 许可证。</span></p>
-    </section>
-  </main>
-</div>
-
-<footer>
-  <div class="foot-in">
-    <div>
-      <div class="foot-brand">tun<span class="pr">lite</span></div>
-      <div class="foot-tag"><span class="en">Pure Node.js · zero deps · MIT</span><span class="zh">纯 Node.js · 零依赖 · MIT</span></div>
-    </div>
-    <div class="foot-links">
-      <a href="index.html"><span class="en">Home</span><span class="zh">首页</span></a>
-      <a href="https://github.com/yuanyuanzijin/tunlite" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
-      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/LICENSE" target="_blank" rel="noopener">License</a>
-    </div>
+        <p>Cross-compilation is not treated as platform validation. See the <a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">acceptance guide</a> for the exact hardware gates.</p>
+      </section>
+    </main>
   </div>
-  <div class="foot-meta"><span id="ver">v0.10.2</span> · © 2026 yuanyuanzijin · <span class="en">built with pure Node.js</span><span class="zh">用纯 Node.js 构建</span></div>
-</footer>
 
-<script src="app.js"></script>
+  <footer>
+    <div class="shell copyright">Tunlite V1 Preview · <a href="index.html">Home</a> · <a href="https://github.com/yuanyuanzijin/tunlite">GitHub</a> · MIT License</div>
+  </footer>
 </body>
 </html>
