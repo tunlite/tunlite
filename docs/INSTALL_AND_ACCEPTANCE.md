@@ -23,6 +23,7 @@
 | Intel Mac 上的真实 launchd 生命周期、日志与崩溃恢复 | 通过，连续 3 次 |
 | Intel Mac 上的接管与交还零中断（Provider PID 不变） | 通过，连续 3 次 |
 | Intel Mac Release 二进制 + 隔离 sshd + launchd + `-L/-R/-D` 真实流量与崩溃恢复 | 通过 |
+| 冻结 0.10.3 → V1 导入、逐条流量切换与回滚 | 通过 |
 | macOS x64/arm64、Linux x64/arm64 原生构建 | 通过 |
 | 三个发布归档的 SHA-256 | 通过 |
 | bootstrap 下载、校验、原子替换和真实 Release 安装 | 通过 |

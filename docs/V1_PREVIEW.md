@@ -124,12 +124,17 @@ go vet ./...
 TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -count=1 -v
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
 scripts/test-release-e2e.sh v1.0.0-preview.1
+scripts/test-migration-e2e.sh v1.0.0-preview.1
 ```
 
 最后一条门禁只在 macOS 上运行：它重新构建并独立校验完整 Release 目录，再使用归档中的
 原生二进制驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
 background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
 执行前必须确认该标签未被占用，结束后移除 plist 和进程。
+
+迁移门禁从 Git 的 `v0.10.3` 标签提取冻结旧版，不依赖 V1 工作树中的任何 Node 文件。
+它启动隔离的 0.10.3 daemon 和真实隧道，确认 dry-run/import 不修改旧配置且不中断旧流量，
+然后验证 `0.10.3 disable → V1 start → V1 stop → 0.10.3 enable` 的真实流量切换与回滚。
 
 发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.25 是开发和源码兼容基线。发布只使用
 CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
