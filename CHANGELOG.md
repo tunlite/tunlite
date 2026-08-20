@@ -67,6 +67,9 @@ as the product's focused entry point.
 - The central supervisor, IPC protocol, PID ownership, daemon lifecycle alerts,
   implicit lifecycle-triggered SSH key installation, and the second layer of global lifecycle
   management from the v1 runtime.
+- The archived Node runtime, npm package, and Node test suite from the active V1
+  branch. The immutable `v0.10.3` tag remains the source for legacy verification,
+  migration E2E, and any exceptional 0.x maintenance branch.
 - CLI-managed Agent Skill installation; Tunlite no longer inspects Agent-specific
   extension directories.
 - The preview-only `--config`, approval state, `setup-key`, `migrate`, self-install,

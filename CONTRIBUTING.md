@@ -58,6 +58,7 @@ Bug 和功能建议可以提交公开 Issue；安全问题请按 [SECURITY.md](S
 
 ## 历史 Node 实现
 
-根目录的 `src/`、`test/`、`bin/` 和 `package.json` 仅保留用于审计 0.10.3、验证迁移和
-必要的严重修复。npm 包已标记为 private，旧 Node CI 只允许人工触发。v1 功能、测试和
-发布不得继续建立在这些文件上；普通贡献请修改 Go 实现。
+V1 主线不再携带 Node runtime、测试或 npm package。冻结的完整 0.10.3 源码由 Git tag
+`v0.10.3` 永久保存；手工 Legacy CI 和迁移 E2E 都直接 checkout/archive 该 tag，不依赖
+当前分支。严重的 0.10.3 修复必须从历史 tag 创建专用维护分支，不能把 Node 实现重新并入
+V1 主线。
