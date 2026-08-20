@@ -144,6 +144,7 @@ scripts/package-release.sh v1.0.0-preview.1
 ```
 
 真实 OpenSSH 与原生服务生命周期测试为显式开启，入口位于 `internal/cli` 和
-`internal/service` 对应测试文件。
+`internal/service` 对应测试文件。参与开发前请同时阅读 [贡献指南](CONTRIBUTING.md)和
+[Git 开发与仓库治理规范](docs/GIT_GOVERNANCE.md)。
 
 MIT License。

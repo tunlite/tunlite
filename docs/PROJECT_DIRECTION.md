@@ -1514,7 +1514,7 @@ Windows Tray 随跨平台 Desktop 计划交付，可以与 Windows Core 支持�
 
 - Node `v0.10.3` 已冻结为 0.x 最终版本，不再迭代；v1 在 `rewrite/v1-go` 开发。
 - 使用独立 Git Worktree 做物理隔离，不复制仓库，也不永久保留 `next/` 子树。
-- v1 切换前，为最后一个 Node 版本打 Tag；必要时保留 `legacy/node` 维护分支。
+- v1 切换前，为最后一个 Node 版本打 Tag；必要时保留 `legacy/node-0.x` 维护分支。
 - Go 版本成为默认分支时，代码位于仓库根目录。
 - 不长期发布两套核心实现或两套 runtime backend。
 - 把 0.x 的重要行为转换成与语言无关的黑盒契约测试：输入命令、初始配置、退出码、

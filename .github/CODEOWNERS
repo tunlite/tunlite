@@ -1,0 +1,9 @@
+# Until ownership is split by subsystem, the repository owner reviews all durable
+# product, security, release, and governance changes.
+* @yuanyuanzijin
+
+# Changes here alter repository authority, CI permissions, or release provenance.
+/.github/ @yuanyuanzijin
+/docs/GIT_GOVERNANCE.md @yuanyuanzijin
+/docs/VERSIONING.md @yuanyuanzijin
+/SECURITY.md @yuanyuanzijin
