@@ -1,7 +1,8 @@
 # 为 Tunlite 贡献代码
 
-提交架构或产品变更前，请先阅读 [项目方向](docs/PROJECT_DIRECTION.md)。它是 SSH 聚焦、
-Go 单文件、原生每 Connection 服务和未来 Driver 边界的唯一事实来源。
+提交架构或产品变更前，请先阅读 [项目方向](docs/PROJECT_DIRECTION.md)和
+[Git 开发与仓库治理规范](docs/GIT_GOVERNANCE.md)。前者定义 SSH 聚焦、Go 单文件、原生
+每 Connection 服务和未来 Driver 边界，后者定义分支、Commit、Review、发布和归档规则。
 
 ## 基本原则
 
@@ -42,13 +43,14 @@ TUNLITE_REAL_SERVICE=1 go test ./internal/service \
 
 ## 提交要求
 
-1. 从默认分支创建独立分支。
+1. 从最新 `main` 创建符合治理规范的短期独立分支。
 2. 修改公共 JSON 行为时同步更新 Schema、Capability、Agent Skill 契约测试和迁移说明。
 3. 修改原生服务时覆盖幂等、漂移、并发、失败回滚和声明所有权。
 4. 确认 test、race、vet 和相关真实测试通过。
 5. Pull Request 说明改变了什么、为什么，以及兼容和安全影响。
 
-清晰的 Conventional Commit（`feat:`、`fix:`、`docs:` 等）推荐但不强制。
+Commit 和 Pull Request 标题必须使用 Conventional Commits（`feat:`、`fix:`、`docs:` 等）；
+默认使用 Squash Merge，详细规则见 [Git 开发与仓库治理规范](docs/GIT_GOVERNANCE.md)。
 
 Bug 和功能建议可以提交公开 Issue；安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
 贡献内容按 [MIT License](LICENSE) 授权。

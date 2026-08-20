@@ -154,6 +154,8 @@ scripts/package-release.sh v1.0.0-preview.1
 ```
 
 Real OpenSSH and native-service lifecycle tests are opt-in; see their source under
-`internal/cli` and `internal/service`.
+`internal/cli` and `internal/service`. Contributors should also read
+[CONTRIBUTING.md](CONTRIBUTING.md) and the long-term
+[Git governance policy](docs/GIT_GOVERNANCE.md).
 
 MIT License.
