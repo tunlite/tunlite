@@ -31,7 +31,6 @@ type connectionFlags struct {
 	visited      map[string]bool
 }
 
-type action = core.Action
 type condition = core.Condition
 
 func add(ctx context.Context, args []string, streams IO, opts options) error {

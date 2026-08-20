@@ -126,8 +126,8 @@ TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLife
 scripts/package-release.sh v1.0.0-preview.1
 ```
 
-发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.22 仅表示源码采用的最低语言版本。
-不得用 Go 1.22 生成正式 macOS 产物，因为其链接结果会被当前 macOS dyld 拒绝。
+发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.25 是开发和源码兼容基线。发布只使用
+CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
 
 还必须在 Linux 真机完成 systemd 用户服务的
 `add → start → stop → enable → status → restart → disable → remove`

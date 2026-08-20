@@ -63,7 +63,7 @@ func Decode(raw []byte) (configstore.Document, []core.Condition, error) {
 		return configstore.Document{}, nil, fmt.Errorf("unsupported Tunlite 0.x config version %d", legacy.Version)
 	}
 	if legacy.Tunnels == nil {
-		return configstore.Document{}, nil, errors.New("Tunlite 0.x config tunnels must be an array")
+		return configstore.Document{}, nil, errors.New("tunlite 0.x config tunnels must be an array")
 	}
 
 	document := configstore.Empty()

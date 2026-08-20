@@ -39,7 +39,7 @@ func run(args []string) error {
 		return fmt.Errorf("unsupported release version %q", version)
 	}
 	plainVersion := strings.TrimPrefix(version, "v")
-	if err := os.MkdirAll(output, 0o755); err != nil {
+	if err := prepareOutputDirectory(output); err != nil {
 		return err
 	}
 	temporary, err := os.MkdirTemp("", "tunlite-package-")
@@ -89,6 +89,27 @@ func run(args []string) error {
 	}
 	sort.Strings(archives)
 	return writeChecksums(filepath.Join(output, "SHA256SUMS"), archives)
+}
+
+func prepareOutputDirectory(output string) error {
+	info, err := os.Stat(output)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.MkdirAll(output, 0o755)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("output path %q is not a directory", output)
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("output directory %q must be empty", output)
+	}
+	return nil
 }
 
 func mergeDarwinUniversal(output, amd64, arm64 string) error {
