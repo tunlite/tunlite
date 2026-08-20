@@ -69,17 +69,29 @@ Advisory 的临时私有 Fork，凭据使用 GitHub Secrets，商业资料和私
 
 ## 2. Organization 仓库拓扑
 
-现在只需要创建或迁入 **一个** 产品仓库：
+仓库命名默认使用 `tunlite-<component>`。即使 Organization 已经提供命名空间，显式前缀
+仍能让仓库出现在 Fork、搜索、依赖和本地目录中时保持产品归属清晰。旗舰 Core 保留最短
+名称 `tunlite`；GitHub Pages、Organization Profile 和 Homebrew Tap 遵守平台强制约定。
+
+现在建立 **两个** 公开仓库：Core 与静态主页。其余仓库等独立生命周期真实出现再创建。
 
 | 仓库 | 可见性 | 创建时机 | 职责 |
 |---|---|---|---|
 | `tunlite/tunlite` | Public | 现在 | Go Core、CLI、内置 SSH Driver、Schema、Skill、文档、CI 和 Release |
-| `tunlite/.github` | Public | 出现第二个公开仓库时 | Organization Profile 和跨仓库默认社区文件 |
+| `tunlite/tunlite.github.io` | Public | 现在 | `tunlite.dev` 静态主页、下载入口、产品介绍和网站资源 |
+| `tunlite/.github` | Public | 需要 Organization Profile 或跨仓库模板时 | GitHub 约定名称；只放组织级公共元数据 |
 | `tunlite/homebrew-tap` | Public | 首次正式支持 Homebrew 时 | Homebrew Formula 的独立发布入口 |
-| `tunlite/desktop` | Public | Desktop 有独立构建和发布周期时 | Desktop 应用；依赖公开 Core，不复制 Core 源码 |
-| `tunlite/driver-*` | Public | 外部 Driver 协议验证并开放时 | 每个官方 Driver 独立版本和发布 |
-| `tunlite/website` | Public | 网站需要独立技术栈或发布权限时 | 官网；在此之前继续放在核心仓库 |
-| `tunlite/ops-private` | Private | 确有商业或私有运维资料时 | 私有资料和基础设施；禁止复制公开 Core |
+| `tunlite/tunlite-desktop` | Public | Desktop 有独立构建和发布周期时 | Desktop 应用；依赖公开 Core，不复制 Core 源码 |
+| `tunlite/tunlite-driver-*` | Public | 外部 Driver 协议验证并开放时 | 每个官方 Driver 独立版本和发布 |
+| `tunlite/tunlite-examples` | Public | 示例需要独立依赖或发布节奏时 | 可运行示例；简单示例仍留在 Core 文档 |
+| `tunlite/tunlite-ops` | Private | 确有商业或私有运维资料时 | 私有资料和基础设施；禁止复制公开 Core |
+
+三个特殊名称不能机械增加 `tunlite-`：
+
+- `tunlite.github.io` 是 GitHub Organization Pages 的固定仓库名，默认站点地址为
+  `https://tunlite.github.io/`，并绑定自定义域名 `tunlite.dev`；
+- `.github` 是 GitHub 识别 Organization Profile 和默认社区文件的固定名称；
+- `homebrew-tap` 让用户使用标准命令 `brew tap tunlite/tap`。
 
 不要预先创建空仓库。是否拆分由“独立版本、独立权限、独立发布周期”决定，不按目录数量
 决定。`use-tunlite` Skill 当前与 CLI 契约共同测试，继续放在核心仓库；只有它能够独立
@@ -121,7 +133,18 @@ Worktree 做物理隔离，但 Worktree 仍属于同一个公开仓库，分支�
 4. 验证旧 URL 重定向、Clone、Actions、Pages、Security、Release 和权限设置。
 5. Transfer 和 module path 迁移通过独立 PR 完成，不与 v1 Tag 发布放在同一操作中。
 
-### 4.3 Go v1 成为主线
+### 4.3 拆分静态主页
+
+1. 创建公开仓库 `tunlite/tunlite.github.io`，默认分支为 `main`。
+2. 将现有 `docs/` 中的网站 HTML、CSS、JavaScript、图片、`.nojekyll` 和 `CNAME` 迁入；
+   产品设计、架构、版本、升级和验收 Markdown 继续留在 Core 仓库。
+3. `tunlite.dev` 绑定 Organization Pages，先验证 HTTPS、语言切换、下载链接和旧 URL，
+   再关闭 Core 仓库旧 Pages 来源，避免停机或两个仓库争用同一域名。
+4. 网站不复制 Core 源码、不保存 Release 二进制、不手写第二份版本事实。版本和下载信息
+   来自 Core 的公开 Tag/Release；跨仓库同步内容必须由脚本生成并标明来源版本。
+5. 网站使用独立 PR 和 Pages 部署检查；只有网站展示与发布同时变化时才用关联 PR 互链。
+
+### 4.4 Go v1 成为主线
 
 1. 推送 `rewrite/v1-go`，通过 Pull Request 和完整 CI 合入当前默认分支。
 2. 将默认分支统一命名为 `main`，同步更新 Ruleset、本地跟踪分支和文档链接。
@@ -260,7 +283,7 @@ GitHub Actions 默认 `contents: read`。写权限、OIDC、Attestation 和 Rele
 - 同时维护多个稳定版本：正式启用 `release/X.Y`、Backport 标签和支持窗口。
 - 发布频率或下载量明显增长：增加 Release Environment 审批和定期恢复演练。
 - 引入外部 Driver：单独建立协议稳定性、插件来源和安全评审规则。
-- 引入付费/闭源组件：建立独立内部仓库，公开 Core 仍是唯一开源事实来源。
+- 引入付费/闭源组件：建立 `tunlite-*` 私有仓库，公开 Core 仍是唯一开源事实来源。
 
 本规范通过普通 PR 修改。默认分支、发布权限、安全边界和支持承诺的变化必须说明迁移
 步骤、生效时间和回滚方式；每年至少复审一次，也可以留下“无需修改”的结论。
@@ -312,7 +335,22 @@ git pull --ff-only
 rewrite 分支和 Worktree。每次删除远端过渡分支之前，单独确认默认分支、Tag 和 legacy
 分支均可取回；不把改默认分支、删分支和发布 Tag 塞进一个脚本。
 
-### 11.2 private 归档
+### 11.2 静态主页仓库
+
+通过 GitHub 创建 `tunlite/tunlite.github.io`，不要创建 `website` 或 `tunlite-website` 作为
+Organization 根站点。首个提交迁入当前静态站点资源，并在仓库 Settings 中配置 Pages：
+
+```text
+Repository: tunlite/tunlite.github.io
+Default branch: main
+Custom domain: tunlite.dev
+HTTPS: required
+```
+
+迁移时保留 Core 仓库中的技术 Markdown；仅在新站点验证通过后，从 Core 删除已迁走的
+静态资源和旧 Pages 配置。两个仓库各自提交，不使用 Git Submodule，也不建立双向同步。
+
+### 11.3 private 归档
 
 人工确认归档内容后执行：
 
