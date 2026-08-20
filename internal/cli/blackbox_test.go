@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 type blackboxContract struct {
@@ -38,12 +40,14 @@ func TestSSHCLICompatibilityContract(t *testing.T) {
 	}
 	for _, workflow := range contract.Workflows {
 		t.Run(workflow.Name, func(t *testing.T) {
-			config := filepath.Join(t.TempDir(), "config.json")
+			root := t.TempDir()
+			t.Setenv("TUNLITE_HOME", filepath.Join(root, "home"))
+			t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+			adapter := newFakeServiceAdapter(filepath.Join(root, "native"))
 			for index, step := range workflow.Steps {
 				args := append([]string(nil), step.Args...)
-				args = append(args, "--config", config)
 				var stdout, stderr bytes.Buffer
-				code := RunContext(context.Background(), args, IO{Out: &stdout, Err: &stderr})
+				code := runContext(context.Background(), args, IO{Out: &stdout, Err: &stderr}, func() (service.Adapter, error) { return adapter, nil })
 				if code != step.Exit {
 					t.Fatalf("step %d %v: exit=%d want=%d stdout=%s stderr=%s", index, step.Args, code, step.Exit, stdout.String(), stderr.String())
 				}

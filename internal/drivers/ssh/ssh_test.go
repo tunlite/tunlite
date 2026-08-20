@@ -22,8 +22,8 @@ func TestDriverBuildsDeterministicArgvPlan(t *testing.T) {
 	}
 	raw, _ := json.Marshal(config)
 	connection := core.Connection{
-		APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "example"},
-		Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "persistent", ConfigVersion: 1, Config: raw},
+		ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "example"},
+		Spec: core.ConnectionSpec{Driver: ID, Config: raw},
 	}
 	driver := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil })
 
@@ -74,7 +74,7 @@ func TestParseForwardMatchesOpenSSHForms(t *testing.T) {
 func TestPlanTerminatesSSHOptionParsingBeforeHost(t *testing.T) {
 	config := Config{Host: "me@host", Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}}}
 	raw, _ := json.Marshal(config)
-	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "safe"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw}}
+	connection := core.Connection{ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "safe"}, Spec: core.ConnectionSpec{Driver: ID, Config: raw}}
 	got, err := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil }).Plan(context.Background(), connection, core.PlanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestPlanRejectsSSHOptionsThatCanTerminateOptionParsing(t *testing.T) {
 		SSHOptions: []string{"--"},
 	}
 	raw, _ := json.Marshal(config)
-	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "safe"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw}}
+	connection := core.Connection{ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "safe"}, Spec: core.ConnectionSpec{Driver: ID, Config: raw}}
 	_, err := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil }).Plan(context.Background(), connection, core.PlanOptions{})
 	if err == nil {
 		t.Fatal("unsafe SSH option was accepted")
@@ -102,7 +102,7 @@ func TestPlanRejectsSSHOptionsThatCanTerminateOptionParsing(t *testing.T) {
 func TestNonInteractiveControlsBatchMode(t *testing.T) {
 	config := Config{Host: "me@host", Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}}}
 	raw, _ := json.Marshal(config)
-	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "batch"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw}}
+	connection := core.Connection{ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "batch"}, Spec: core.ConnectionSpec{Driver: ID, Config: raw}}
 	driver := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil })
 
 	interactive, err := driver.Plan(context.Background(), connection, core.PlanOptions{})
@@ -121,17 +121,47 @@ func TestNonInteractiveControlsBatchMode(t *testing.T) {
 	}
 }
 
-func TestNonInteractiveRejectsBatchModeOverride(t *testing.T) {
+func TestValidateSSHOptionsUsesConservativeAllowlist(t *testing.T) {
+	base := Config{Host: "me@host", Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}}}
+	allowed := []string{
+		"Compression=yes", "UserKnownHostsFile=/tmp/known hosts", "LogLevel=VERBOSE",
+		"PreferredAuthentications=publickey", "Ciphers=chacha20-poly1305@openssh.com",
+	}
+	for _, option := range allowed {
+		config := base
+		config.SSHOptions = []string{option}
+		if err := Validate(config); err != nil {
+			t.Errorf("safe option %q was rejected: %v", option, err)
+		}
+	}
+
+	rejected := []string{
+		"ProxyCommand=helper %h %p", "LocalCommand=touch /tmp/pwned", "PermitLocalCommand=yes",
+		"RemoteCommand=uname", "KnownHostsCommand=helper", "Include=other.conf",
+		"LocalForward=8080 localhost:80", "RemoteForward=9000 localhost:80", "DynamicForward=1080",
+		"ClearAllForwardings=yes", "BatchMode=no", "ExitOnForwardFailure=no",
+		"ServerAliveInterval=0", "ServerAliveCountMax=99", "TCPKeepAlive=no",
+		"ConnectTimeout=0", "StrictHostKeyChecking=no", "ProxyJump=bastion",
+		"IdentityFile=/tmp/other", "IdentitiesOnly=no", "ControlMaster=auto",
+		"PKCS11Provider=/tmp/provider.so", "ForwardAgent=yes", "RequestTTY=yes",
+	}
+	for _, option := range rejected {
+		config := base
+		config.SSHOptions = []string{option}
+		if err := Validate(config); err == nil {
+			t.Errorf("unsafe or managed option %q was accepted", option)
+		}
+	}
+}
+
+func TestValidateRejectsDuplicateSSHOptionCaseInsensitively(t *testing.T) {
 	config := Config{
 		Host:       "me@host",
 		Forwards:   []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}},
-		SSHOptions: []string{"BatchMode=no"},
+		SSHOptions: []string{"Compression=yes", "compression=no"},
 	}
-	raw, _ := json.Marshal(config)
-	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "batch"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw}}
-	driver := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil })
-	if _, err := driver.Plan(context.Background(), connection, core.PlanOptions{NonInteractive: true}); err == nil {
-		t.Fatal("non-interactive plan accepted BatchMode=no")
+	if err := Validate(config); err == nil {
+		t.Fatal("duplicate SSH option was accepted")
 	}
 }
 
@@ -145,10 +175,38 @@ func TestDecodeConfigRejectsUnknownFields(t *testing.T) {
 func TestPlanRejectsUnsupportedConfigVersion(t *testing.T) {
 	config := Config{Host: "me@host", Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}}}
 	raw, _ := json.Marshal(config)
-	connection := core.Connection{APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "future"}, Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 2, Config: raw}}
+	connection := core.Connection{ConfigVersion: 2, Kind: core.Kind, Metadata: core.Metadata{Name: "future"}, Spec: core.ConnectionSpec{Driver: ID, Config: raw}}
 	driver := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil })
-	if _, err := driver.Plan(context.Background(), connection, core.PlanOptions{}); err == nil {
-		t.Fatal("unsupported SSH config version was accepted")
+	registry, err := core.NewRegistry(driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.NewPlanner(registry).Plan(context.Background(), connection, core.PlanOptions{}); err == nil {
+		t.Fatal("unsupported Connection config version was accepted")
+	}
+}
+
+func TestConfigFromPlanRoundTripsSupportedSSHArgv(t *testing.T) {
+	raw, _ := json.Marshal(Config{
+		Host: "me@example.com", Port: 2222, IdentityFile: "/tmp/id key",
+		Jump:       []string{"jump@example.com"},
+		Forwards:   []Forward{{Type: "local", Bind: "127.0.0.1", SrcPort: 15432, DestHost: "localhost", DestPort: 5432}},
+		SSHOptions: []string{"Compression=yes"},
+	})
+	connection := core.Connection{
+		ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "roundtrip"},
+		Spec: core.ConnectionSpec{Driver: ID, Config: raw},
+	}
+	value, err := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil }).Plan(context.Background(), connection, core.PlanOptions{NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ConfigFromPlan(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "me@example.com" || got.Port != 2222 || got.IdentityFile != "/tmp/id key" || len(got.Forwards) != 1 || len(got.SSHOptions) != 1 {
+		t.Fatalf("round-trip config=%#v", got)
 	}
 }
 

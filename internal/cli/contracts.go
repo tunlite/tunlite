@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
-	"os/exec"
+	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -10,80 +15,199 @@ import (
 	"github.com/yuanyuanzijin/tunlite/schemas"
 )
 
-func schema(args []string, streams IO) error {
+func schema(args []string, streams IO, opts options) error {
 	name := "connection"
-	if len(args) > 1 {
-		return usageError("usage: tunlite schema [connection|connection-list|ssh|cli|service-state]")
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
 	}
-	if len(args) == 1 {
-		name = args[0]
+	flags := flag.NewFlagSet("schema", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var output string
+	var force bool
+	flags.StringVar(&output, "output", "", "write the raw schema to a file or - for stdout")
+	flags.BoolVar(&force, "force", false, "replace an existing output file")
+	if err := flags.Parse(args); err != nil {
+		return usageError(err.Error())
+	}
+	if flags.NArg() != 0 {
+		return usageError("usage: tunlite schema [connection|connection-list|ssh|cli|service-state] [--output <path|->] [--force]")
 	}
 	value, ok := schemas.Read(name)
 	if !ok {
 		return usageError(fmt.Sprintf("unknown schema %q (connection, connection-list, ssh, cli, service-state)", name))
 	}
+	if output == "-" {
+		if opts.JSON {
+			return usageError("--json cannot be combined with --output -")
+		}
+		_, err := streams.Out.Write(value)
+		return err
+	}
+	if output != "" {
+		absolute, err := filepath.Abs(output)
+		if err != nil {
+			return err
+		}
+		if opts.DryRun {
+			return renderSchemaWrite(streams, opts, "planned", name, absolute)
+		}
+		if err := writeRawDocument(absolute, value, force); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return conflictError(fmt.Sprintf("output file already exists: %s (use --force to replace it)", absolute))
+			}
+			return err
+		}
+		return renderSchemaWrite(streams, opts, "applied", name, absolute)
+	}
+	if opts.JSON {
+		return writeResponse(streams.Out, map[string]any{
+			"outcome": "succeeded", "name": name, "schema": json.RawMessage(value),
+		})
+	}
 	_, err := streams.Out.Write(value)
 	return err
+}
+
+func renderSchemaWrite(streams IO, opts options, outcome, name, path string) error {
+	if opts.JSON {
+		return writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "name": name, "path": path, "dryRun": opts.DryRun,
+		})
+	}
+	verb := "wrote"
+	if opts.DryRun {
+		verb = "would write"
+	}
+	fmt.Fprintf(streams.Out, "%s %s schema to %s\n", verb, name, path)
+	return nil
+}
+
+func writeRawDocument(path string, value []byte, force bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if !force {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(value); err != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return err
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(path)
+			return err
+		}
+		return nil
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".tunlite-schema-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	installed := false
+	defer func() {
+		_ = temporary.Close()
+		if !installed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(value); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	installed = true
+	return nil
+}
+
+// publicCommands is shared by help, suggestions, capabilities and the Agent
+// contract so the public surface cannot drift between renderers.
+var publicCommands = []string{
+	"add", "capabilities", "check", "disable", "doctor", "enable", "export", "help", "import", "list", "logs", "manage", "monitor", "remove", "rename", "resolve", "restart", "run", "schema", "set", "start", "status", "stop", "unmanage", "validate", "version",
 }
 
 func capabilities(args []string, streams IO, opts options) error {
 	if len(args) != 0 {
 		return usageError("usage: tunlite capabilities")
 	}
-	commands := []string{
-		"add", "capabilities", "check", "disable", "doctor", "enable", "export", "help", "import", "list", "logs", "migrate", "rename", "restart", "rm", "run", "schema", "set", "status", "sync", "validate", "version",
-	}
+	commands := append([]string(nil), publicCommands...)
 	sort.Strings(commands)
-	persistentAvailable := nativeServiceManagerAvailable()
+	adapter, adapterErr := opts.newServiceAdapter()
+	nativeAvailable := adapterErr == nil && adapter.Capabilities().Persistence
+	nativeAdapter := ""
+	nativeCapabilities := map[string]bool{
+		"registration": false, "background": false, "persistence": false, "logs": false, "discovery": false,
+	}
+	if adapterErr == nil {
+		capabilities := adapter.Capabilities()
+		nativeAdapter = adapter.Name()
+		nativeCapabilities = map[string]bool{
+			"registration": capabilities.Registration, "background": capabilities.Background,
+			"persistence": capabilities.Persistence, "logs": capabilities.Logs, "discovery": capabilities.Discovery,
+		}
+	}
 	result := map[string]any{
-		"contractVersion": ContractVersion,
-		"outcome":         "succeeded",
-		"version":         Version,
-		"platform":        map[string]string{"os": runtime.GOOS, "arch": runtime.GOARCH},
-		"commands":        commands,
-		"executionModes":  []string{"direct"},
-		"persistentServices": map[string]any{
-			"available": persistentAvailable,
-			"adapters":  map[string]string{"linux": "systemd", "darwin": "launchd"},
+		"outcome":        "succeeded",
+		"version":        Version,
+		"platform":       map[string]string{"os": runtime.GOOS, "arch": runtime.GOARCH},
+		"commands":       commands,
+		"executionModes": []string{"direct"},
+		"nativeServices": map[string]any{
+			"available": nativeAvailable, "adapter": nativeAdapter, "capabilities": nativeCapabilities,
+			"adapters": map[string]string{"linux": "systemd", "darwin": "launchd"},
 			"stateDimensions": map[string][]string{
-				"desiredState": {"enabled", "disabled"},
-				"processState": {"inactive", "starting", "running", "failed", "unknown"},
-				"health":       {"unknown", "healthy", "unhealthy"},
-				"syncState":    {"synced", "drifted", "missing", "blocked"},
+				"serviceState":     {"registered", "absent", "unsupported", "unknown"},
+				"mode":             {"stopped", "foreground", "background", "persistent", "unknown"},
+				"processState":     {"inactive", "starting", "running", "failed", "unknown"},
+				"health":           {"unknown", "healthy", "unhealthy"},
+				"consistencyState": {"consistent", "drifted", "missing", "blocked"},
 			},
 		},
 		"drivers": []map[string]any{{
-			"id": "io.tunlite.ssh", "builtIn": true, "configVersion": 1,
+			"id": "io.tunlite.ssh", "builtIn": true,
 			"capabilities": []string{"access", "publish", "socks", "foreground", "persistent", "multiForward", "inspect", "check", "diagnose"},
 		}},
-		"exitCodes": map[string]int{"success": 0, "error": 1, "invalidArguments": 2, "notFound": 3, "authenticationFailed": 4, "partial": 6},
+		"exitCodes": map[string]int{"success": 0, "error": 1, "invalidArguments": 2, "notFound": 3, "authenticationFailed": 4, "partial": 5},
 		"schemas":   schemas.Names,
 	}
 	if opts.JSON {
-		return writeJSON(streams.Out, result)
+		return writeResponse(streams.Out, result)
 	}
 	fmt.Fprintf(streams.Out, "Tunlite %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(streams.Out, "commands: %s\n", strings.Join(commands, ", "))
 	fmt.Fprintln(streams.Out, "driver: io.tunlite.ssh (access, publish, socks, multi-forward)")
-	fmt.Fprintf(streams.Out, "persistent services: %t (systemd on Linux, launchd on macOS)\n", persistentAvailable)
+	fmt.Fprintf(streams.Out, "native services: %t (systemd on Linux, launchd on macOS)\n", nativeAvailable)
 	return nil
 }
 
-func nativeServiceManagerAvailable() bool {
-	command := ""
-	switch runtime.GOOS {
-	case "linux":
-		command = "systemctl"
-	case "darwin":
-		command = "launchctl"
-	default:
-		return false
+func help(args []string, streams IO, opts options) error {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		args = nil
 	}
-	_, err := exec.LookPath(command)
-	return err == nil
-}
-
-func help(streams IO, opts options) error {
+	if len(args) > 1 {
+		return usageError("usage: tunlite help [command]")
+	}
+	if len(args) == 1 {
+		return commandHelp(args[0], streams, opts)
+	}
 	if opts.JSON {
 		return capabilities(nil, streams, opts)
 	}
@@ -91,12 +215,136 @@ func help(streams IO, opts options) error {
 	fmt.Fprintln(streams.Out, "")
 	fmt.Fprintln(streams.Out, "usage: tunlite <command> [options]")
 	fmt.Fprintln(streams.Out, "")
-	fmt.Fprintln(streams.Out, "connections: add, list, set, rename, rm")
-	fmt.Fprintln(streams.Out, "foreground:  run, check, doctor")
-	fmt.Fprintln(streams.Out, "services:    enable, disable, restart, status, logs, sync")
-	fmt.Fprintln(streams.Out, "declarations: import, export, validate, migrate")
+	fmt.Fprintln(streams.Out, "connections: add, list, set, rename, remove")
+	fmt.Fprintln(streams.Out, "foreground:  run, check, doctor, monitor")
+	fmt.Fprintln(streams.Out, "services:    start, stop, enable, disable, restart, status, logs")
+	fmt.Fprintln(streams.Out, "ownership:   manage, unmanage, resolve")
+	fmt.Fprintln(streams.Out, "declarations: import, export, validate")
 	fmt.Fprintln(streams.Out, "machine contract: schema, capabilities, version")
 	fmt.Fprintln(streams.Out, "")
-	fmt.Fprintln(streams.Out, "each enabled connection is owned directly by the native service manager; no daemon is used")
+	fmt.Fprintln(streams.Out, "each background connection is owned directly by the native service manager; no daemon is used")
 	return nil
+}
+
+func commandHelp(command string, streams IO, opts options) error {
+	if !containsString(publicCommands, command) {
+		message := fmt.Sprintf("unknown command %q", command)
+		if suggestion := suggestCommand(command); suggestion != "" {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		}
+		return usageError(message)
+	}
+	if opts.JSON {
+		return writeResponse(streams.Out, map[string]any{"outcome": "succeeded", "command": command, "usage": commandUsage(command)})
+	}
+	fmt.Fprintln(streams.Out, commandUsage(command))
+	return nil
+}
+
+func commandUsage(command string) string {
+	usage := map[string]string{
+		"add":          "usage: tunlite add <name> --to user@host[:port] -L/-R/-D ...",
+		"set":          "usage: tunlite set <name> [--to ...] [-L/-R/-D ...]",
+		"remove":       "usage: tunlite remove <name>",
+		"rename":       "usage: tunlite rename <name> <new-name>",
+		"run":          "usage: tunlite run <name>",
+		"start":        "usage: tunlite start <name> | --tag <tag> | --all",
+		"stop":         "usage: tunlite stop <name> | --tag <tag> | --all",
+		"enable":       "usage: tunlite enable <name> | --tag <tag> | --all",
+		"disable":      "usage: tunlite disable <name> | --tag <tag> | --all",
+		"restart":      "usage: tunlite restart <name> | --tag <tag> | --all",
+		"status":       "usage: tunlite status [<name> | --tag <tag> | --all]",
+		"monitor":      "usage: tunlite monitor [--tag tag] [--interval seconds]",
+		"logs":         "usage: tunlite logs <name> [--lines N] [--follow]",
+		"doctor":       "usage: tunlite doctor [name] [--offline] [--timeout seconds]",
+		"check":        "usage: tunlite check <connection-or-user@host> [-i key] [--jump host] [--timeout seconds]",
+		"manage":       "usage: tunlite manage [native-service] [--name name]",
+		"unmanage":     "usage: tunlite unmanage <name>",
+		"resolve":      "usage: tunlite resolve <name> --use tunlite|system",
+		"import":       "usage: tunlite import <path> [--force]",
+		"export":       "usage: tunlite export [--output path|-] [--force]",
+		"validate":     "usage: tunlite validate [path]",
+		"schema":       "usage: tunlite schema [connection|connection-list|ssh|cli|service-state] [--output path|-] [--force]",
+		"capabilities": "usage: tunlite capabilities",
+		"version":      "usage: tunlite version",
+		"list":         "usage: tunlite list [--tag tag...]",
+		"help":         "usage: tunlite help [command]",
+	}
+	if value := usage[command]; value != "" {
+		return value
+	}
+	return "usage: tunlite " + command + " [options]"
+}
+
+func containsHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func suggestCommand(value string) string {
+	retired := map[string]string{"rm": "remove", "mon": "monitor", "watch": "monitor"}
+	if replacement := retired[value]; replacement != "" {
+		return replacement
+	}
+	best, distance := "", 4
+	for _, candidate := range publicCommands {
+		if current := editDistance(value, candidate); current < distance {
+			best, distance = candidate, current
+		}
+	}
+	return best
+}
+
+func editDistance(left, right string) int {
+	a, b := []rune(left), []rune(right)
+	if len(a) == len(b) {
+		for index := 0; index+1 < len(a); index++ {
+			swapped := append([]rune(nil), a...)
+			swapped[index], swapped[index+1] = swapped[index+1], swapped[index]
+			if string(swapped) == string(b) {
+				return 1
+			}
+		}
+	}
+	row := make([]int, len(b)+1)
+	for index := range row {
+		row[index] = index
+	}
+	for i, ac := range a {
+		previous := row[0]
+		row[0] = i + 1
+		for j, bc := range b {
+			old := row[j+1]
+			cost := 0
+			if ac != bc {
+				cost = 1
+			}
+			row[j+1] = minInt(row[j+1]+1, row[j]+1, previous+cost)
+			previous = old
+		}
+	}
+	return row[len(b)]
+}
+
+func minInt(values ...int) int {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value < result {
+			result = value
+		}
+	}
+	return result
 }

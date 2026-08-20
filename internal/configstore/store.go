@@ -3,6 +3,7 @@ package configstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +19,64 @@ import (
 
 const Kind = "ConnectionList"
 
-var ErrChanged = errors.New("config changed during operation")
+const (
+	formatCurrent = "current"
+	formatPreview = "go-preview"
+)
+
+var (
+	ErrChanged = errors.New("config changed during operation")
+	ErrExists  = errors.New("config file already exists")
+)
 
 type Document struct {
-	APIVersion string            `json:"apiVersion"`
-	Kind       string            `json:"kind"`
-	Items      []core.Connection `json:"items"`
+	ConfigVersion int               `json:"configVersion"`
+	Kind          string            `json:"kind"`
+	Items         []core.Connection `json:"items"`
+	sourceFormat  string
+}
+
+func (d *Document) UnmarshalJSON(raw []byte) error {
+	var value struct {
+		ConfigVersion *int              `json:"configVersion"`
+		APIVersion    string            `json:"apiVersion,omitempty"`
+		Kind          string            `json:"kind"`
+		Items         []core.Connection `json:"items"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	if err := ensureEOF(decoder); err != nil {
+		return err
+	}
+	switch {
+	case value.ConfigVersion != nil && value.APIVersion == "":
+		d.ConfigVersion = *value.ConfigVersion
+		d.sourceFormat = formatCurrent
+	case value.ConfigVersion == nil && value.APIVersion == "tunlite.dev/v1":
+		d.ConfigVersion = core.ConfigVersion
+		d.sourceFormat = formatPreview
+	default:
+		return errors.New("ConnectionList must use one supported config version envelope")
+	}
+	d.Kind = value.Kind
+	d.Items = value.Items
+	for index := range d.Items {
+		if d.Items[index].ConfigVersion == 0 {
+			d.Items[index].ConfigVersion = d.ConfigVersion
+		}
+	}
+	return nil
+}
+
+type UnsupportedConfigVersionError struct {
+	Found int
+}
+
+func (e *UnsupportedConfigVersionError) Error() string {
+	return fmt.Sprintf("unsupported configVersion %d; use a compatible Tunlite Core", e.Found)
 }
 
 type LegacyConfigError struct {
@@ -31,7 +84,7 @@ type LegacyConfigError struct {
 }
 
 func (e *LegacyConfigError) Error() string {
-	return fmt.Sprintf("legacy Tunlite 0.x config detected at %s; migrate it before using Go v1", e.Path)
+	return fmt.Sprintf("legacy Tunlite 0.x config detected at %s; import it before using Go v1", e.Path)
 }
 
 type Store struct {
@@ -45,16 +98,21 @@ func New(path string) *Store {
 func (s *Store) Path() string { return s.path }
 
 func Empty() Document {
-	return Document{APIVersion: core.APIVersion, Kind: Kind, Items: []core.Connection{}}
+	return Document{ConfigVersion: core.ConfigVersion, Kind: Kind, Items: []core.Connection{}, sourceFormat: formatCurrent}
 }
 
 func (s *Store) Load() (Document, error) {
+	document, _, err := s.loadWithRaw()
+	return document, err
+}
+
+func (s *Store) loadWithRaw() (Document, []byte, error) {
 	raw, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Empty(), nil
+		return Empty(), nil, nil
 	}
 	if err != nil {
-		return Document{}, fmt.Errorf("read config %s: %w", s.path, err)
+		return Document{}, nil, fmt.Errorf("read config %s: %w", s.path, err)
 	}
 	var probe struct {
 		Version json.RawMessage   `json:"version"`
@@ -62,21 +120,31 @@ func (s *Store) Load() (Document, error) {
 		Tunnels []json.RawMessage `json:"tunnels"`
 	}
 	if json.Unmarshal(raw, &probe) == nil && probe.Kind == "" && (probe.Version != nil || probe.Tunnels != nil) {
-		return Document{}, &LegacyConfigError{Path: s.path}
+		return Document{}, raw, &LegacyConfigError{Path: s.path}
+	}
+	var versionProbe struct {
+		ConfigVersion *int   `json:"configVersion"`
+		APIVersion    string `json:"apiVersion"`
+	}
+	if err := json.Unmarshal(raw, &versionProbe); err != nil {
+		return Document{}, raw, fmt.Errorf("decode config %s: %w", s.path, err)
+	}
+	if versionProbe.ConfigVersion != nil && *versionProbe.ConfigVersion != core.ConfigVersion {
+		return Document{}, raw, &UnsupportedConfigVersionError{Found: *versionProbe.ConfigVersion}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var document Document
 	if err := decoder.Decode(&document); err != nil {
-		return Document{}, fmt.Errorf("decode config %s: %w", s.path, err)
+		return Document{}, raw, fmt.Errorf("decode config %s: %w", s.path, err)
 	}
 	if err := ensureEOF(decoder); err != nil {
-		return Document{}, fmt.Errorf("decode config %s: %w", s.path, err)
+		return Document{}, raw, fmt.Errorf("decode config %s: %w", s.path, err)
 	}
 	if err := validateDocument(document); err != nil {
-		return Document{}, fmt.Errorf("validate config %s: %w", s.path, err)
+		return Document{}, raw, fmt.Errorf("validate config %s: %w", s.path, err)
 	}
-	return document, nil
+	return document, raw, nil
 }
 
 func (s *Store) Update(ctx context.Context, change func(*Document) error) error {
@@ -90,12 +158,24 @@ func (s *Store) Update(ctx context.Context, change func(*Document) error) error 
 		return err
 	}
 	defer release()
-	document, err := s.Load()
+	document, original, err := s.loadWithRaw()
 	if err != nil {
 		return err
 	}
+	previewMigration := document.sourceFormat == formatPreview
+	if previewMigration {
+		document.sourceFormat = formatCurrent
+		for index := range document.Items {
+			document.Items[index] = document.Items[index].CurrentEnvelope()
+		}
+	}
 	if err := change(&document); err != nil {
 		return err
+	}
+	if previewMigration {
+		if err := s.backupPreview(original); err != nil {
+			return err
+		}
 	}
 	return s.save(document)
 }
@@ -113,7 +193,7 @@ func (s *Store) Write(ctx context.Context, document Document, overwrite bool) er
 	defer release()
 	if !overwrite {
 		if _, err := os.Stat(s.path); err == nil {
-			return fmt.Errorf("config file already exists: %s", s.path)
+			return fmt.Errorf("%w: %s", ErrExists, s.path)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -127,6 +207,46 @@ func (s *Store) save(document Document) error {
 		return err
 	}
 	return s.saveRaw(raw)
+}
+
+func (s *Store) backupPreview(raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	digest := sha256.Sum256(raw)
+	path := fmt.Sprintf("%s.go-preview-sha256-%x.bak", s.path, digest[:8])
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if !bytes.Equal(existing, raw) {
+			return fmt.Errorf("preview backup already exists with different content: %s", path)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create preview backup: %w", err)
+	}
+	remove := true
+	defer func() {
+		_ = file.Close()
+		if remove {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(raw); err != nil {
+		return fmt.Errorf("write preview backup: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync preview backup: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close preview backup: %w", err)
+	}
+	remove = false
+	return nil
 }
 
 func Encode(document Document) ([]byte, error) {
@@ -223,8 +343,8 @@ func (s *Store) acquire(ctx context.Context) (func(), error) {
 }
 
 func validateDocument(document Document) error {
-	if document.APIVersion != core.APIVersion {
-		return fmt.Errorf("unsupported apiVersion %q", document.APIVersion)
+	if document.ConfigVersion != core.ConfigVersion {
+		return fmt.Errorf("unsupported configVersion %d", document.ConfigVersion)
 	}
 	if document.Kind != Kind {
 		return fmt.Errorf("unsupported kind %q", document.Kind)
@@ -234,6 +354,15 @@ func validateDocument(document Document) error {
 	}
 	seen := make(map[string]struct{}, len(document.Items))
 	for _, connection := range document.Items {
+		if document.sourceFormat == formatCurrent && connection.LegacyPreviewEnvelope() {
+			return errors.New("ConnectionList mixes current and legacy preview envelopes")
+		}
+		if document.sourceFormat == formatPreview && !connection.LegacyPreviewEnvelope() {
+			return errors.New("ConnectionList mixes legacy preview and current envelopes")
+		}
+		if connection.ConfigVersion != document.ConfigVersion {
+			return fmt.Errorf("connection %q configVersion %d does not match ConnectionList configVersion %d", connection.Metadata.Name, connection.ConfigVersion, document.ConfigVersion)
+		}
 		if err := core.ValidateConnection(connection); err != nil {
 			return err
 		}

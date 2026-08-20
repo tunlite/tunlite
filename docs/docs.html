@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en" data-lang="en">
 <head>
+<meta http-equiv="refresh" content="0; url=https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Documentation · tunlite · 文档</title>
@@ -25,7 +26,7 @@
 <body>
   <div style="position:relative;z-index:100;padding:12px 20px;text-align:center;background:#2b2111;color:#ffe5a8;border-bottom:1px solid #75551d">
     <strong>Tunlite v1 Preview:</strong>
-    <a href="V1_PREVIEW.html" style="color:#fff0bd">安装、支持矩阵与 0.10.3 迁移指南</a>。
+    <a href="INSTALL_AND_ACCEPTANCE.html" style="color:#fff0bd">从零安装与完整验收手册</a>。
     本页其余内容暂时保留为 0.10.3 历史说明，不代表 v1 架构。
   </div>
 <div class="grain" aria-hidden="true"></div>
@@ -326,8 +327,8 @@
     <!-- FOR AGENTS -->
     <section id="Agents">
       <h2><span class="en">For Agents</span><span class="zh">给 Agent 用</span></h2>
-      <p><span class="en">Agents are a first-class user. Every command takes <code>--json</code> and returns a stable exit code, so an Agent acts on results without scraping prose. The bundled <code>ssh-tunnel</code> skill — installed with <code>tunlite install skill</code> and shipped in the npm package — tells an Agent exactly how to drive <code>tunlite</code>: <code>--json</code>, branching on exit codes, and how to handle <code>needs-auth</code>.</span><span class="zh">Agent 是一等用户。每个命令都接受 <code>--json</code> 并返回稳定退出码，Agent 拿到结果就能直接判断，不用解析人话。内置的 <code>ssh-tunnel</code> skill —— 用 <code>tunlite install skill</code> 安装、随 npm 包一起发布 —— 告诉 Agent 怎么驱动 <code>tunlite</code>：<code>--json</code>、按退出码分支、处理 <code>needs-auth</code>。</span></p>
-      <p><a class="ext" href="https://github.com/yuanyuanzijin/tunlite/blob/master/skill/ssh-tunnel/SKILL.md" target="_blank" rel="noopener"><span class="en">Read the Agent skill (SKILL.md) →</span><span class="zh">阅读 Agent skill（SKILL.md）→</span></a></p>
+      <p><span class="en">Agents are a first-class user. Every command takes <code>--json</code> and returns a stable exit code, so an Agent acts on results without scraping prose. The standalone <code>use-tunlite</code> Skill package tells an Agent exactly how to drive <code>tunlite</code>. Give its repository directory to the Agent and let the Agent manage installation, updates, and removal through its own extension system; the Tunlite CLI never inspects Agent-specific directories.</span><span class="zh">Agent 是一等用户。每个命令都接受 <code>--json</code> 并返回稳定退出码，Agent 拿到结果就能直接判断，不用解析人话。独立的 <code>use-tunlite</code> Skill 包告诉 Agent 如何驱动 <code>tunlite</code>。把仓库目录交给 Agent，由 Agent 使用自己的扩展体系完成安装、更新和卸载；Tunlite CLI 不读取 Agent 私有目录。</span></p>
+      <p><a class="ext" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite" target="_blank" rel="noopener"><span class="en">Open the use-tunlite Skill package →</span><span class="zh">打开 use-tunlite Skill 包 →</span></a></p>
     </section>
 
     <!-- CONFIG PATHS -->

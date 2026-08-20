@@ -38,19 +38,42 @@ main() {
   esac
 
   case "$(uname -s)" in
-    Darwin) target_os="darwin" ;;
-    Linux) target_os="linux" ;;
+    Darwin)
+      case "$(uname -m)" in
+        x86_64|arm64) ;;
+        *) echo "tunlite: 不支持的 Mac CPU 架构 $(uname -m)" >&2; exit 1 ;;
+      esac
+      asset_suffix="macos"
+      ;;
+    Linux)
+      case "$(uname -m)" in
+        x86_64|amd64) target_arch="x64" ;;
+        arm64|aarch64) target_arch="arm64" ;;
+        *) echo "tunlite: 不支持的 CPU 架构 $(uname -m)" >&2; exit 1 ;;
+      esac
+      asset_suffix="linux_${target_arch}"
+      ;;
     *) echo "tunlite: 当前安装脚本仅支持 macOS 和 Linux" >&2; exit 1 ;;
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64) target_arch="amd64" ;;
-    arm64|aarch64) target_arch="arm64" ;;
-    *) echo "tunlite: 不支持的 CPU 架构 $(uname -m)" >&2; exit 1 ;;
   esac
 
   plain_version="${version#v}"
-  asset="tunlite_${plain_version}_${target_os}_${target_arch}.tar.gz"
+  asset="tunlite_${plain_version}_${asset_suffix}.tar.gz"
   base_url="${TUNLITE_RELEASE_BASE_URL:-${repository}/releases/download/${version}}"
+
+  if [ -n "${TUNLITE_HOME:-}" ]; then
+    legacy_config="${TUNLITE_HOME}/config/config.json"
+    legacy_manifest="${TUNLITE_HOME}/data/install.json"
+  else
+    legacy_config="${XDG_CONFIG_HOME:-${HOME}/.config}/tunlite/config.json"
+    legacy_manifest="${XDG_STATE_HOME:-${HOME}/.local/state}/tunlite/install.json"
+  fi
+  if [ -f "$legacy_config" ] || [ -f "$legacy_manifest" ]; then
+    echo "tunlite: 检测到 0.x 配置或安装记录，安装脚本不会直接覆盖旧版本。" >&2
+    echo "tunlite: 请下载 v1 原生二进制到临时路径，并按照升级说明导入旧配置：" >&2
+    echo "https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md" >&2
+    exit 1
+  fi
+
   temporary="$(mktemp -d)"
   install_temporary=""
   trap 'rm -rf "$temporary"; if [ -n "$install_temporary" ]; then rm -f "$install_temporary"; fi' EXIT HUP INT TERM

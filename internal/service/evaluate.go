@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -13,16 +12,21 @@ import (
 
 func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Artifact) State {
 	state := State{
-		Connection: record.Connection, Adapter: adapter.Name(), DesiredState: record.DesiredState,
-		ProcessState: ProcessUnknown, Health: HealthUnknown, SyncState: SyncSynced,
-		ObservedAt: time.Now().UTC(), Conditions: []core.Condition{},
+		Connection: record.Connection, Adapter: adapter.Name(), ServiceState: ServiceUnknown,
+		Mode: record.Mode, ProcessState: ProcessUnknown, Health: HealthUnknown,
+		ConsistencyState: ConsistencyConsistent, ObservedAt: time.Now().UTC(),
+		Conditions: []core.Condition{}, Endpoints: []plan.Endpoint{},
 	}
 	if expected != nil {
 		state.Endpoints = expected.Plan.Endpoints
-	} else {
-		state.Endpoints = []plan.Endpoint{}
 	}
-	observation, inspectErr := adapter.Inspect(ctx, record.Connection)
+	if record.Adapter != "" && record.Adapter != adapter.Name() {
+		state.ConsistencyState = ConsistencyBlocked
+		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_adapter_changed", "error",
+			fmt.Sprintf("connection is bound to %s but this machine uses %s", record.Adapter, adapter.Name()), nil))
+		return state
+	}
+	observation, inspectErr := adapter.Inspect(ctx, record.Reference())
 	if observation.ProcessState != "" {
 		state.ProcessState = observation.ProcessState
 	}
@@ -31,43 +35,58 @@ func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Art
 		state.Platform = map[string]any{}
 	}
 	if inspectErr != nil {
-		state.SyncState = SyncBlocked
+		state.ConsistencyState = ConsistencyBlocked
 		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_manager_unavailable", "error",
 			fmt.Sprintf("%s could not inspect the service: %v", adapter.Name(), inspectErr),
 			[]core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{"adapter": adapter.Name()}}}))
 		return state
 	}
-	if record.DesiredState == DesiredEnabled && record.Adapter != "" && record.Adapter != adapter.Name() {
-		state.SyncState = SyncBlocked
-		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_adapter_changed", "error",
-			fmt.Sprintf("connection was enabled with %s but this machine uses %s", record.Adapter, adapter.Name()), nil))
+	if observation.Installed {
+		state.ServiceState = ServiceRegistered
+	} else {
+		state.ServiceState = ServiceAbsent
+		state.ConsistencyState = ConsistencyMissing
+		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_artifact_missing", "error",
+			"the native service definition is missing",
+			[]core.Action{{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "tunlite"}}}))
 		return state
 	}
-	if record.DesiredState == DesiredEnabled {
-		switch {
-		case expected == nil:
-			state.SyncState = SyncBlocked
-		case !observation.Installed:
-			state.SyncState = SyncMissing
-			state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_artifact_missing", "error",
-				"the connection is enabled but its native service artifact is missing",
-				[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": record.Connection}}}))
-		case !bytes.Equal(observation.Artifact, expected.Content):
-			state.SyncState = SyncDrifted
-			state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_artifact_drifted", "warning",
-				"the native service artifact differs from the current execution plan",
-				[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": record.Connection}}}))
-		case !observation.Enabled:
-			state.SyncState = SyncDrifted
-			state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_not_enabled", "warning",
-				"the native service exists but is not enabled",
-				[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": record.Connection}}}))
+	if record.BaselineDigest == "" {
+		state.ConsistencyState = ConsistencyBlocked
+		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_baseline_missing", "warning",
+			"the native service predates the current consistency baseline; choose which side to keep",
+			[]core.Action{
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "tunlite"}},
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "system"}},
+			}))
+		return state
+	}
+	declarationChanged := expected != nil && record.PlanDigest != "" && expected.PlanDigest != record.PlanDigest
+	systemChanged := record.BaselineDigest != "" && ContentDigest(observation.Artifact) != record.BaselineDigest
+	if declarationChanged || systemChanged {
+		state.ConsistencyState = ConsistencyDrifted
+		message := "the native service definition differs from the last consistent baseline"
+		if declarationChanged && !systemChanged {
+			message = "the Connection declaration differs from the last applied execution plan"
+		} else if declarationChanged && systemChanged {
+			message = "both the Connection declaration and native service changed since the last consistent baseline"
 		}
-	} else if observation.Installed || observation.Enabled || observation.ProcessState == ProcessRunning || observation.ProcessState == ProcessStarting {
-		state.SyncState = SyncDrifted
-		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "disabled_service_present", "warning",
-			"the connection is disabled but its native service is still present or running",
-			[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": record.Connection}}}))
+		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_artifact_drifted", "warning",
+			message,
+			[]core.Action{
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "tunlite"}},
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "system"}},
+			}))
+	}
+	observedMode := modeFromObservation(observation)
+	if observedMode != record.Mode {
+		state.ConsistencyState = ConsistencyDrifted
+		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_mode_drifted", "warning",
+			fmt.Sprintf("native service mode is %s but Tunlite recorded %s", observedMode, record.Mode),
+			[]core.Action{
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "tunlite"}},
+				{Type: "resolve_connection", Parameters: map[string]any{"connection": record.Connection, "use": "system"}},
+			}))
 	}
 	if state.ProcessState == ProcessRunning && expected != nil && len(expected.Plan.HealthChecks) > 0 {
 		state.Health = HealthHealthy
@@ -86,6 +105,16 @@ func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Art
 		}
 	}
 	return state
+}
+
+func modeFromObservation(observation Observation) string {
+	if observation.AutoStart {
+		return ModePersistent
+	}
+	if observation.ProcessState == ProcessRunning || observation.ProcessState == ProcessStarting || observation.ProcessState == ProcessFailed {
+		return ModeBackground
+	}
+	return ModeStopped
 }
 
 func stateCondition(connection, code, severity, message string, actions []core.Action) core.Condition {

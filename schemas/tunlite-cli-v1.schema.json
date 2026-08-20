@@ -3,17 +3,26 @@
   "$id": "https://tunlite.dev/schemas/tunlite-cli-v1.schema.json",
   "title": "Tunlite CLI machine response",
   "type": "object",
-  "required": ["contractVersion", "outcome"],
+  "required": ["protocolVersion", "outcome"],
   "properties": {
-    "contractVersion": { "const": "tunlite.cli/v1" },
-    "outcome": { "enum": ["succeeded", "planned", "applied", "starting", "stopped", "partial", "failed"] },
+    "protocolVersion": { "const": 1 },
+    "outcome": { "enum": ["succeeded", "planned", "applied", "starting", "stopped", "log", "partial", "failed"] },
     "dryRun": { "type": "boolean" },
     "conditions": {
       "type": "array",
       "items": { "$ref": "#/$defs/condition" }
     },
     "error": { "$ref": "#/$defs/error" },
-    "results": { "type": "array" }
+    "results": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "connection-v1.schema.json" },
+          { "$ref": "#/$defs/serviceResult" },
+          { "$ref": "#/$defs/importResult" }
+        ]
+      }
+    }
   },
   "$defs": {
     "action": {
@@ -41,16 +50,68 @@
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "driver", "connection", "message", "riskLevel", "requiresApproval", "actions"],
+      "required": ["code", "driver", "connection", "message", "riskLevel", "actions"],
       "properties": {
         "code": { "type": "string", "minLength": 1 },
         "driver": { "type": ["string", "null"] },
         "connection": { "type": ["string", "null"] },
         "message": { "type": "string" },
         "riskLevel": { "enum": ["low", "medium", "high", "critical"] },
-        "requiresApproval": { "type": "boolean" },
         "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
       }
+    },
+    "serviceItemError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "riskLevel", "actions"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "riskLevel": { "enum": ["low", "medium", "high", "critical"] },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "unitName", "path", "planDigest"],
+      "properties": {
+        "adapter": { "type": "string" },
+        "unitName": { "type": "string" },
+        "path": { "type": "string" },
+        "planDigest": { "type": "string" }
+      }
+    },
+    "serviceResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection", "outcome", "changed", "conditions"],
+      "properties": {
+        "connection": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["succeeded", "planned", "applied", "failed"] },
+        "changed": { "type": "boolean" },
+        "state": { "$ref": "service-state-v1.schema.json" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "conditions": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "error": { "$ref": "#/$defs/serviceItemError" }
+      }
+    },
+    "importResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection", "outcome"],
+      "properties": {
+        "connection": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["added", "updated", "failed"] },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "riskLevel": { "enum": ["low", "medium", "high", "critical"] },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+      },
+      "allOf": [{
+        "if": { "properties": { "outcome": { "const": "failed" } }, "required": ["outcome"] },
+        "then": { "required": ["code", "message", "riskLevel", "actions"] }
+      }]
     }
   }
 }

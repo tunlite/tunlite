@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 func TestRealOpenSSHAllForwardTypes(t *testing.T) {
@@ -109,17 +111,26 @@ AllowUsers %s
 	socksPort := reserveTCPPort(t)
 
 	t.Setenv("TUNLITE_SSH", sshPath)
+	t.Setenv("TUNLITE_HOME", filepath.Join(temp, "tunlite-home"))
+	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	code, out, addErr := invoke(t,
+		"add", "integration", "--to", fmt.Sprintf("%s@127.0.0.1:%d", current.Username, sshdPort), "-i", clientKey,
+		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
+		"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
+		"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
+		"--ssh-opt", "UserKnownHostsFile=/dev/null",
+	)
+	if code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, addErr)
+	}
 	runCtx, stopRun := context.WithCancel(context.Background())
 	stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
 	runDone := make(chan int, 1)
 	go func() {
-		runDone <- RunContext(runCtx, []string{
-			"run", "--to", fmt.Sprintf("%s@127.0.0.1:%d", current.Username, sshdPort), "-i", clientKey,
-			"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
-			"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
-			"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-			"--ssh-opt", "UserKnownHostsFile=/dev/null", "--approve", "--json", "--non-interactive",
-		}, IO{Out: stdout, Err: stderr})
+		runDone <- runContext(runCtx, []string{
+			"run", "integration", "--json", "--non-interactive",
+		}, IO{Out: stdout, Err: stderr}, func() (service.Adapter, error) { return adapter, nil })
 	}()
 
 	verifyHTTPForward(t, fmt.Sprintf("http://127.0.0.1:%d", localPort), marker, 10*time.Second)

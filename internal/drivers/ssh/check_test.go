@@ -30,8 +30,8 @@ func TestCheckReportsMissingProvider(t *testing.T) {
 	config := Config{Host: "me@host"}
 	raw, _ := json.Marshal(config)
 	connection := core.Connection{
-		APIVersion: core.APIVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "probe"},
-		Spec: core.ConnectionSpec{Driver: ID, Lifecycle: "foreground", ConfigVersion: 1, Config: raw},
+		ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "probe"},
+		Spec: core.ConnectionSpec{Driver: ID, Config: raw},
 	}
 	driver := NewWithLookup(func(string) (string, error) { return "", context.Canceled })
 	report, err := driver.Check(context.Background(), connection, core.CheckOptions{})

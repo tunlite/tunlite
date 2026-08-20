@@ -19,22 +19,26 @@ func TestAgentSkillMatchesRuntimeCapabilities(t *testing.T) {
 		t.Fatalf("capabilities exit=%d stderr=%s", code, stderr.String())
 	}
 	var capabilities struct {
-		Commands   []string       `json:"commands"`
-		ExitCodes  map[string]int `json:"exitCodes"`
-		Persistent struct {
+		ProtocolVersion int            `json:"protocolVersion"`
+		Commands        []string       `json:"commands"`
+		ExitCodes       map[string]int `json:"exitCodes"`
+		NativeServices  struct {
 			StateDimensions map[string][]string `json:"stateDimensions"`
-		} `json:"persistentServices"`
+		} `json:"nativeServices"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &capabilities); err != nil {
 		t.Fatal(err)
 	}
-	skillPath := filepath.Join("..", "..", "skill", "ssh-tunnel", "SKILL.md")
+	skillPath := filepath.Join("..", "..", "skill", "use-tunlite", "SKILL.md")
 	raw, err := os.ReadFile(skillPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
 	contract := parseSkillContract(t, text)
+	if contract["protocolVersion"] != strconv.Itoa(capabilities.ProtocolVersion) {
+		t.Fatalf("Skill protocolVersion drifted: got %q want %d", contract["protocolVersion"], capabilities.ProtocolVersion)
+	}
 
 	commands := splitContractValues(contract["commands"])
 	sort.Strings(commands)
@@ -63,7 +67,7 @@ func TestAgentSkillMatchesRuntimeCapabilities(t *testing.T) {
 		t.Fatalf("Skill exit codes drifted: got %v want %v", gotExitCodes, wantExitCodes)
 	}
 
-	for dimension, values := range capabilities.Persistent.StateDimensions {
+	for dimension, values := range capabilities.NativeServices.StateDimensions {
 		got := splitContractValues(contract[dimension])
 		if !reflect.DeepEqual(got, values) {
 			t.Fatalf("Skill %s drifted: got %v want %v", dimension, got, values)
@@ -83,13 +87,16 @@ func TestAgentSkillMatchesRuntimeCapabilities(t *testing.T) {
 }
 
 func TestAgentSkillContainsNoLegacyRuntimeContract(t *testing.T) {
-	path := filepath.Join("..", "..", "skill", "ssh-tunnel", "SKILL.md")
+	path := filepath.Join("..", "..", "skill", "use-tunlite", "SKILL.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lower := strings.ToLower(string(raw))
-	for _, forbidden := range []string{"daemon", "ipc", "node.js", "npm", "setup-key", "install service", "退出码 | 5", "| 5 |"} {
+	if !strings.Contains(string(raw), "name: use-tunlite") {
+		t.Error("Skill does not use the canonical use-tunlite name")
+	}
+	for _, forbidden := range []string{"name: ssh-tunnel", "install skill", "uninstall skill", "daemon", "ipc", "node.js", "npm", "install service", "退出码 | 6", "| 6 |"} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Errorf("Skill still contains legacy contract %q", forbidden)
 		}

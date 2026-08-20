@@ -21,13 +21,26 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 ```bash
 # macOS / Linux；下载 v1.0.0-preview.1 并校验 SHA-256
 curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
-
-# Windows PowerShell（首个预览版支持前台 CLI）
-irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex
 ```
 
-每个 Release 都包含独立压缩包和 `SHA256SUMS`。手动安装、平台能力、构建证明和
-0.10.3 迁移步骤见[预览版指南](docs/V1_PREVIEW.md)。
+每个 Release 都包含独立压缩包和 `SHA256SUMS`。第一次安装或参与发布验收，请按照
+[从零安装与验收手册](docs/INSTALL_AND_ACCEPTANCE.md)执行；现有 0.x 用户必须先阅读
+[0.x 升级到 Go v1](docs/UPGRADE_FROM_0_X.md)，版本边界见[预览版指南](docs/V1_PREVIEW.md)。
+
+拿到手动下载的原生二进制时，直接复制到 PATH：
+
+```bash
+chmod +x ./tunlite
+mkdir -p "$HOME/.local/bin"
+install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
+"$HOME/.local/bin/tunlite" version
+```
+
+安装、升级和卸载由 Release、包管理器或未来 Desktop 负责，核心 CLI 不提供对应命令，
+也不创建 `tun` 别名。替换 CLI 文件不会停止已经交给系统运行的 SSH Connection。
+V1 预览版暂不提供 Shell 自动补全，也不识别或修改 Agent 私有目录；需要让 Agent 使用
+Tunlite 时，请让 Agent 安装官方
+[`use-tunlite` Skill 包](skill/use-tunlite/)。
 
 ## 快速开始
 
@@ -40,14 +53,21 @@ tunlite add socks --to deploy@app01 -D 1080
 # 在当前终端前台运行。
 tunlite run db
 
-# 或让原生服务持续运行，并在失败后自动重启。
+# 只在本次登录期间后台运行，并在失败后自动恢复。
+tunlite start db
+tunlite stop db
+
+# 跨登录长期运行，并立即启动。
 tunlite enable db
 tunlite status db
 tunlite logs db --lines 100
 
-# 检测并修复声明与原生服务之间的漂移。
-tunlite sync db --dry-run
-tunlite sync db
+# 认证尚未配置时，使用系统 OpenSSH 工具完成密钥配置，再检查连接。
+tunlite check db
+
+# 异常漂移必须明确选择事实来源。
+tunlite resolve db --use tunlite --dry-run
+tunlite resolve db --use system
 ```
 
 每个 Connection 都是独立服务：
@@ -64,17 +84,23 @@ tunlite CLI -> SSH Driver -> ExecutionPlan -> systemd/launchd -> ssh
 自动化调用统一使用 `--json --non-interactive`，并查询运行时能力，不解析人类文本：
 
 ```bash
-tunlite capabilities --json
-tunlite schema cli
+tunlite capabilities --json --non-interactive
+tunlite schema cli --json --non-interactive
 tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-interactive
 ```
 
-状态同时包含 `desiredState`、`processState`、`health` 和 `syncState` 四个维度。
-批量操作逐项返回结果，部分失败使用退出码 `6`。公开监听和 Publish 计划必须获得显式
-批准；前台执行绑定本次调用，持久执行绑定精确计划。
+自动化在执行动作前必须检查 `capabilities` 返回的整数 `protocolVersion`。原始 Schema
+和导出的 Connection 配置是独立文档，分别使用 `$schema` 与 `configVersion`，不套 CLI
+响应 Envelope。需要在 stdout 读取原始 JSON 时，使用 `schema --output -` 或
+`export --output -`。
 
-随仓库提供的 [SSH Agent Skill](skill/ssh-tunnel/SKILL.md) 会在测试中与 CLI 的命令、
-退出码、状态和 Schema 契约校验一致。
+状态同时包含 `serviceState`、`mode`、`processState`、`health` 和
+`consistencyState` 五个维度。
+批量操作逐项返回结果，部分失败使用退出码 `5`。公开监听和 Publish 在声明写入及
+`--dry-run` 中返回结构化风险提示；V1 不维护独立的批准状态。
+
+仓库独立提供的 [`use-tunlite` Agent Skill](skill/use-tunlite/SKILL.md) 会在测试中与
+CLI 的命令、退出码、状态和 Schema 契约校验一致；安装和卸载由 Agent 自己负责。
 
 ## 配置与迁移
 
@@ -87,23 +113,26 @@ tunlite export --output tunlite.json
 tunlite validate tunlite.json
 tunlite import tunlite.json --dry-run
 
-# 先停止并卸载 0.10.3 的旧服务，再执行：
-tunlite migrate --dry-run --json --non-interactive
-tunlite migrate --json --non-interactive
+# 0.10.3 配置显式导入；旧文件和旧隧道不会被修改。
+tunlite import ~/.config/tunlite/config.json --dry-run --json --non-interactive
+tunlite import ~/.config/tunlite/config.json --json --non-interactive
 ```
 
-迁移会保存按内容摘要命名的字节级备份。迁移后只要 v1 配置被修改，
-`migrate --rollback` 就会拒绝覆盖。
+V1 配置写入 `~/.config/tunlite/connections.json`。导入后的 Connection 全部停止，用户
+按照升级文档逐条切换，避免新旧进程争用同一端口。
 
 ## 预览版范围
 
 - 内置 SSH `-L`、`-R`、`-D`，支持多 Forward、跳板机、Identity File、严格的
   OpenSSH `Key=Value` Option、检查、诊断、日志和漂移修复。
+- 单文件原生二进制；安装、升级和卸载由发行渠道负责。
 - macOS 12+ 使用 launchd、Linux 使用 systemd 用户服务持久运行。
-- Windows amd64 支持配置和前台 CLI；首个预览版不提供持久服务。
+- 首个预览版不发布 Windows 产物。每 Connection Task Scheduler Adapter、迁移和
+  Windows 真机验证完整通过后，Windows 才进入正式支持矩阵。
 - 外部 Driver 和插件安装延后到真实非 SSH 需求得到验证之后。
 
-[项目方向](docs/PROJECT_DIRECTION.md)是 v1 以及后续工作的唯一产品和架构指引。
+[产品设计](docs/PROJECT_DIRECTION.md)和[架构设计](docs/ARCHITECTURE.md)是 v1 以及后续
+工作的两份并列主文档。
 
 ## 开发
 

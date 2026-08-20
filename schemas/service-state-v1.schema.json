@@ -1,33 +1,66 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tunlite.dev/schemas/service-state-v1.schema.json",
-  "title": "Tunlite native service state",
+  "title": "Tunlite Connection State",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "connection",
-    "adapter",
-    "desiredState",
+    "serviceState",
+    "mode",
     "processState",
     "health",
-    "syncState",
+    "consistencyState",
     "observedAt",
     "endpoints",
     "conditions"
   ],
   "properties": {
-    "connection": { "type": "string", "minLength": 1 },
-    "adapter": { "type": "string", "minLength": 1 },
-    "desiredState": { "enum": ["enabled", "disabled"] },
+    "connection": { "type": "string" },
+    "adapter": { "type": "string" },
+    "serviceState": { "enum": ["registered", "absent", "unsupported", "unknown"] },
+    "mode": { "enum": ["stopped", "foreground", "background", "persistent", "unknown"] },
     "processState": { "enum": ["inactive", "starting", "running", "failed", "unknown"] },
     "health": { "enum": ["unknown", "healthy", "unhealthy"] },
-    "syncState": { "enum": ["synced", "drifted", "missing", "blocked"] },
+    "consistencyState": { "enum": ["consistent", "drifted", "missing", "blocked"] },
     "observedAt": { "type": "string", "format": "date-time" },
-    "endpoints": { "type": "array" },
-    "conditions": {
-      "type": "array",
-      "items": { "$ref": "tunlite-cli-v1.schema.json#/$defs/condition" }
-    },
+    "endpoints": { "type": "array", "items": { "$ref": "#/$defs/endpoint" } },
+    "conditions": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
     "platform": { "type": "object" }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "direction", "protocol", "address"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["access", "publish"] },
+        "protocol": { "const": "tcp" },
+        "address": { "type": "string", "minLength": 1 }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "parameters"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "parameters": { "type": "object" }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "message", "actions"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "message": { "type": "string" },
+        "driver": { "type": "string" },
+        "connection": { "type": "string" },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+      }
+    }
   }
 }

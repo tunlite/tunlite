@@ -24,9 +24,8 @@ v1.0.0-preview.1 -> tunlite version -> 1.0.0-preview.1
 
 每个版本固定提供：
 
-- macOS：amd64、arm64 的 `.tar.gz`。
-- Linux：amd64、arm64 的 `.tar.gz`。
-- Windows：amd64 的 `.zip`。
+- macOS：同时包含 x86_64 和 arm64 的 Universal 2 `.tar.gz`。
+- Linux：分别提供 x64、arm64 的 `.tar.gz`。
 - 覆盖全部压缩包的 `SHA256SUMS`。
 - GitHub Actions 对产物生成的 Artifact Attestation。
 

@@ -52,9 +52,6 @@ func NewWithLookup(lookup func(string) (string, error)) *Driver {
 func (d *Driver) ID() string { return ID }
 
 func (d *Driver) Plan(_ context.Context, connection core.Connection, options core.PlanOptions) (plan.ExecutionPlan, error) {
-	if connection.Spec.ConfigVersion != 1 {
-		return plan.ExecutionPlan{}, fmt.Errorf("unsupported SSH configVersion %d", connection.Spec.ConfigVersion)
-	}
 	config, err := DecodeConfig(connection.Spec.Config)
 	if err != nil {
 		return plan.ExecutionPlan{}, err
@@ -62,15 +59,6 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 	if err := Validate(config); err != nil {
 		return plan.ExecutionPlan{}, err
 	}
-	if options.NonInteractive || connection.Spec.Lifecycle == "persistent" {
-		for _, option := range config.SSHOptions {
-			key, value, _ := strings.Cut(option, "=")
-			if strings.EqualFold(key, "BatchMode") && !strings.EqualFold(strings.TrimSpace(value), "yes") {
-				return plan.ExecutionPlan{}, errors.New("BatchMode cannot be disabled for non-interactive or persistent connections")
-			}
-		}
-	}
-
 	binary := os.Getenv("TUNLITE_SSH")
 	if binary == "" {
 		binary = "ssh"
@@ -88,7 +76,7 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 		"-o", "ConnectTimeout=10",
 		"-o", "StrictHostKeyChecking=accept-new",
 	}
-	if options.NonInteractive || connection.Spec.Lifecycle == "persistent" {
+	if options.NonInteractive {
 		args = append(args, "-o", "BatchMode=yes")
 	}
 	if config.IdentityFile != "" {
@@ -123,16 +111,115 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 	}
 	args = append(args, "--", config.Host)
 
-	restart := "on-failure"
-	if connection.Spec.Lifecycle == "foreground" {
-		restart = "never"
-	}
 	return plan.ExecutionPlan{
 		Mode:      "direct",
 		Exec:      plan.Exec{Program: program, Args: args, Environment: map[string]string{}},
-		Lifecycle: plan.Lifecycle{Restart: restart, RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
+		Lifecycle: plan.Lifecycle{Restart: "on-failure", RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
 		Endpoints: endpoints, HealthChecks: healthChecks, Redactions: []plan.Redaction{},
 	}, nil
+}
+
+// ConfigFromPlan reverses a direct OpenSSH plan that uses Tunlite's supported
+// argv subset. It is used when a native service is explicitly brought under
+// management; unknown flags are rejected instead of guessed.
+func ConfigFromPlan(value plan.ExecutionPlan) (Config, error) {
+	if value.Mode != plan.ModeDirect || filepath.Base(value.Exec.Program) != "ssh" {
+		return Config{}, errors.New("execution plan is not a direct OpenSSH command")
+	}
+	config := Config{}
+	args := value.Exec.Args
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		next := func() (string, error) {
+			if index+1 >= len(args) {
+				return "", fmt.Errorf("SSH option %s has no value", argument)
+			}
+			index++
+			return args[index], nil
+		}
+		switch argument {
+		case "-N", "-T":
+			continue
+		case "-o":
+			option, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			if isManagedSSHOption(option) {
+				continue
+			}
+			config.SSHOptions = append(config.SSHOptions, option)
+		case "-i":
+			identity, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			config.IdentityFile = identity
+		case "-p":
+			portText, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			port, err := strconv.Atoi(portText)
+			if err != nil {
+				return Config{}, fmt.Errorf("invalid SSH port %q", portText)
+			}
+			config.Port = port
+		case "-J":
+			jump, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			config.Jump, err = ParseJump(jump)
+			if err != nil {
+				return Config{}, err
+			}
+		case "-L", "-R", "-D":
+			specification, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			forward, err := ParseForward(argument, specification)
+			if err != nil {
+				return Config{}, err
+			}
+			config.Forwards = append(config.Forwards, forward)
+		case "--":
+			if index+1 != len(args)-1 {
+				return Config{}, errors.New("OpenSSH plan must have exactly one target after --")
+			}
+			config.Host = args[index+1]
+			index = len(args)
+		default:
+			return Config{}, fmt.Errorf("unsupported OpenSSH argument %q", argument)
+		}
+	}
+	if err := Validate(config); err != nil {
+		return Config{}, err
+	}
+	return config, nil
+}
+
+func isManagedSSHOption(option string) bool {
+	key, value, _ := strings.Cut(option, "=")
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch key {
+	case "serveraliveinterval":
+		return value == "15"
+	case "serveralivecountmax":
+		return value == "3"
+	case "exitonforwardfailure":
+		return value == "yes"
+	case "connecttimeout":
+		return value == "10"
+	case "stricthostkeychecking":
+		return value == "accept-new"
+	case "batchmode", "identitiesonly":
+		return value == "yes"
+	default:
+		return false
+	}
 }
 
 func DecodeConfig(raw json.RawMessage) (Config, error) {
@@ -186,10 +273,17 @@ func Validate(config Config) error {
 		}
 		claimed[key] = struct{}{}
 	}
+	seenOptions := make(map[string]struct{}, len(config.SSHOptions))
 	for _, option := range config.SSHOptions {
 		if err := validateSSHOption(option); err != nil {
 			return err
 		}
+		key, _, _ := strings.Cut(option, "=")
+		key = strings.ToLower(strings.TrimSpace(key))
+		if _, exists := seenOptions[key]; exists {
+			return fmt.Errorf("duplicate SSH option %q", key)
+		}
+		seenOptions[key] = struct{}{}
 	}
 	for _, jump := range config.Jump {
 		if jump == "" || strings.HasPrefix(jump, "-") || strings.ContainsAny(jump, "\r\n\x00") {
@@ -206,11 +300,67 @@ func validateSSHOption(option string) error {
 	if option == "" || strings.HasPrefix(option, "-") || strings.ContainsAny(option, "\r\n\x00") {
 		return fmt.Errorf("invalid SSH option %q", option)
 	}
-	key, _, found := strings.Cut(option, "=")
+	key, value, found := strings.Cut(option, "=")
+	key = strings.TrimSpace(key)
 	if !found || key == "" || strings.ContainsAny(key, " \t") {
 		return fmt.Errorf("SSH option must use Key=Value form, got %q", option)
 	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("SSH option %q requires a non-empty value", key)
+	}
+	if _, allowed := allowedSSHOptions[strings.ToLower(key)]; !allowed {
+		return fmt.Errorf("SSH option %q is not allowed; use a structured Tunlite field or a supported safe option", key)
+	}
 	return nil
+}
+
+// allowedSSHOptions is deliberately conservative. Every option added here
+// must be safe to serialize as one argv value and must not execute a helper,
+// create a forward, load another config, or override Tunlite's lifecycle and
+// reliability baseline. OpenSSH options not listed here are rejected instead
+// of being guessed safe.
+var allowedSSHOptions = map[string]struct{}{
+	"addressfamily":                    {},
+	"bindaddress":                      {},
+	"bindinterface":                    {},
+	"canonicaldomains":                 {},
+	"canonicalizefallbacklocal":        {},
+	"canonicalizehostname":             {},
+	"canonicalizemaxdots":              {},
+	"canonicalizepermittedcnames":      {},
+	"casignaturealgorithms":            {},
+	"certificatefile":                  {},
+	"ciphers":                          {},
+	"compression":                      {},
+	"fingerprinthash":                  {},
+	"globalknownhostsfile":             {},
+	"gssapiauthentication":             {},
+	"gssapidelegatecredentials":        {},
+	"hashknownhosts":                   {},
+	"hostbasedauthentication":          {},
+	"hostkeyalgorithms":                {},
+	"hostkeyalias":                     {},
+	"hostname":                         {},
+	"ipqos":                            {},
+	"kbdinteractiveauthentication":     {},
+	"kexalgorithms":                    {},
+	"loglevel":                         {},
+	"logverbose":                       {},
+	"macs":                             {},
+	"nohostauthenticationforlocalhost": {},
+	"numberofpasswordprompts":          {},
+	"passwordauthentication":           {},
+	"preferredauthentications":         {},
+	"pubkeyacceptedalgorithms":         {},
+	"pubkeyauthentication":             {},
+	"rekeylimit":                       {},
+	"requiredrsasize":                  {},
+	"sendenv":                          {},
+	"setenv":                           {},
+	"updatehostkeys":                   {},
+	"user":                             {},
+	"userknownhostsfile":               {},
+	"verifyhostkeydns":                 {},
 }
 
 func ParseTarget(value string) (host string, port int, err error) {

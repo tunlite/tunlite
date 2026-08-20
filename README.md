@@ -22,14 +22,28 @@ The system `ssh` command is the only runtime prerequisite.
 ```bash
 # macOS / Linux; downloads v1.0.0-preview.1 and verifies SHA-256
 curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
-
-# Windows PowerShell (foreground CLI in the first preview)
-irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex
 ```
 
-Every release contains self-contained archives and `SHA256SUMS`. See the
-[preview guide](docs/V1_PREVIEW.md) for manual installation, supported platforms,
-artifact verification, and migration from 0.10.3.
+Every release contains self-contained archives and `SHA256SUMS`. Follow the
+[zero-to-acceptance guide](docs/INSTALL_AND_ACCEPTANCE.md) for installation and
+platform verification. Existing 0.x users must follow the
+[0.x to Go v1 upgrade guide](docs/UPGRADE_FROM_0_X.md). See the [preview guide](docs/V1_PREVIEW.md) for version
+boundaries and migration from 0.10.3.
+
+A manually downloaded native binary can be copied directly into `PATH`:
+
+```bash
+chmod +x ./tunlite
+mkdir -p "$HOME/.local/bin"
+install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
+"$HOME/.local/bin/tunlite" version
+```
+
+Installation, upgrades, and removal belong to the release channel, package manager,
+or a future Desktop. The core CLI does not expose those commands or create a `tun`
+alias. Replacing the CLI does not stop OS-owned SSH connections. The v1 preview does
+not provide shell completion or inspect Agent directories. To use Tunlite from an
+Agent, ask that Agent to install the official [`use-tunlite` Skill package](skill/use-tunlite/).
 
 ## Quick start
 
@@ -42,14 +56,21 @@ tunlite add socks --to deploy@app01 -D 1080
 # Run one connection attached to this terminal.
 tunlite run db
 
-# Or let the native service manager keep it running and restart it on failure.
+# Or run it in the background for this login session.
+tunlite start db
+tunlite stop db
+
+# Keep it running across future logins and start it now.
 tunlite enable db
 tunlite status db
 tunlite logs db --lines 100
 
-# Detect and repair drift between the declaration and native service.
-tunlite sync db --dry-run
-tunlite sync db
+# Use system OpenSSH tools for key setup, then check authentication.
+tunlite check db
+
+# Resolve exceptional drift with an explicit source of truth.
+tunlite resolve db --use tunlite --dry-run
+tunlite resolve db --use system
 ```
 
 Persistent services are per connection:
@@ -67,18 +88,24 @@ Use `--json --non-interactive` for automation and inspect runtime capabilities i
 of scraping human output:
 
 ```bash
-tunlite capabilities --json
-tunlite schema cli
+tunlite capabilities --json --non-interactive
+tunlite schema cli --json --non-interactive
 tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-interactive
 ```
 
-State is intentionally four-dimensional: `desiredState`, `processState`, `health`,
-and `syncState`. Batch operations return per-item results and use exit code `6` for
-partial failure. Public listeners and publish plans require explicit approval bound
-to the current invocation or persistent plan.
+Automation must verify the integer `protocolVersion` returned by `capabilities`
+before taking action. Raw Schemas and exported Connection documents are separate
+documents: they use `$schema` and `configVersion`, not the CLI response envelope.
+Use `schema --output -` or `export --output -` when raw JSON is required on stdout.
 
-The bundled [SSH Agent Skill](skill/ssh-tunnel/SKILL.md) is tested against the same
-command, exit-code, state, and Schema contract exposed by the CLI.
+State is intentionally five-dimensional: `serviceState`, `mode`, `processState`,
+`health`, and `consistencyState`. Batch operations return per-item results and use
+exit code `5` for partial failure. Public listeners and publish plans produce
+structured risk warnings; v1 does not maintain a separate approval state.
+
+The standalone [`use-tunlite` Agent Skill](skill/use-tunlite/SKILL.md) is tested
+against the same command, exit-code, state, and Schema contract exposed by the CLI.
+Its installation and removal belong to the Agent, not to Tunlite.
 
 ## Configuration and migration
 
@@ -91,26 +118,31 @@ tunlite export --output tunlite.json
 tunlite validate tunlite.json
 tunlite import tunlite.json --dry-run
 
-# After stopping and removing the 0.10.3 service:
-tunlite migrate --dry-run --json --non-interactive
-tunlite migrate --json --non-interactive
+# Explicitly import 0.10.3 without changing the old file or runtime:
+tunlite import ~/.config/tunlite/config.json --dry-run --json --non-interactive
+tunlite import ~/.config/tunlite/config.json --json --non-interactive
 ```
 
-Migration saves a byte-for-byte, checksum-addressed backup. `migrate --rollback`
-refuses to overwrite a v1 config changed after migration.
+V1 writes `~/.config/tunlite/connections.json`. Imported connections remain stopped
+until the user switches them one by one.
 
 ## Preview scope
 
 - Built-in SSH `-L`, `-R`, and `-D`, multiple forwards, jump hosts, identity files,
-  strict OpenSSH `Key=Value` options, checks, diagnosis, logs, and drift repair.
+  strict OpenSSH `Key=Value` options, checks, diagnosis,
+  logs, and drift repair.
+- A native single binary; installation, upgrades, and removal belong to its
+  distribution channel.
 - Native persistent services on macOS 12+ (launchd) and Linux (systemd user services).
-- Windows amd64 supports the foreground/configuration CLI; persistent services are
-  not part of the first preview.
+- Windows is not published in the first preview. It will enter the support matrix
+  only after the per-Connection Task Scheduler adapter and migration path pass real
+  Windows validation.
 - External drivers and plugin installation are deliberately deferred until real user
   demand validates more than SSH.
 
-The Chinese [project direction](docs/PROJECT_DIRECTION.md) is the sole product and
-architecture guide for v1 and later work.
+The Chinese [product design](docs/PROJECT_DIRECTION.md) and
+[architecture design](docs/ARCHITECTURE.md) are the two peer source documents for
+v1 and later work.
 
 ## Development
 

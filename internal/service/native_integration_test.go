@@ -1,10 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,11 +26,12 @@ func TestRealNativeServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := fmt.Sprintf("integration-%d", os.Getpid())
+	connection := "it-native-v3"
+	provider := createNativeServiceProvider(t)
 	executionPlan := plan.ExecutionPlan{
 		Mode:      plan.ModeDirect,
-		Exec:      plan.Exec{Program: "/bin/sleep", Args: []string{"30"}, Environment: map[string]string{}},
-		Lifecycle: plan.Lifecycle{Restart: "never", RestartDelaySeconds: 1, StopTimeoutSeconds: 3},
+		Exec:      plan.Exec{Program: provider, Args: []string{}, Environment: map[string]string{}},
+		Lifecycle: plan.Lifecycle{Restart: "on-failure", RestartDelaySeconds: 1, StopTimeoutSeconds: 3},
 		Endpoints: []plan.Endpoint{}, HealthChecks: []plan.HealthCheck{}, Redactions: []plan.Redaction{},
 	}
 	artifact, err := adapter.Build(connection, executionPlan)
@@ -38,37 +43,99 @@ func TestRealNativeServiceLifecycle(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_ = adapter.Disable(cleanupCtx, connection)
+		_ = adapter.Remove(cleanupCtx, artifact.Reference())
 		for _, path := range artifact.LogPaths {
-			_ = os.Remove(path)
+			_ = os.Truncate(path, 0)
 		}
 	})
-	if err := adapter.Enable(ctx, artifact); err != nil {
-		t.Fatalf("enable real %s service: %v", adapter.Name(), err)
+	for _, path := range artifact.LogPaths {
+		_ = os.Truncate(path, 0)
 	}
-	waitForProcessState(t, ctx, adapter, connection, ProcessRunning)
-	if err := adapter.Restart(ctx, connection); err != nil {
+	if err := adapter.Materialize(ctx, artifact); err != nil {
+		t.Fatalf("materialize real %s service: %v", adapter.Name(), err)
+	}
+	if err := adapter.Start(ctx, artifact.Reference()); err != nil {
+		t.Fatalf("start real %s service: %v", adapter.Name(), err)
+	}
+	background := waitForProcessState(t, ctx, adapter, artifact.Reference(), ProcessRunning)
+	if background.AutoStart {
+		t.Fatalf("background service unexpectedly enabled autostart: %#v", background)
+	}
+	firstPID := observationPID(t, background)
+	waitForNativeServiceLogs(t, ctx, adapter, artifact.Reference())
+	if err := killNativeProvider(ctx, adapter, artifact.Reference()); err != nil {
+		t.Fatalf("kill real %s provider: %v", adapter.Name(), err)
+	}
+	restarted := waitForDifferentPID(t, ctx, adapter, artifact.Reference(), firstPID)
+	if restarted.AutoStart {
+		t.Fatalf("failure recovery changed background persistence: %#v", restarted)
+	}
+	if err := adapter.Enable(ctx, artifact.Reference()); err != nil {
+		t.Fatalf("enable running real %s service: %v", adapter.Name(), err)
+	}
+	persistent := waitForProcessState(t, ctx, adapter, artifact.Reference(), ProcessRunning)
+	if !persistent.AutoStart || observationPID(t, persistent) != observationPID(t, restarted) {
+		t.Fatalf("enable did not preserve the running process while making it persistent: before=%#v after=%#v", restarted, persistent)
+	}
+	if err := adapter.Restart(ctx, artifact.Reference()); err != nil {
 		t.Fatalf("restart real %s service: %v", adapter.Name(), err)
 	}
-	waitForProcessState(t, ctx, adapter, connection, ProcessRunning)
-	if err := adapter.Disable(ctx, connection); err != nil {
+	waitForDifferentPID(t, ctx, adapter, artifact.Reference(), observationPID(t, persistent))
+	if err := adapter.Disable(ctx, artifact.Reference()); err != nil {
 		t.Fatalf("disable real %s service: %v", adapter.Name(), err)
 	}
-	observation, err := adapter.Inspect(ctx, connection)
+	observation, err := adapter.Inspect(ctx, artifact.Reference())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Installed || observation.Enabled || observation.ProcessState == ProcessRunning {
-		t.Fatalf("native service was not cleaned up: %#v", observation)
+	if !observation.Installed || observation.AutoStart || observation.ProcessState == ProcessRunning {
+		t.Fatalf("native service did not return to stopped mode: %#v", observation)
+	}
+	if err := adapter.Remove(ctx, artifact.Reference()); err != nil {
+		t.Fatalf("remove real %s service: %v", adapter.Name(), err)
 	}
 }
 
-func waitForProcessState(t *testing.T, ctx context.Context, adapter Adapter, connection, expected string) {
+func createNativeServiceProvider(t *testing.T) string {
+	t.Helper()
+	destinationDir := t.TempDir()
+	var err error
+	if runtime.GOOS == "darwin" {
+		destinationDir, err = os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(destinationDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	destination, err := os.CreateTemp(destinationDir, "tunlite-native-provider-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationPath := filepath.Clean(destination.Name())
+	t.Cleanup(func() { _ = os.Remove(destinationPath) })
+	if _, err := destination.WriteString("#!/bin/sh\necho tunlite-native-stdout\necho tunlite-native-stderr >&2\nexec /bin/sleep 30\n"); err != nil {
+		_ = destination.Close()
+		t.Fatal(err)
+	}
+	if err := destination.Chmod(0o700); err != nil {
+		_ = destination.Close()
+		t.Fatal(err)
+	}
+	if err := destination.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return destinationPath
+}
+
+func waitForProcessState(t *testing.T, ctx context.Context, adapter Adapter, reference Reference, expected string) Observation {
 	t.Helper()
 	for {
-		observation, err := adapter.Inspect(ctx, connection)
+		observation, err := adapter.Inspect(ctx, reference)
 		if err == nil && observation.ProcessState == expected {
-			return
+			return observation
 		}
 		select {
 		case <-ctx.Done():
@@ -76,4 +143,101 @@ func waitForProcessState(t *testing.T, ctx context.Context, adapter Adapter, con
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+func waitForDifferentPID(t *testing.T, ctx context.Context, adapter Adapter, reference Reference, previous int) Observation {
+	t.Helper()
+	for {
+		observation, err := adapter.Inspect(ctx, reference)
+		if err == nil && observation.ProcessState == ProcessRunning {
+			if pid, parseErr := parseObservationPID(observation); parseErr == nil && pid != previous {
+				return observation
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for provider restart after pid %d: last observation=%#v err=%v", previous, observation, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func observationPID(t *testing.T, observation Observation) int {
+	t.Helper()
+	pid, err := parseObservationPID(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func parseObservationPID(observation Observation) (int, error) {
+	value, ok := observation.Platform["pid"].(string)
+	if !ok || value == "" {
+		return 0, fmt.Errorf("native observation has no pid: %#v", observation.Platform)
+	}
+	pid, err := strconv.Atoi(value)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("native observation has invalid pid %q", value)
+	}
+	return pid, nil
+}
+
+func killNativeProvider(ctx context.Context, adapter Adapter, reference Reference) error {
+	switch current := adapter.(type) {
+	case *Launchd:
+		target := current.resolve(reference)
+		_, err := current.run(ctx, "kill", "SIGKILL", current.domainTarget(target.UnitName))
+		return err
+	case *Systemd:
+		target := current.resolve(reference)
+		_, err := current.run(ctx, "kill", "--signal=KILL", target.UnitName)
+		return err
+	default:
+		return fmt.Errorf("unsupported native adapter %T", adapter)
+	}
+}
+
+func waitForNativeServiceLogs(t *testing.T, ctx context.Context, adapter Adapter, reference Reference) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		var stdout, stderr bytes.Buffer
+		err := adapter.Logs(ctx, reference, 50, false, Streams{Out: &stdout, Err: &stderr})
+		combined := stdout.String() + stderr.String()
+		if err == nil && strings.Contains(combined, "tunlite-native-stdout") && strings.Contains(combined, "tunlite-native-stderr") {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for native service logs: stdout=%q stderr=%q err=%v\n%s", stdout.String(), stderr.String(), err, nativeServiceDiagnostics(adapter, reference))
+		case <-deadline.C:
+			t.Fatalf("waiting for native service logs: stdout=%q stderr=%q err=%v\n%s", stdout.String(), stderr.String(), err, nativeServiceDiagnostics(adapter, reference))
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func nativeServiceDiagnostics(adapter Adapter, reference Reference) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var output strings.Builder
+	switch current := adapter.(type) {
+	case *Launchd:
+		target := current.resolve(reference)
+		raw, readErr := os.ReadFile(target.Path)
+		fmt.Fprintf(&output, "plist %s: %s (%v)\n", target.Path, raw, readErr)
+		job, jobErr := current.run(ctx, "print", current.domainTarget(target.UnitName))
+		fmt.Fprintf(&output, "launchctl: %s (%v)\n", job, jobErr)
+		for _, path := range target.LogPaths {
+			info, statErr := os.Stat(path)
+			fmt.Fprintf(&output, "log %s: %#v (%v)\n", path, info, statErr)
+		}
+	case *Systemd:
+		target := current.resolve(reference)
+		raw, readErr := os.ReadFile(target.Path)
+		fmt.Fprintf(&output, "unit %s: %s (%v)\n", target.Path, raw, readErr)
+	}
+	return output.String()
 }

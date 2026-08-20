@@ -25,9 +25,6 @@ var (
 
 func (d *Driver) Check(ctx context.Context, connection core.Connection, options core.CheckOptions) (core.CheckReport, error) {
 	observedAt := time.Now().UTC()
-	if connection.Spec.ConfigVersion != 1 {
-		return core.CheckReport{}, fmt.Errorf("unsupported SSH configVersion %d", connection.Spec.ConfigVersion)
-	}
 	config, err := DecodeConfig(connection.Spec.Config)
 	if err != nil {
 		return core.CheckReport{}, err
@@ -150,7 +147,7 @@ func classifyCheckFailure(host, output string, contextErr error) (string, string
 	switch {
 	case authFailurePattern.MatchString(output):
 		return "ssh_authentication_failed", fmt.Sprintf("SSH authentication to %s failed", host),
-			[]core.Action{{Type: "configure_ssh_credentials", Parameters: map[string]any{"host": host}}}
+			[]core.Action{{Type: "setup_ssh_key", Parameters: map[string]any{"host": host, "interactive": true}}}
 	case hostKeyPattern.MatchString(output):
 		return "ssh_host_key_untrusted", fmt.Sprintf("SSH host key for %s is not trusted", host),
 			[]core.Action{{Type: "review_ssh_host_key", Parameters: map[string]any{"host": host}}}

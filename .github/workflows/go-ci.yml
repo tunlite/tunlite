@@ -40,7 +40,8 @@ jobs:
 
   package:
     name: Release package
-    runs-on: ubuntu-latest
+    # Universal 2 packaging uses Apple's lipo after cross-compiling both slices.
+    runs-on: macos-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

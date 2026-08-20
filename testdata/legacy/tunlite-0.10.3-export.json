@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "tunnels": [
+    {
+      "name": "rev",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "remote",
+          "bind": "127.0.0.1",
+          "srcPort": 18081,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "socks",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "dynamic",
+          "bind": "127.0.0.1",
+          "srcPort": 11080
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "multi",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [
+        "demo"
+      ],
+      "forwards": [
+        {
+          "type": "local",
+          "bind": "127.0.0.1",
+          "srcPort": 18082,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        },
+        {
+          "type": "dynamic",
+          "bind": "127.0.0.1",
+          "srcPort": 11081
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    },
+    {
+      "name": "web-9000",
+      "host": "tester@localhost",
+      "port": 22,
+      "identityFile": "/home/tester/.ssh/id_ed25519",
+      "jump": [],
+      "tags": [],
+      "forwards": [
+        {
+          "type": "local",
+          "bind": "127.0.0.1",
+          "srcPort": 18090,
+          "destHost": "127.0.0.1",
+          "destPort": 9000
+        }
+      ],
+      "sshOptions": [],
+      "enabled": true,
+      "autoSetupKey": false
+    }
+  ]
+}

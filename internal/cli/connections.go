@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,8 +16,6 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 )
-
-const tagLabelPrefix = "tag.tunlite.dev/"
 
 type connectionFlags struct {
 	to           string
@@ -50,6 +50,10 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 	if err != nil {
 		return err
 	}
+	risks, err := connectionRiskConditions(ctx, connection, opts.NonInteractive)
+	if err != nil {
+		return err
+	}
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -62,8 +66,27 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 		if _, existing := configstore.Find(&document, name); existing != nil {
 			return conflictError(fmt.Sprintf("a connection named %q already exists", name))
 		}
-		return renderConnectionMutationWithConditions(streams, opts, "add", "planned", connection, endpointConflicts(&document, connection))
+		conditions := endpointConflicts(&document, connection)
+		serviceConditions, err := previewNewConnectionService(ctx, connection, store.Path(), opts)
+		if err != nil {
+			return err
+		}
+		conditions = append(conditions, serviceConditions...)
+		conditions = append(conditions, risks...)
+		return renderConnectionMutationWithConditions(streams, opts, "add", "planned", connection, conditions)
 	}
+	document, err := store.Load()
+	if err != nil {
+		return err
+	}
+	if _, existing := configstore.Find(&document, name); existing != nil {
+		return conflictError(fmt.Sprintf("a connection named %q already exists", name))
+	}
+	mutation, err := stageNewConnectionService(ctx, connection, store.Path(), opts)
+	if err != nil {
+		return err
+	}
+	defer mutation.finish()
 	var conditions []condition
 	if err := store.Update(ctx, func(document *configstore.Document) error {
 		if _, existing := configstore.Find(document, name); existing != nil {
@@ -73,8 +96,23 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 		document.Items = append(document.Items, connection)
 		return nil
 	}); err != nil {
-		return err
+		return mutation.rollbackAfter(classifyConcurrentChange(err))
 	}
+	if err := mutation.commit(); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		restoreErr := store.Update(recoveryCtx, func(document *configstore.Document) error {
+			index, current := configstore.Find(document, name)
+			if current == nil || !connectionsEqual(*current, connection) {
+				return configstore.ErrChanged
+			}
+			document.Items = append(document.Items[:index], document.Items[index+1:]...)
+			return nil
+		})
+		return recoveryBlockedError(err, errors.Join(restoreErr, mutation.rollback()), mutation.actions)
+	}
+	conditions = append(conditions, mutation.conditions...)
+	conditions = append(conditions, risks...)
 	return renderConnectionMutationWithConditions(streams, opts, "add", "applied", connection, conditions)
 }
 
@@ -103,7 +141,7 @@ func list(args []string, streams IO, opts options) error {
 	}
 	results := make([]core.Connection, 0, len(document.Items))
 	for _, connection := range document.Items {
-		if len(tags) == 0 || hasAnyTag(connection.Metadata.Labels, tags) {
+		if len(tags) == 0 || hasAllTags(connection.Metadata.Tags, tags) {
 			results = append(results, connection)
 		}
 	}
@@ -111,10 +149,9 @@ func list(args []string, streams IO, opts options) error {
 		return notFoundError(fmt.Sprintf("no connections tagged %s", quoteList(tags)))
 	}
 	if opts.JSON {
-		return writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         "succeeded",
-			"results":         results,
+		return writeResponse(streams.Out, map[string]any{
+			"outcome": "succeeded",
+			"results": results,
 		})
 	}
 	if len(results) == 0 {
@@ -150,51 +187,94 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		return err
 	}
 	var conditions []condition
-	apply := func(document *configstore.Document) (core.Connection, error) {
+	apply := func(document *configstore.Document) (core.Connection, core.Connection, error) {
 		_, connection := configstore.Find(document, name)
 		if connection == nil {
-			return core.Connection{}, notFoundError(fmt.Sprintf("no such connection: %s", name))
+			return core.Connection{}, core.Connection{}, notFoundError(fmt.Sprintf("no such connection: %s", name))
 		}
+		before := cloneConnection(*connection)
 		updated, err := applyConnectionFlags(*connection, values)
 		if err != nil {
-			return core.Connection{}, err
+			return core.Connection{}, core.Connection{}, err
 		}
 		conditions = endpointConflicts(document, updated)
 		*connection = updated
-		return updated, nil
+		return before, updated, nil
 	}
 	if opts.DryRun {
 		document, err := store.Load()
 		if err != nil {
 			return err
 		}
-		updated, err := apply(&document)
+		before, updated, err := apply(&document)
 		if err != nil {
 			return err
 		}
+		riskConditions, err := connectionRiskConditions(ctx, updated, opts.NonInteractive)
+		if err != nil {
+			return err
+		}
+		serviceConditions, err := previewUpdatedConnectionService(ctx, before, updated, store.Path(), opts)
+		if err != nil {
+			return err
+		}
+		conditions = append(conditions, serviceConditions...)
+		conditions = append(conditions, riskConditions...)
 		return renderConnectionMutationWithConditions(streams, opts, "set", "planned", updated, conditions)
 	}
-	var updated core.Connection
-	if err := store.Update(ctx, func(document *configstore.Document) error {
-		var err error
-		updated, err = apply(document)
-		return err
-	}); err != nil {
+	document, err := store.Load()
+	if err != nil {
 		return err
 	}
+	before, updated, err := apply(&document)
+	if err != nil {
+		return err
+	}
+	riskConditions, err := connectionRiskConditions(ctx, updated, opts.NonInteractive)
+	if err != nil {
+		return err
+	}
+	conditions = append(conditions, riskConditions...)
+	mutation, err := stageUpdatedConnectionService(ctx, before, updated, store.Path(), opts)
+	if err != nil {
+		return err
+	}
+	defer mutation.finish()
+	if err := store.Update(ctx, func(document *configstore.Document) error {
+		_, current := configstore.Find(document, name)
+		if current == nil {
+			return notFoundError(fmt.Sprintf("no such connection: %s", name))
+		}
+		if !connectionsEqual(*current, before) {
+			return fmt.Errorf("%w (%s)", configstore.ErrChanged, connectionDifference(*current, before))
+		}
+		*current = updated
+		return nil
+	}); err != nil {
+		return mutation.rollbackAfter(classifyConcurrentChange(err))
+	}
+	if err := mutation.commit(); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		restoreErr := store.Update(recoveryCtx, func(document *configstore.Document) error {
+			_, current := configstore.Find(document, name)
+			if current == nil || !connectionsEqual(*current, updated) {
+				return configstore.ErrChanged
+			}
+			*current = before
+			return nil
+		})
+		return recoveryBlockedError(err, errors.Join(restoreErr, mutation.rollback()), mutation.actions)
+	}
+	conditions = append(conditions, mutation.conditions...)
 	return renderConnectionMutationWithConditions(streams, opts, "set", "applied", updated, conditions)
 }
 
 func remove(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) != 1 {
-		return usageError("usage: tunlite rm <name>")
+		return usageError("usage: tunlite remove <name>")
 	}
 	name := args[0]
-	releaseService, err := ensureServiceRemovable(ctx, name, !opts.DryRun)
-	if err != nil {
-		return err
-	}
-	defer releaseService()
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -220,20 +300,45 @@ func remove(ctx context.Context, args []string, streams IO, opts options) error 
 		if err != nil {
 			return err
 		}
-		return renderConnectionMutation(streams, opts, "rm", "planned", removed)
+		if err := checkConnectionRemovable(ctx, removed, store.Path(), opts); err != nil {
+			return err
+		}
+		return renderConnectionMutation(streams, opts, "remove", "planned", removed)
 	}
-	var removed core.Connection
+	document, err := store.Load()
+	if err != nil {
+		return err
+	}
+	_, current := configstore.Find(&document, name)
+	if current == nil {
+		return notFoundError(fmt.Sprintf("no such connection: %s", name))
+	}
+	removed := cloneConnection(*current)
+	mutation, err := stageRemovedConnectionService(ctx, removed, store.Path(), opts)
+	if err != nil {
+		return err
+	}
+	defer mutation.finish()
+	// Commit the removable service state before deleting the declaration. If
+	// either this commit or the following config update fails, the staged
+	// mutation can still restore the native service and its binding.
+	if err := mutation.commit(); err != nil {
+		return mutation.rollbackAfter(err)
+	}
 	if err := store.Update(ctx, func(document *configstore.Document) error {
-		var err error
-		removed, err = removeFrom(document)
+		_, fresh := configstore.Find(document, name)
+		if fresh == nil {
+			return notFoundError(fmt.Sprintf("no such connection: %s", name))
+		}
+		if !connectionsEqual(*fresh, removed) {
+			return configstore.ErrChanged
+		}
+		_, err := removeFrom(document)
 		return err
 	}); err != nil {
-		return err
+		return mutation.rollbackAfter(classifyConcurrentChange(err))
 	}
-	if err := removeServiceRecord(name); err != nil {
-		return err
-	}
-	return renderConnectionMutation(streams, opts, "rm", "applied", removed)
+	return renderConnectionMutation(streams, opts, "remove", "applied", removed)
 }
 
 func rename(ctx context.Context, args []string, streams IO, opts options) error {
@@ -241,15 +346,6 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		return usageError("usage: tunlite rename <old> <new>")
 	}
 	oldName, newName := args[0], args[1]
-	releaseService := func() {}
-	if oldName != newName {
-		var err error
-		releaseService, err = ensureServiceRemovable(ctx, oldName, !opts.DryRun)
-		if err != nil {
-			return err
-		}
-	}
-	defer releaseService()
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -281,22 +377,66 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		if err != nil {
 			return err
 		}
-		return renderConnectionMutation(streams, opts, "rename", "planned", updated)
-	}
-	var updated core.Connection
-	if err := store.Update(ctx, func(document *configstore.Document) error {
-		var err error
-		updated, err = renameIn(document)
-		return err
-	}); err != nil {
-		return err
-	}
-	if oldName != newName {
-		if err := removeServiceRecord(oldName); err != nil {
+		if err := previewRenamedConnectionService(oldName, newName, store.Path()); err != nil {
 			return err
 		}
+		return renderConnectionMutation(streams, opts, "rename", "planned", updated)
+	}
+	document, err := store.Load()
+	if err != nil {
+		return err
+	}
+	_, beforePtr := configstore.Find(&document, oldName)
+	if beforePtr == nil {
+		return notFoundError(fmt.Sprintf("no such connection: %s", oldName))
+	}
+	before := cloneConnection(*beforePtr)
+	_, updated, err := renameInWithBefore(&document, oldName, newName)
+	if err != nil {
+		return err
+	}
+	mutation, err := stageRenamedConnectionService(ctx, oldName, newName, store.Path(), opts)
+	if err != nil {
+		return err
+	}
+	defer mutation.finish()
+	// Move the service binding first. The mutation retains enough state to
+	// restore the old binding if the declaration update loses a race or fails.
+	if err := mutation.commit(); err != nil {
+		return mutation.rollbackAfter(err)
+	}
+	if err := store.Update(ctx, func(document *configstore.Document) error {
+		_, current := configstore.Find(document, oldName)
+		if current == nil || !connectionsEqual(*current, before) {
+			return configstore.ErrChanged
+		}
+		_, value, err := renameInWithBefore(document, oldName, newName)
+		updated = value
+		return err
+	}); err != nil {
+		return mutation.rollbackAfter(classifyConcurrentChange(err))
 	}
 	return renderConnectionMutation(streams, opts, "rename", "applied", updated)
+}
+
+func renameInWithBefore(document *configstore.Document, oldName, newName string) (core.Connection, core.Connection, error) {
+	_, connection := configstore.Find(document, oldName)
+	if connection == nil {
+		return core.Connection{}, core.Connection{}, notFoundError(fmt.Sprintf("no such connection: %s", oldName))
+	}
+	before := cloneConnection(*connection)
+	if oldName != newName {
+		if _, existing := configstore.Find(document, newName); existing != nil {
+			return core.Connection{}, core.Connection{}, conflictError(fmt.Sprintf("a connection named %q already exists", newName))
+		}
+	}
+	updated := cloneConnection(*connection)
+	updated.Metadata.Name = newName
+	if err := core.ValidateConnection(updated); err != nil {
+		return core.Connection{}, core.Connection{}, usageError(err.Error())
+	}
+	*connection = updated
+	return before, updated, nil
 }
 
 func parseConnectionFlags(command string, args []string, allowClear bool) (connectionFlags, error) {
@@ -358,11 +498,11 @@ func newSSHConnection(name string, values connectionFlags) (core.Connection, err
 		return core.Connection{}, err
 	}
 	connection := core.Connection{
-		APIVersion: core.APIVersion,
-		Kind:       core.Kind,
-		Metadata:   core.Metadata{Name: name, Labels: labelsForTags(tags)},
+		ConfigVersion: core.ConfigVersion,
+		Kind:          core.Kind,
+		Metadata:      core.Metadata{Name: name, Tags: tags},
 		Spec: core.ConnectionSpec{
-			Driver: sshdriver.ID, Lifecycle: "persistent", ConfigVersion: 1, Config: raw,
+			Driver: sshdriver.ID, Config: raw,
 		},
 	}
 	if err := core.ValidateConnection(connection); err != nil {
@@ -374,9 +514,6 @@ func newSSHConnection(name string, values connectionFlags) (core.Connection, err
 func applyConnectionFlags(connection core.Connection, values connectionFlags) (core.Connection, error) {
 	if connection.Spec.Driver != sshdriver.ID {
 		return core.Connection{}, usageError(fmt.Sprintf("set flags are not available for driver %q", connection.Spec.Driver))
-	}
-	if connection.Spec.ConfigVersion != 1 {
-		return core.Connection{}, usageError(fmt.Sprintf("unsupported SSH configVersion %d", connection.Spec.ConfigVersion))
 	}
 	updated := cloneConnection(connection)
 	config, err := sshdriver.DecodeConfig(updated.Spec.Config)
@@ -417,9 +554,9 @@ func applyConnectionFlags(connection core.Connection, values connectionFlags) (c
 		if err != nil {
 			return core.Connection{}, err
 		}
-		updated.Metadata.Labels = replaceTags(updated.Metadata.Labels, tags)
+		updated.Metadata.Tags = tags
 	} else if values.noTags {
-		updated.Metadata.Labels = replaceTags(updated.Metadata.Labels, nil)
+		updated.Metadata.Tags = nil
 	}
 	if err := sshdriver.Validate(config); err != nil {
 		return core.Connection{}, usageError(err.Error())
@@ -472,54 +609,33 @@ func parseTags(values []string) ([]string, error) {
 			}
 		}
 	}
+	sort.Strings(tags)
 	return tags, nil
 }
 
-func labelsForTags(tags []string) map[string]string {
-	if len(tags) == 0 {
-		return nil
+func hasAllTags(connectionTags, selected []string) bool {
+	available := make(map[string]struct{}, len(connectionTags))
+	for _, tag := range connectionTags {
+		available[tag] = struct{}{}
 	}
-	labels := make(map[string]string, len(tags))
-	for _, tag := range tags {
-		labels[tagLabelPrefix+tag] = "true"
-	}
-	return labels
-}
-
-func replaceTags(labels map[string]string, tags []string) map[string]string {
-	result := make(map[string]string)
-	for key, value := range labels {
-		if !strings.HasPrefix(key, tagLabelPrefix) {
-			result[key] = value
+	for _, tag := range selected {
+		if _, exists := available[tag]; !exists {
+			return false
 		}
 	}
-	for key, value := range labelsForTags(tags) {
-		result[key] = value
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
+	return true
 }
 
-func tagsFromLabels(labels map[string]string) []string {
-	var tags []string
-	for key := range labels {
-		if tag, found := strings.CutPrefix(key, tagLabelPrefix); found {
-			tags = append(tags, tag)
-		}
+func connectionRiskConditions(ctx context.Context, connection core.Connection, nonInteractive bool) ([]condition, error) {
+	registry, err := core.NewRegistry(sshdriver.New())
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(tags)
-	return tags
-}
-
-func hasAnyTag(labels map[string]string, tags []string) bool {
-	for _, tag := range tags {
-		if labels[tagLabelPrefix+tag] == "true" {
-			return true
-		}
+	executionPlan, err := core.NewPlanner(registry).Plan(ctx, connection, core.PlanOptions{NonInteractive: nonInteractive})
+	if err != nil {
+		return nil, err
 	}
-	return false
+	return planRiskConditions(connection, executionPlan), nil
 }
 
 func renderConnectionMutation(streams IO, opts options, operation, outcome string, connection core.Connection) error {
@@ -531,16 +647,18 @@ func renderConnectionMutationWithConditions(streams IO, opts options, operation,
 		conditions = []condition{}
 	}
 	if opts.JSON {
-		return writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         outcome,
-			"operation":       operation,
-			"connection":      connection,
-			"conditions":      conditions,
-			"dryRun":          opts.DryRun,
+		return writeResponse(streams.Out, map[string]any{
+			"outcome":    outcome,
+			"operation":  operation,
+			"connection": connection,
+			"conditions": conditions,
+			"dryRun":     opts.DryRun,
 		})
 	}
-	verb := map[string]string{"add": "added", "set": "updated", "rm": "removed", "rename": "renamed"}[operation]
+	verb := map[string]string{
+		"add": "added", "set": "updated", "remove": "removed", "rename": "renamed",
+		"manage": "managed", "unmanage": "unmanaged", "resolve": "resolved",
+	}[operation]
 	if opts.DryRun {
 		verb = "would be " + verb
 	}
@@ -583,7 +701,7 @@ func endpointConflicts(document *configstore.Document, candidate core.Connection
 }
 
 func endpointKeys(connection core.Connection) map[string]struct{} {
-	if connection.Spec.Driver != sshdriver.ID || connection.Spec.ConfigVersion != 1 {
+	if connection.Spec.Driver != sshdriver.ID {
 		return nil
 	}
 	config, err := sshdriver.DecodeConfig(connection.Spec.Config)
@@ -622,7 +740,7 @@ func describeConnection(connection core.Connection) string {
 		}
 	}
 	tagText := ""
-	if tags := tagsFromLabels(connection.Metadata.Labels); len(tags) > 0 {
+	if tags := connection.Metadata.Tags; len(tags) > 0 {
 		tagText = " [" + strings.Join(tags, ",") + "]"
 	}
 	return fmt.Sprintf("%s\t%s\t%s%s", connection.Metadata.Name, config.Host, strings.Join(parts, " "), tagText)
@@ -637,13 +755,42 @@ func defaultBind(value string) string {
 
 func cloneConnection(connection core.Connection) core.Connection {
 	connection.Spec.Config = append(json.RawMessage(nil), connection.Spec.Config...)
-	if connection.Metadata.Labels != nil {
-		connection.Metadata.Labels = make(map[string]string, len(connection.Metadata.Labels))
-		for key, value := range connection.Metadata.Labels {
-			connection.Metadata.Labels[key] = value
-		}
-	}
+	connection.Metadata.Tags = append([]string(nil), connection.Metadata.Tags...)
 	return connection
+}
+
+func connectionsEqual(left, right core.Connection) bool {
+	leftRaw, leftErr := json.Marshal(left)
+	rightRaw, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftRaw, rightRaw)
+}
+
+func connectionDifference(left, right core.Connection) string {
+	var fields []string
+	if left.ConfigVersion != right.ConfigVersion {
+		fields = append(fields, "configVersion")
+	}
+	if left.Kind != right.Kind {
+		fields = append(fields, "kind")
+	}
+	if left.Metadata.Name != right.Metadata.Name {
+		fields = append(fields, "metadata.name")
+	}
+	leftTags, _ := json.Marshal(left.Metadata.Tags)
+	rightTags, _ := json.Marshal(right.Metadata.Tags)
+	if !bytes.Equal(leftTags, rightTags) {
+		fields = append(fields, "metadata.tags")
+	}
+	if left.Spec.Driver != right.Spec.Driver {
+		fields = append(fields, "spec.driver")
+	}
+	if !bytes.Equal(left.Spec.Config, right.Spec.Config) {
+		fields = append(fields, "spec.config")
+	}
+	if len(fields) == 0 {
+		return "serialization"
+	}
+	return strings.Join(fields, ", ")
 }
 
 func quoteList(values []string) string {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,15 +15,56 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
+	"github.com/yuanyuanzijin/tunlite/internal/legacyconfig"
 )
 
-const exitPartial = 6
+const exitPartial = 5
 
 type itemResult struct {
-	Connection string `json:"connection"`
-	Outcome    string `json:"outcome"`
-	Code       string `json:"code,omitempty"`
-	Message    string `json:"message,omitempty"`
+	Connection string        `json:"connection"`
+	Outcome    string        `json:"outcome"`
+	Code       string        `json:"code,omitempty"`
+	Message    string        `json:"message,omitempty"`
+	RiskLevel  string        `json:"riskLevel,omitempty"`
+	Actions    []core.Action `json:"actions,omitempty"`
+}
+
+func (result itemResult) MarshalJSON() ([]byte, error) {
+	type wireResult struct {
+		Connection string         `json:"connection"`
+		Outcome    string         `json:"outcome"`
+		Code       string         `json:"code,omitempty"`
+		Message    string         `json:"message,omitempty"`
+		RiskLevel  string         `json:"riskLevel,omitempty"`
+		Actions    *[]core.Action `json:"actions,omitempty"`
+	}
+	wire := wireResult{
+		Connection: result.Connection, Outcome: result.Outcome,
+		Code: result.Code, Message: result.Message, RiskLevel: result.RiskLevel,
+	}
+	if result.Outcome == "failed" {
+		actions := result.Actions
+		if actions == nil {
+			actions = []core.Action{}
+		}
+		wire.Actions = &actions
+	}
+	return json.Marshal(wire)
+}
+
+func failedImportItem(connection, code string, err error) itemResult {
+	return itemResult{
+		Connection: connection, Outcome: "failed", Code: code, Message: err.Error(),
+		RiskLevel: "low", Actions: []core.Action{},
+	}
+}
+
+func recoveryBlockedImportItem(connection string, cause, recovery error) itemResult {
+	return itemResult{
+		Connection: connection, Outcome: "failed", Code: "recovery_blocked",
+		Message:   errors.Join(cause, fmt.Errorf("automatic recovery failed: %w", recovery)).Error(),
+		RiskLevel: "high", Actions: resolveActions(connection),
+	}
 }
 
 func exportConnections(ctx context.Context, args []string, streams IO, opts options) error {
@@ -48,11 +90,16 @@ func exportConnections(ctx context.Context, args []string, streams IO, opts opti
 	}
 	if output == "" {
 		if opts.JSON {
-			return writeJSON(streams.Out, map[string]any{
-				"contractVersion": ContractVersion,
-				"outcome":         "succeeded",
-				"document":        document,
+			return writeResponse(streams.Out, map[string]any{
+				"outcome":  "succeeded",
+				"document": document,
 			})
+		}
+		return writeJSON(streams.Out, document)
+	}
+	if output == "-" {
+		if opts.JSON {
+			return usageError("--json cannot be combined with --output -")
 		}
 		return writeJSON(streams.Out, document)
 	}
@@ -71,7 +118,7 @@ func exportConnections(ctx context.Context, args []string, streams IO, opts opti
 		return renderDeclarationWrite(streams, opts, "planned", absolute, len(document.Items))
 	}
 	if err := configstore.New(absolute).Write(ctx, document, force); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, configstore.ErrExists) {
 			return conflictError(err.Error() + " (use --force to replace it)")
 		}
 		return err
@@ -104,58 +151,187 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 		}
 		return err
 	}
-	source, err := configstore.New(sourcePath).Load()
+	source, sourceFormat, sourceConditions, err := loadImportDocument(sourcePath)
 	if err != nil {
 		return err
 	}
-	target, err := connectionStore(opts)
+	for _, imported := range source.Items {
+		if imported.Spec.Driver != sshdriver.ID || validateKnownDriver(imported) != nil {
+			continue
+		}
+		risks, riskErr := connectionRiskConditions(ctx, imported, opts.NonInteractive)
+		if riskErr != nil {
+			return riskErr
+		}
+		sourceConditions = append(sourceConditions, risks...)
+	}
+	// Import is the explicit way to create V1 data from a detected 0.x file, so
+	// it must not be blocked by the normal first-run legacy reminder.
+	target, err := unguardedConnectionStore(opts)
 	if err != nil {
 		return err
 	}
-	var results []itemResult
-	noChanges := errors.New("import has no applicable changes")
-	apply := func(document *configstore.Document) error {
-		results = make([]itemResult, 0, len(source.Items))
-		changed := false
-		for _, imported := range source.Items {
-			name := imported.Metadata.Name
-			if err := validateKnownDriver(imported); err != nil {
-				results = append(results, itemResult{Connection: name, Outcome: "failed", Code: "invalid_driver_config", Message: err.Error()})
-				continue
-			}
-			index, existing := configstore.Find(document, name)
-			if existing != nil && !force {
-				results = append(results, itemResult{Connection: name, Outcome: "failed", Code: "already_exists", Message: "same-name connection already exists"})
-				continue
-			}
-			copy := cloneConnection(imported)
-			if existing == nil {
-				document.Items = append(document.Items, copy)
-				changed = true
-				results = append(results, itemResult{Connection: name, Outcome: "added"})
-			} else {
-				document.Items[index] = copy
-				changed = true
-				results = append(results, itemResult{Connection: name, Outcome: "updated"})
-			}
-		}
-		if !changed && !opts.DryRun {
-			return noChanges
-		}
-		return nil
-	}
+	results := make([]itemResult, 0, len(source.Items))
 	if opts.DryRun {
 		document, err := target.Load()
 		if err != nil {
 			return err
 		}
-		if err := apply(&document); err != nil {
-			return err
+		for _, imported := range source.Items {
+			name := imported.Metadata.Name
+			if err := validateKnownDriver(imported); err != nil {
+				results = append(results, failedImportItem(name, "invalid_driver_config", err))
+				continue
+			}
+			_, existing := configstore.Find(&document, name)
+			if existing != nil && !force {
+				results = append(results, failedImportItem(name, "already_exists", errors.New("same-name connection already exists")))
+				continue
+			}
+			if existing != nil && existing.Spec.Driver != imported.Spec.Driver {
+				results = append(results, failedImportItem(name, "driver_change_unsupported", errors.New("remove or unmanage the existing connection before changing its driver")))
+				continue
+			}
+			var serviceConditions []condition
+			if imported.Spec.Driver == sshdriver.ID {
+				if existing == nil {
+					serviceConditions, err = previewNewConnectionService(ctx, imported, target.Path(), opts)
+				} else {
+					serviceConditions, err = previewUpdatedConnectionService(ctx, cloneConnection(*existing), imported, target.Path(), opts)
+				}
+				if err != nil {
+					results = append(results, failedImportItem(name, "service_update_failed", err))
+					continue
+				}
+				sourceConditions = append(sourceConditions, serviceConditions...)
+			}
+			outcome := "added"
+			if existing != nil {
+				outcome = "updated"
+			}
+			results = append(results, itemResult{Connection: name, Outcome: outcome})
 		}
-	} else if err := target.Update(ctx, apply); err != nil && !errors.Is(err, noChanges) {
-		return err
+		return renderImportResult(streams, opts, sourcePath, sourceFormat, sourceConditions, results)
 	}
-	return renderImportResult(streams, opts, sourcePath, results)
+	for _, imported := range source.Items {
+		name := imported.Metadata.Name
+		if err := validateKnownDriver(imported); err != nil {
+			results = append(results, failedImportItem(name, "invalid_driver_config", err))
+			continue
+		}
+		document, err := target.Load()
+		if err != nil {
+			results = append(results, failedImportItem(name, "declaration_read_failed", err))
+			continue
+		}
+		index, existing := configstore.Find(&document, name)
+		if existing != nil && !force {
+			results = append(results, failedImportItem(name, "already_exists", errors.New("same-name connection already exists")))
+			continue
+		}
+		if existing != nil && existing.Spec.Driver != imported.Spec.Driver {
+			results = append(results, failedImportItem(name, "driver_change_unsupported", errors.New("remove or unmanage the existing connection before changing its driver")))
+			continue
+		}
+		copy := cloneConnection(imported)
+		mutation := noServiceMutation()
+		if copy.Spec.Driver == sshdriver.ID {
+			if existing == nil {
+				mutation, err = stageNewConnectionService(ctx, copy, target.Path(), opts)
+			} else {
+				mutation, err = stageUpdatedConnectionService(ctx, cloneConnection(*existing), copy, target.Path(), opts)
+			}
+			if err != nil {
+				results = append(results, failedImportItem(name, "service_update_failed", err))
+				continue
+			}
+		}
+		applyErr := target.Update(ctx, func(current *configstore.Document) error {
+			currentIndex, currentExisting := configstore.Find(current, name)
+			if existing == nil {
+				if currentExisting != nil {
+					return configstore.ErrChanged
+				}
+				current.Items = append(current.Items, copy)
+				return nil
+			}
+			if currentExisting == nil || !connectionsEqual(*currentExisting, *existing) {
+				return configstore.ErrChanged
+			}
+			current.Items[currentIndex] = copy
+			return nil
+		})
+		if applyErr != nil {
+			applyErr = mutation.rollbackAfter(classifyConcurrentChange(applyErr))
+			mutation.finish()
+			var typed *exitError
+			if errors.As(applyErr, &typed) && typed.kind == "recovery_blocked" {
+				results = append(results, itemResult{
+					Connection: name, Outcome: "failed", Code: typed.kind, Message: typed.Error(),
+					RiskLevel: typed.riskLevel, Actions: typed.actions,
+				})
+			} else {
+				code := "import_apply_failed"
+				if errors.As(applyErr, &typed) && typed.kind == "state_conflict" {
+					code = typed.kind
+				}
+				results = append(results, failedImportItem(name, code, applyErr))
+			}
+			continue
+		}
+		commitErr := mutation.commit()
+		if commitErr != nil {
+			recoveryCtx, cancel := compensationContext(ctx)
+			restoreErr := target.Update(recoveryCtx, func(current *configstore.Document) error {
+				currentIndex, currentValue := configstore.Find(current, name)
+				if currentValue == nil || !connectionsEqual(*currentValue, copy) {
+					return configstore.ErrChanged
+				}
+				if existing == nil {
+					current.Items = append(current.Items[:currentIndex], current.Items[currentIndex+1:]...)
+				} else {
+					current.Items[currentIndex] = cloneConnection(*existing)
+				}
+				return nil
+			})
+			recoveryErr := errors.Join(restoreErr, mutation.rollback())
+			cancel()
+			if recoveryErr != nil {
+				results = append(results, recoveryBlockedImportItem(name, commitErr, recoveryErr))
+			} else {
+				results = append(results, failedImportItem(name, "service_state_commit_failed", commitErr))
+			}
+			mutation.finish()
+			continue
+		}
+		mutation.finish()
+		outcome := "added"
+		if index >= 0 {
+			outcome = "updated"
+		}
+		results = append(results, itemResult{Connection: name, Outcome: outcome})
+	}
+	return renderImportResult(streams, opts, sourcePath, sourceFormat, sourceConditions, results)
+}
+
+func loadImportDocument(path string) (configstore.Document, string, []core.Condition, error) {
+	document, err := configstore.New(path).Load()
+	if err == nil {
+		return document, "tunlite-v1", []core.Condition{}, nil
+	}
+	var legacy *configstore.LegacyConfigError
+	if !errors.As(err, &legacy) {
+		return configstore.Document{}, "", nil, err
+	}
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return configstore.Document{}, "", nil, readErr
+	}
+	document, conditions, decodeErr := legacyconfig.Decode(raw)
+	if decodeErr != nil {
+		return configstore.Document{}, "", nil, decodeErr
+	}
+	return document, "tunlite-0.x", conditions, nil
 }
 
 func validateConnections(args []string, streams IO, opts options) error {
@@ -215,9 +391,8 @@ func validateConnections(args []string, streams IO, opts options) error {
 		outcome = "failed"
 	}
 	if opts.JSON {
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion,
-			"outcome":         outcome, "path": store.Path(), "connections": len(document.Items), "conditions": conditions,
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "path": store.Path(), "connections": len(document.Items), "conditions": conditions,
 		})
 	} else {
 		fmt.Fprintf(streams.Out, "%s: %d connection(s)\n", store.Path(), len(document.Items))
@@ -235,9 +410,6 @@ func validateKnownDriver(connection core.Connection) error {
 	if connection.Spec.Driver != sshdriver.ID {
 		return nil
 	}
-	if connection.Spec.ConfigVersion != 1 {
-		return fmt.Errorf("connection %q uses unsupported SSH configVersion %d", connection.Metadata.Name, connection.Spec.ConfigVersion)
-	}
 	config, err := sshdriver.DecodeConfig(connection.Spec.Config)
 	if err != nil {
 		return fmt.Errorf("connection %q: %w", connection.Metadata.Name, err)
@@ -250,8 +422,8 @@ func validateKnownDriver(connection core.Connection) error {
 
 func renderDeclarationWrite(streams IO, opts options, outcome, path string, count int) error {
 	if opts.JSON {
-		return writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion, "outcome": outcome, "path": path,
+		return writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "path": path,
 			"connections": count, "dryRun": opts.DryRun,
 		})
 	}
@@ -263,7 +435,7 @@ func renderDeclarationWrite(streams IO, opts options, outcome, path string, coun
 	return nil
 }
 
-func renderImportResult(streams IO, opts options, source string, results []itemResult) error {
+func renderImportResult(streams IO, opts options, source, sourceFormat string, conditions []core.Condition, results []itemResult) error {
 	failed := 0
 	applied := 0
 	for _, result := range results {
@@ -285,11 +457,14 @@ func renderImportResult(streams IO, opts options, source string, results []itemR
 		}
 	}
 	if opts.JSON {
-		_ = writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion, "outcome": outcome, "source": source,
-			"results": results, "dryRun": opts.DryRun,
+		_ = writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "source": source, "sourceFormat": sourceFormat,
+			"conditions": conditions, "results": results, "dryRun": opts.DryRun,
 		})
 	} else {
+		if sourceFormat == "tunlite-0.x" {
+			fmt.Fprintf(streams.Out, "detected Tunlite 0.x configuration: %s\n", source)
+		}
 		for _, result := range results {
 			fmt.Fprintf(streams.Out, "%s: %s", result.Connection, result.Outcome)
 			if result.Message != "" {
@@ -297,9 +472,22 @@ func renderImportResult(streams IO, opts options, source string, results []itemR
 			}
 			fmt.Fprintln(streams.Out)
 		}
+		for _, item := range conditions {
+			if item.Connection == "" {
+				fmt.Fprintf(streams.Out, "%s: %s\n", item.Severity, item.Message)
+			} else {
+				fmt.Fprintf(streams.Out, "%s: %s: %s\n", item.Severity, item.Connection, item.Message)
+			}
+		}
+		if sourceFormat == "tunlite-0.x" && !opts.DryRun {
+			fmt.Fprintln(streams.Out, "the 0.x file and running tunnels were not changed; stop the old runtime before starting the same V1 connections")
+		}
+	}
+	if failed > 0 && applied > 0 {
+		return renderedExit(exitPartial)
 	}
 	if failed > 0 {
-		return renderedExit(exitPartial)
+		return renderedExit(1)
 	}
 	return nil
 }

@@ -1,17 +1,14 @@
-name: CI
+name: Legacy Node 0.10.3 verification
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-  workflow_dispatch:        # manual trigger
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: node ${{ matrix.node }} · ${{ matrix.os }}
+    name: archived node ${{ matrix.node }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # Hard cap so a hung test can never run to GitHub's 6-hour default.
     # (`node --test` has no default per-test timeout, so a test that waits on
@@ -24,7 +21,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         node: ['18', '20', '22']
     steps:
+      # This workflow verifies the frozen release, not the Go v1 working tree.
       - uses: actions/checkout@v4
+        with:
+          ref: v0.10.3
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}

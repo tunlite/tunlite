@@ -1,32 +1,42 @@
 # Tunlite v1 预览版指南
 
 本文说明 `v1.0.0-preview.N` 的安装、支持范围、0.10.3 迁移、回滚和发布验收。
-产品与架构决策仍以 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md) 为唯一事实来源。
+产品与架构决策以 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md) 和
+[ARCHITECTURE.md](ARCHITECTURE.md) 两份并列主文档为准。
+
+需要从空白机器开始安装，并验证用户自己的 SSH、真实隧道流量、原生后台运行、登录
+恢复和接管/交还时，请按照[用户端到端验收手册](INSTALL_AND_ACCEPTANCE.md)执行。
+Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁给用户。
 
 ## 支持矩阵
 
 | 平台 | 架构 | 前台与配置 CLI | 持久 Connection | 当前验证等级 |
 |---|---|---:|---:|---|
-| macOS 12+ | arm64、amd64 | 支持 | launchd，支持 | 自动测试、plist 原生校验、真实生命周期测试 |
-| Linux | arm64、amd64 | 支持 | systemd 用户服务，支持 | 自动测试与交叉编译；发布前补真实发行版验收 |
-| Windows | amd64 | 支持 | 不支持 | 自动测试与交叉编译 |
+| macOS 12+ | x64 | 支持 | launchd，支持 | 自动测试、plist 原生校验，以及 Intel 真机生命周期、日志、崩溃恢复和接管/交还测试 |
+| macOS 12+ | arm64 | 支持 | launchd，支持 | 自动测试与交叉编译；发布前补 Apple Silicon 真机验收 |
+| Linux | x64、arm64 | 支持 | systemd 用户服务，支持 | 自动测试与交叉编译；发布前补真实发行版验收 |
 
 系统 `ssh` 必须位于 PATH，或通过 `TUNLITE_SSH` 指定绝对路径。Linux 持久模式需要
 可用的 systemd 用户会话；容器、精简发行版和没有用户会话总线的环境应使用
 `tunlite run`，或由已有的进程管理器托管它。
 
-首个预览版不承诺 Windows Task Scheduler。CLI 会通过 `capabilities --json` 如实返回
-当前平台是否具备持久服务，不能以文档假装平台能力一致。
+首个预览版不发布 Windows 产物，也不向 Windows 0.x 用户自动升级。Task Scheduler、
+迁移和真实 Windows 验证完成后，Windows 按独立验收计划进入支持矩阵。
 
-## 项目声明的预览限制
+V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和前台实时
+`tunlite monitor`；详情页同时显示选中 Connection 最近 20 行原生日志。颜色只在交互终端中启用，`NO_COLOR`、管道和 `--json` 输出均不
+包含 ANSI 控制符。Webhook 告警本预览版暂缓，不在能力列表中；0.x 的 Webhook 设置
+不会在 v1 中生效，但仍完整保留在未经修改的 0.x 配置和迁移备份中。
 
-当前 `--config` 指向一份完整的 Connection 声明文件，还没有实现“可提交的项目声明”与
-“不入库的本机 override”分层，也没有可迁移的 Identity 引用机制。`identityFile` 仍可能
-保存本机绝对路径，端口和其他设置也可能只适用于当前机器。
+## 配置边界
 
-因此，导出或通过 `--config` 创建的文件在提交 Git 前必须人工检查；包含绝对私钥路径、
-机器专用端口或其他本机信息时，不应直接提交。导入项目声明不会安装插件、启动 Connection
-或取得高风险操作批准。配置分层属于后续预览能力，当前版本不能宣称已经完成 GitOps。
+V1 只使用一份规范配置：`~/.config/tunlite/connections.json`；设置 `TUNLITE_HOME` 时为
+`$TUNLITE_HOME/config/connections.json`。不提供全局 `--config`、项目自动发现、本机
+override 或 GitOps 合并规则。
+
+需要交换声明时使用 `export`、`validate` 和 `import`。导出文件可能包含绝对私钥路径、
+机器专用端口或其他本机信息，提交 Git 前必须人工检查。导入不会安装插件、执行认证或
+启动 Connection。
 
 ## 安装与校验
 
@@ -47,11 +57,31 @@ TUNLITE_INSTALL_DIR=/usr/local/bin \
 sh bootstrap.sh
 ```
 
-Windows PowerShell 默认安装到 `%LOCALAPPDATA%\Programs\Tunlite\tunlite.exe`：
+手动拿到单文件二进制时，直接复制到 PATH：
 
-```powershell
-irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1 | iex
+```bash
+chmod +x ./tunlite
+mkdir -p "$HOME/.local/bin"
+install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
+"$HOME/.local/bin/tunlite" version
 ```
+
+核心 CLI 不提供 `install`、`update` 或 `uninstall`，也不创建 `tun` 短命令。日常升级由
+原安装渠道负责；手工安装用户下载、校验并替换原二进制：
+
+```bash
+install -m 0755 ./tunlite-new "$HOME/.local/bin/tunlite"
+```
+
+替换 CLI 文件不读取或改写 Connection，也不重启直接由原生服务运行的 SSH。下载归档
+checksum 不一致、归档缺少二进制或二进制报告版本不一致时必须停止。
+
+V1 Preview 暂不提供 Shell 自动补全，也不读取或修改 `.bashrc`、`.zshrc`、fish 配置
+等 Shell 启动文件；补全只有在跨 Shell、跨平台和包管理器
+的长期职责边界明确后才重新立项。Agent Skill 由公开仓库中的
+[`use-tunlite` 包](../skill/use-tunlite/)独立提供；用户把仓库目录或固定版本 Tag 地址
+交给 Agent，由 Agent 按自己的扩展机制安装、更新和卸载。Tunlite CLI 不读取 Agent
+目录，也不维护 Skill 安装状态。
 
 也可以手动下载压缩包和 `SHA256SUMS`。任何 checksum 不一致都必须停止安装，不能用
 “重新下载后跳过校验”的方式继续。
@@ -59,7 +89,7 @@ irm https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.ps1
 正式 Release 还应提供 GitHub Artifact Attestation。启用发布工作流后可验证：
 
 ```bash
-gh attestation verify tunlite_1.0.0-preview.1_darwin_arm64.tar.gz \
+gh attestation verify tunlite_1.0.0-preview.1_macos.tar.gz \
   --repo yuanyuanzijin/tunlite
 ```
 
@@ -68,75 +98,20 @@ GitHub Actions 构建。发布工作流尚未得到外部写入授权时，不�
 
 ## 从 0.10.3 迁移
 
-0.10.3 的中心服务无法读取 v1 配置。旧进程如果继续运行，可能把 v1 文件理解为空配置，
-因此顺序不能颠倒。
+Go v1 不做静默自动升级，也不会自动停止 daemon、卸载 Node runtime 或覆盖旧命令。
+升级只读取 `~/.config/tunlite/config.json`，并在独立的
+`~/.config/tunlite/connections.json` 中生成新配置；旧配置始终保持不变。
 
-### 1. 用 0.10.3 退出旧运行时
-
-先确认当前执行的仍是 0.10.3，然后卸载旧登录服务并停止旧后台进程：
-
-```bash
-tunlite version
-tunlite uninstall service --json
-tunlite daemon stop --json
-```
-
-不要先执行 `disable all`，否则会把旧配置中的 `enabled` 意图改成 false。迁移器本身不会
-自动启动这些连接，而是把原来的启用意图作为结构化建议返回。
-
-### 2. 安装 v1 并只做规划
+必须按照[从 Tunlite 0.x 升级到 Go v1](UPGRADE_FROM_0_X.md)完整执行。核心命令是：
 
 ```bash
-tunlite version --json
-tunlite migrate --dry-run --json --non-interactive
+./tunlite-v1 import ~/.config/tunlite/config.json --dry-run
+./tunlite-v1 import ~/.config/tunlite/config.json
 ```
 
-检查返回的 Connection 数量和 `conditions[]`。重点处理：
-
-- `legacy_enabled_not_started`：旧连接曾启用，但迁移不会启动它。
-- `legacy_settings_not_migrated`：旧版全局重试、通知和后台设置不属于 v1。
-- `legacy_auto_setup_key_not_migrated`：v1 不自动向远端写入 SSH 公钥。
-
-迁移器兼容 0.10.3 曾保存过的 `sshOptions` 两种历史形式：`["Compression=yes"]`
-和 `["-o", "Compression=yes"]`，统一写成严格的 `Key=Value`。无法安全表达的任意参数
-会导致整个迁移失败，原文件保持不变。
-
-### 3. 应用、校验、逐条恢复
-
-```bash
-tunlite migrate --json --non-interactive
-tunlite validate --json --non-interactive
-tunlite doctor --offline --json --non-interactive
-tunlite status --json --non-interactive
-```
-
-确认配置正确后，逐条执行 `check` 和 `enable --dry-run`。公开监听或远端转发先取得明确
-批准，再对精确计划使用 `--approve`。不要根据迁移返回的 action 自动启用全部连接。
-
-## 迁移的备份与回滚
-
-应用迁移前会完成三件事：
-
-1. 在原配置旁保存 `config.json.v0-sha256-<摘要>.bak`，内容与旧文件字节级一致。
-2. 在本机状态目录保存前后 SHA-256、原路径、备份路径和迁移状态。
-3. 通过同一配置锁原子替换为 v1 声明。
-
-重复运行迁移不会覆盖旧备份。若进程在替换前后中断，下次运行会根据摘要完成或恢复迁移
-日志，而不是猜测状态。
-
-需要人工回滚时，先停止所有 v1 Connection：
-
-```bash
-tunlite disable all --json --non-interactive
-tunlite migrate --rollback --dry-run --json --non-interactive
-tunlite migrate --rollback --json --non-interactive
-```
-
-回滚只在当前文件仍与“刚迁移完成的 v1 文件”摘要一致时执行。一旦用户通过 `add`、
-`set`、`import` 等方式修改过 v1 配置，就返回 `migration_drifted`，绝不覆盖新数据。
-
-回滚只恢复配置，不重新安装或启动 0.10.3。需要恢复旧产品时，必须另外安装固定版本的
-0.10.3，并由用户明确决定是否恢复旧服务。
+配置导入本身不会中断旧隧道。真正切换时逐条停止 0.x Connection，再启动对应 V1
+Connection；两套运行时不得同时启动同一条隧道。V1 不建立迁移日志、自动回滚引擎或
+旧版本清理命令；回退按升级文档逐条停止 V1 并重新启动 0.10.3。
 
 ## 预览版发布门禁
 
@@ -154,6 +129,7 @@ scripts/package-release.sh v1.0.0-preview.1
 发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.22 仅表示源码采用的最低语言版本。
 不得用 Go 1.22 生成正式 macOS 产物，因为其链接结果会被当前 macOS dyld 拒绝。
 
-还必须在 Linux 真机完成 systemd 用户服务的 `enable → status → restart → sync → disable`
+还必须在 Linux 真机完成 systemd 用户服务的
+`add → start → stop → enable → status → restart → disable → remove`
 验收，逐个平台解压产物并确认嵌入版本正确，核对 `SHA256SUMS`。没有完成的项目必须在
 Release Notes 和支持矩阵中明确写出，不能用“预计支持”替代事实。

@@ -1,4 +1,4 @@
-# 安装 Tunlite v1 单文件二进制；不会注册或启动任何 Connection。
+# 为未来 Windows 产品保留的安装器草案；v1 首个预览版不发布 Windows 产物。
 $ErrorActionPreference = 'Stop'
 
 function Main {
@@ -6,6 +6,8 @@ function Main {
     [string]$Version = $(if ($env:TUNLITE_VERSION) { $env:TUNLITE_VERSION } else { 'v1.0.0-preview.1' }),
     [string]$InstallDir = $(if ($env:TUNLITE_INSTALL_DIR) { $env:TUNLITE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Tunlite' })
   )
+
+  throw 'tunlite: v1 首个预览版尚未发布 Windows 版本；请继续使用固定的 0.10.3，等待 Task Scheduler 与迁移完成验收'
 
   if ($Version -notmatch '^v1\.0\.0(?:-preview\.[1-9][0-9]*)?$') {
     throw "tunlite: 不支持的版本格式 $Version"

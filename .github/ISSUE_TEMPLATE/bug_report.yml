@@ -11,8 +11,8 @@ body:
     id: version
     attributes:
       label: tunlite version
-      description: Output of `tunlite --version`
-      placeholder: "0.8.0"
+      description: Output of `tunlite version --json`
+      placeholder: 'v1.0.0-preview.1'
     validations:
       required: true
   - type: dropdown
@@ -25,12 +25,11 @@ body:
         - Windows
     validations:
       required: true
-  - type: input
-    id: node
+  - type: textarea
+    id: capabilities
     attributes:
-      label: Node.js version
-      description: Output of `node --version`
-      placeholder: "v20.11.0"
+      label: Runtime capabilities
+      description: Output of `tunlite capabilities --json`; redact paths or identifiers if needed.
     validations:
       required: true
   - type: textarea
@@ -39,8 +38,8 @@ body:
       label: Steps to reproduce
       description: The commands you ran, in order.
       placeholder: |
-        1. tunlite add local web --to user@host --remote 80 --local 8080
-        2. tunlite up web
+        1. tunlite add web --to user@host -L 8080:localhost:80
+        2. tunlite start web
         3. ...
     validations:
       required: true

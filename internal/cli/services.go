@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
@@ -20,20 +22,17 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
-var newServiceAdapter = func() (service.Adapter, error) { return service.NewCurrent(nil) }
-
 type serviceSelection struct {
-	target  string
-	tags    []string
-	approve bool
+	target string
+	tags   []string
+	all    bool
 }
 
 type serviceItemError struct {
-	Code             string        `json:"code"`
-	Message          string        `json:"message"`
-	RiskLevel        string        `json:"riskLevel"`
-	RequiresApproval bool          `json:"requiresApproval"`
-	Actions          []core.Action `json:"actions"`
+	Code      string        `json:"code"`
+	Message   string        `json:"message"`
+	RiskLevel string        `json:"riskLevel"`
+	Actions   []core.Action `json:"actions"`
 }
 
 type serviceArtifactResult struct {
@@ -44,13 +43,15 @@ type serviceArtifactResult struct {
 }
 
 type serviceItemResult struct {
-	Connection string                 `json:"connection"`
-	Outcome    string                 `json:"outcome"`
-	Changed    bool                   `json:"changed"`
-	State      *service.State         `json:"state,omitempty"`
-	Artifact   *serviceArtifactResult `json:"artifact,omitempty"`
-	Conditions []core.Condition       `json:"conditions"`
-	Error      *serviceItemError      `json:"error,omitempty"`
+	Connection  string                 `json:"connection"`
+	Outcome     string                 `json:"outcome"`
+	Changed     bool                   `json:"changed"`
+	State       *service.State         `json:"state,omitempty"`
+	Artifact    *serviceArtifactResult `json:"artifact,omitempty"`
+	Conditions  []core.Condition       `json:"conditions"`
+	Error       *serviceItemError      `json:"error,omitempty"`
+	Declaration *core.Connection       `json:"-"`
+	Detailed    bool                   `json:"-"`
 }
 
 func serviceCommand(ctx context.Context, command string, args []string, streams IO, opts options) error {
@@ -60,109 +61,107 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 	}
 	adapter, records, config, document, err := serviceDependencies(opts)
 	if err != nil {
-		return err
+		if command == "status" {
+			return renderUnsupportedStatus(args, selection, streams, opts, err)
+		}
+		return capabilityError(err.Error())
 	}
-	targets, err := selectServiceConnections(document, selection, command == "status" || command == "sync")
+	targets, err := selectServiceConnections(document, selection, command == "status")
 	if err != nil {
 		return err
 	}
+	if command == "status" {
+		results := collectStatusResults(ctx, adapter, records, targets, config.Path(), defaultStatusObservationBudget())
+		for index := range results {
+			declaration := cloneConnection(targets[index])
+			results[index].Declaration = &declaration
+			results[index].Detailed = selection.target != ""
+		}
+		return renderServiceResults(streams, opts, command, results)
+	}
 	results := make([]serviceItemResult, 0, len(targets))
 	for _, connection := range targets {
-		var release func()
-		if command != "status" && !opts.DryRun {
-			release, err = records.Lock(ctx, connection.Metadata.Name)
-			if err != nil {
-				results = append(results, failedServiceItem(connection.Metadata.Name, "service_busy", err, false, "low", nil))
+		release := func() {}
+		if !opts.DryRun {
+			var lockErr error
+			release, lockErr = records.Lock(ctx, connection.Metadata.Name)
+			if lockErr != nil {
+				results = append(results, failedServiceItem(connection.Metadata.Name, "service_busy", lockErr, "low", nil))
 				continue
 			}
-			fresh, loadErr := config.Load()
-			if loadErr != nil {
-				release()
-				results = append(results, failedServiceItem(connection.Metadata.Name, "declaration_read_failed", loadErr, false, "low", nil))
-				continue
-			}
-			_, current := configstore.Find(&fresh, connection.Metadata.Name)
-			if current == nil {
-				release()
-				results = append(results, failedServiceItem(connection.Metadata.Name, "not_found", errors.New("connection was removed before the service operation started"), false, "low", nil))
-				continue
-			}
-			if len(selection.tags) > 0 && !hasAnyTag(current.Metadata.Labels, selection.tags) {
-				release()
-				results = append(results, failedServiceItem(connection.Metadata.Name, "selection_changed", errors.New("connection no longer matches the selected tags"), false, "low", nil))
-				continue
-			}
-			connection = cloneConnection(*current)
 		}
+		if records.RunActive(connection.Metadata.Name) {
+			release()
+			results = append(results, failedServiceItem(connection.Metadata.Name, "foreground_running",
+				errors.New("connection is running in the foreground; stop that run before changing its lifecycle"), "low", nil))
+			continue
+		}
+		fresh, loadErr := config.Load()
+		if loadErr != nil {
+			release()
+			results = append(results, failedServiceItem(connection.Metadata.Name, "declaration_read_failed", loadErr, "low", nil))
+			continue
+		}
+		_, current := configstore.Find(&fresh, connection.Metadata.Name)
+		if current == nil {
+			release()
+			results = append(results, failedServiceItem(connection.Metadata.Name, "not_found",
+				errors.New("connection was removed before the service operation started"), "low", nil))
+			continue
+		}
+		connection = cloneConnection(*current)
 		var result serviceItemResult
 		switch command {
+		case "start":
+			result = startService(ctx, adapter, records, connection, config.Path(), opts)
+		case "stop":
+			result = stopService(ctx, adapter, records, connection, config.Path(), opts)
 		case "enable":
-			result = enableService(ctx, adapter, records, connection, config.Path(), selection.approve, opts)
+			result = enableService(ctx, adapter, records, connection, config.Path(), opts)
 		case "disable":
 			result = disableService(ctx, adapter, records, connection, config.Path(), opts)
 		case "restart":
 			result = restartService(ctx, adapter, records, connection, config.Path(), opts)
-		case "status":
-			result = statusService(ctx, adapter, records, connection, config.Path())
-		case "sync":
-			result = syncService(ctx, adapter, records, connection, config.Path(), selection.approve, opts)
 		}
-		if release != nil {
-			release()
-		}
+		release()
 		results = append(results, result)
 	}
 	return renderServiceResults(streams, opts, command, results)
 }
 
-func ensureServiceRemovable(ctx context.Context, name string, lock bool) (func(), error) {
-	stateDir, err := appPaths.StateDir()
-	if err != nil {
-		return nil, err
-	}
-	records := service.NewStore(filepath.Join(stateDir, "services"))
-	release := func() {}
-	if lock {
-		release, err = records.Lock(ctx, name)
-		if err != nil {
-			return nil, err
-		}
-	}
-	record, exists, err := records.Load(name)
-	if err != nil || !exists {
-		if err != nil {
-			release()
-			return nil, err
-		}
-		return release, nil
-	}
-	if record.DesiredState == service.DesiredEnabled {
-		release()
-		return nil, conflictError(fmt.Sprintf("connection %q is enabled; disable it before removing or renaming it", name))
-	}
-	adapter, err := newServiceAdapter()
-	if err != nil {
-		release()
-		return nil, fmt.Errorf("cannot verify native service cleanup for %q: %w", name, err)
-	}
-	observation, err := adapter.Inspect(ctx, name)
-	if err != nil {
-		release()
-		return nil, fmt.Errorf("cannot verify native service cleanup for %q: %w", name, err)
-	}
-	if observation.Installed || observation.Enabled || observation.ProcessState == service.ProcessRunning || observation.ProcessState == service.ProcessStarting {
-		release()
-		return nil, conflictError(fmt.Sprintf("native service for %q is still present or running; run `tunlite disable %s` again", name, name))
-	}
-	return release, nil
-}
-
-func removeServiceRecord(name string) error {
-	stateDir, err := appPaths.StateDir()
+func renderUnsupportedStatus(_ []string, selection serviceSelection, streams IO, opts options, cause error) error {
+	config, err := connectionStore(opts)
 	if err != nil {
 		return err
 	}
-	return service.NewStore(filepath.Join(stateDir, "services")).Remove(name)
+	document, err := config.Load()
+	if err != nil {
+		return err
+	}
+	targets, err := selectServiceConnections(document, selection, true)
+	if err != nil {
+		return err
+	}
+	results := make([]serviceItemResult, 0, len(targets))
+	for _, connection := range targets {
+		state := service.State{
+			Connection: connection.Metadata.Name, ServiceState: service.ServiceUnsupported,
+			Mode: service.ModeStopped, ProcessState: service.ProcessInactive, Health: service.HealthUnknown,
+			ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
+			Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{{
+				Code: "foreground_only", Severity: "warning", Message: cause.Error(), Connection: connection.Metadata.Name,
+				Actions: []core.Action{},
+			}},
+		}
+		if records, storeErr := serviceRecordStore(); storeErr == nil && records.RunActive(connection.Metadata.Name) {
+			state.Mode, state.ProcessState = service.ModeForeground, service.ProcessRunning
+		}
+		result := succeededServiceItem(connection.Metadata.Name, state)
+		declaration := cloneConnection(connection)
+		result.Declaration = &declaration
+		results = append(results, result)
+	}
+	return renderServiceResults(streams, opts, "status", results)
 }
 
 func parseServiceSelection(command string, args []string) (serviceSelection, error) {
@@ -175,9 +174,7 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	flags.SetOutput(io.Discard)
 	var rawTags stringsFlag
 	flags.Var(&rawTags, "tag", "select connections by tag")
-	if command == "enable" || command == "sync" {
-		flags.BoolVar(&selection.approve, "approve", false, "approve publish or public-listen risk")
-	}
+	flags.BoolVar(&selection.all, "all", false, "select all connections")
 	if err := flags.Parse(args); err != nil {
 		return selection, usageError(err.Error())
 	}
@@ -189,18 +186,31 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	if err != nil {
 		return selection, err
 	}
-	if selection.target == "" && len(selection.tags) == 0 && command != "status" && command != "sync" {
-		return selection, usageError(fmt.Sprintf("usage: tunlite %s <name|all> [--tag tag]", command))
+	selectors := 0
+	if selection.target != "" {
+		selectors++
+	}
+	if len(selection.tags) > 0 {
+		selectors++
+	}
+	if selection.all {
+		selectors++
+	}
+	if selectors > 1 {
+		return selection, usageError("choose exactly one of a connection name, --tag, or --all")
+	}
+	if selectors == 0 && command != "status" {
+		return selection, usageError(fmt.Sprintf("usage: tunlite %s <name> | --tag <tag> | --all", command))
 	}
 	return selection, nil
 }
 
 func serviceDependencies(opts options) (service.Adapter, *service.Store, *configstore.Store, configstore.Document, error) {
-	adapter, err := newServiceAdapter()
+	adapter, err := opts.newServiceAdapter()
 	if err != nil {
 		return nil, nil, nil, configstore.Document{}, err
 	}
-	stateDir, err := appPaths.StateDir()
+	records, err := serviceRecordStore()
 	if err != nil {
 		return nil, nil, nil, configstore.Document{}, err
 	}
@@ -212,27 +222,31 @@ func serviceDependencies(opts options) (service.Adapter, *service.Store, *config
 	if err != nil {
 		return nil, nil, nil, configstore.Document{}, err
 	}
-	return adapter, service.NewStore(filepath.Join(stateDir, "services")), config, document, nil
+	return adapter, records, config, document, nil
+}
+
+func serviceRecordStore() (*service.Store, error) {
+	stateDir, err := appPaths.StateDir()
+	if err != nil {
+		return nil, err
+	}
+	return service.NewStore(filepath.Join(stateDir, "services")), nil
 }
 
 func selectServiceConnections(document configstore.Document, selection serviceSelection, defaultAll bool) ([]core.Connection, error) {
-	target := selection.target
-	if target == "" && defaultAll {
-		target = "all"
-	}
-	if target != "" && target != "all" {
-		_, connection := configstore.Find(&document, target)
+	if selection.target != "" {
+		_, connection := configstore.Find(&document, selection.target)
 		if connection == nil {
-			return nil, notFoundError(fmt.Sprintf("no such connection: %s", target))
-		}
-		if len(selection.tags) > 0 && !hasAnyTag(connection.Metadata.Labels, selection.tags) {
-			return nil, notFoundError(fmt.Sprintf("connection %q does not match the selected tags", target))
+			return nil, notFoundError(fmt.Sprintf("no such connection: %s", selection.target))
 		}
 		return []core.Connection{cloneConnection(*connection)}, nil
 	}
+	if !selection.all && len(selection.tags) == 0 && !defaultAll {
+		return nil, usageError("a connection selector is required")
+	}
 	results := make([]core.Connection, 0, len(document.Items))
 	for _, connection := range document.Items {
-		if len(selection.tags) == 0 || hasAnyTag(connection.Metadata.Labels, selection.tags) {
+		if len(selection.tags) == 0 || hasAllTags(connection.Metadata.Tags, selection.tags) {
 			results = append(results, cloneConnection(connection))
 		}
 	}
@@ -243,9 +257,10 @@ func selectServiceConnections(document configstore.Document, selection serviceSe
 }
 
 func buildServiceArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection) (service.Artifact, error) {
-	if connection.Spec.Lifecycle != "persistent" {
-		return service.Artifact{}, fmt.Errorf("connection %q has foreground lifecycle and cannot be enabled", connection.Metadata.Name)
-	}
+	return buildBoundServiceArtifact(ctx, adapter, connection, nil)
+}
+
+func buildBoundServiceArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection, record *service.Record) (service.Artifact, error) {
 	registry, err := core.NewRegistry(sshdriver.New())
 	if err != nil {
 		return service.Artifact{}, err
@@ -254,54 +269,195 @@ func buildServiceArtifact(ctx context.Context, adapter service.Adapter, connecti
 	if err != nil {
 		return service.Artifact{}, err
 	}
+	if record != nil {
+		return adapter.BuildBound(record.Reference(), executionPlan)
+	}
 	return adapter.Build(connection.Metadata.Name, executionPlan)
 }
 
-func enableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, approved bool, opts options) serviceItemResult {
-	stored, exists, err := records.Load(connection.Metadata.Name)
+func loadServiceRecord(records *service.Store, connection core.Connection, declarationPath string) (service.Record, error) {
+	record, exists, err := records.Load(connection.Metadata.Name)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, false, "low", nil)
+		return service.Record{}, err
 	}
-	if err := ensureDeclarationOwner(stored, exists, declarationPath); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, false, "low", nil)
+	if !exists {
+		return service.Record{}, errors.New("native service was not materialized; this connection is foreground-only")
+	}
+	if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+		return service.Record{}, err
+	}
+	return record, nil
+}
+
+func lifecycleRecordAndArtifact(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string) (service.Record, service.Artifact, bool, error) {
+	record, exists, err := records.Load(connection.Metadata.Name)
+	if err != nil {
+		return service.Record{}, service.Artifact{}, false, err
+	}
+	if exists {
+		if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+			return service.Record{}, service.Artifact{}, false, err
+		}
+		artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+		return record, artifact, false, err
 	}
 	artifact, err := buildServiceArtifact(ctx, adapter, connection)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, false, "low", nil)
+		return service.Record{}, service.Artifact{}, false, err
 	}
-	conditions := planApprovalConditions(connection, artifact.Plan, "enable")
-	approvalNeeded := len(conditions) > 0 && stored.ApprovedPlanDigest != artifact.PlanDigest
-	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
-	if approvalNeeded && !approved && !opts.DryRun {
-		return failedServiceItem(connection.Metadata.Name, "approval_required", errors.New("persistent publish or public-listen access requires explicit --approve"), true, "high",
-			[]core.Action{{Type: "approve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "operation": "enable"}}})
+	return recordForArtifact(artifact, service.ModeStopped, declarationPath), artifact, true, nil
+}
+
+func materializeLifecycleRecord(ctx context.Context, adapter service.Adapter, records *service.Store, record service.Record, artifact service.Artifact, missing bool) error {
+	if !missing {
+		return nil
 	}
-	record := recordForArtifact(artifact, service.DesiredEnabled, declarationPath)
-	if len(conditions) > 0 && (approved || stored.ApprovedPlanDigest == artifact.PlanDigest) {
-		record.ApprovedPlanDigest = artifact.PlanDigest
+	observation, err := adapter.Inspect(ctx, artifact.Reference())
+	if err != nil {
+		return err
 	}
-	if exists && stored.DesiredState == service.DesiredEnabled {
-		current := service.Evaluate(ctx, adapter, stored, &artifact)
-		if current.SyncState == service.SyncSynced && (current.ProcessState == service.ProcessRunning || current.ProcessState == service.ProcessStarting) {
-			if approvalNeeded && approved && !opts.DryRun {
-				if err := records.Write(ctx, record); err != nil {
-					return failedServiceItem(connection.Metadata.Name, "service_state_write_failed", err, false, "low", nil)
-				}
-			}
-			result.Outcome, result.Changed, result.State = "succeeded", false, &current
-			return result
-		}
+	if observation.Installed {
+		return fmt.Errorf("native service %s already exists outside this declaration", artifact.UnitName)
 	}
-	if opts.DryRun {
-		result.Outcome = "planned"
-		return result
+	if err := adapter.Materialize(ctx, artifact); err != nil {
+		return err
 	}
 	if err := records.Write(ctx, record); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_write_failed", err, false, "low", nil)
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return recoveryBlockedError(err, adapter.Remove(recoveryCtx, artifact.Reference()), nil)
 	}
-	if err := adapter.Enable(ctx, artifact); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_enable_failed", err, false, "low",
-			[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": connection.Metadata.Name}}})
+	return nil
+}
+
+func startService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
+	record, artifact, missing, err := lifecycleRecordAndArtifact(ctx, adapter, records, connection, declarationPath)
+	if err != nil {
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
+	}
+	if record.Mode == service.ModePersistent {
+		return failedServiceItem(connection.Metadata.Name, "persistent_connection", errors.New("connection is persistent; start cannot change it to temporary background mode"), "low", nil)
+	}
+	conditions := []core.Condition{}
+	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if !missing && before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before starting"), "low", resolveActions(connection.Metadata.Name))
+	}
+	if record.Mode == service.ModeBackground && (before.ProcessState == service.ProcessRunning || before.ProcessState == service.ProcessStarting) {
+		return succeededServiceItem(connection.Metadata.Name, before)
+	}
+	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
+	if opts.DryRun {
+		result.Outcome = "planned"
+		result.State = &before
+		return result
+	}
+	if err := materializeLifecycleRecord(ctx, adapter, records, record, artifact, missing); err != nil {
+		return failedServiceItem(connection.Metadata.Name, "service_materialization_failed", err, "low", nil)
+	}
+	if err := adapter.Start(ctx, record.Reference()); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_start_failed", err,
+			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
+	}
+	previous := record.Mode
+	record.Mode = service.ModeBackground
+	if err := records.Write(ctx, record); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		rollbackErr := adapter.Stop(recoveryCtx, record.Reference())
+		record.Mode = previous
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err, rollbackErr)
+	}
+	state := service.Evaluate(ctx, adapter, record, &artifact)
+	result.State = &state
+	return result
+}
+
+func stopService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
+	record, err := loadServiceRecord(records, connection, declarationPath)
+	if err != nil {
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
+	}
+	if record.Mode == service.ModePersistent {
+		return failedServiceItem(connection.Metadata.Name, "persistent_connection", errors.New("connection is persistent; use disable to stop it and cancel automatic startup"), "low", nil)
+	}
+	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+	if err != nil {
+		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
+	}
+	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
+		return succeededServiceItem(connection.Metadata.Name, before)
+	}
+	if before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before stopping"), "low", resolveActions(connection.Metadata.Name))
+	}
+	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(artifact)}
+	if opts.DryRun {
+		result.Outcome = "planned"
+		result.State = &before
+		return result
+	}
+	if err := adapter.Stop(ctx, record.Reference()); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_stop_failed", err,
+			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
+	}
+	record.Mode = service.ModeStopped
+	if err := records.Write(ctx, record); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
+			adapter.Start(recoveryCtx, record.Reference()))
+	}
+	state := service.Evaluate(ctx, adapter, record, &artifact)
+	result.State = &state
+	return result
+}
+
+func enableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
+	record, artifact, missing, err := lifecycleRecordAndArtifact(ctx, adapter, records, connection, declarationPath)
+	if err != nil {
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
+	}
+	conditions := []core.Condition{}
+	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if !missing && before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before enabling"), "low", resolveActions(connection.Metadata.Name))
+	}
+	if record.Mode == service.ModePersistent && (before.ProcessState == service.ProcessRunning || before.ProcessState == service.ProcessStarting) {
+		return succeededServiceItem(connection.Metadata.Name, before)
+	}
+	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
+	if opts.DryRun {
+		result.Outcome = "planned"
+		result.State = &before
+		return result
+	}
+	if err := materializeLifecycleRecord(ctx, adapter, records, record, artifact, missing); err != nil {
+		return failedServiceItem(connection.Metadata.Name, "service_materialization_failed", err, "low", nil)
+	}
+	previousMode := record.Mode
+	if err := adapter.Enable(ctx, record.Reference()); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_enable_failed", err,
+			applyNativeMode(recoveryCtx, adapter, record.Reference(), previousMode))
+	}
+	record.Mode = service.ModePersistent
+	if err := records.Write(ctx, record); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		disableErr := adapter.Disable(recoveryCtx, record.Reference())
+		var startErr error
+		if previousMode == service.ModeBackground {
+			startErr = adapter.Start(recoveryCtx, record.Reference())
+		}
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
+			errors.Join(disableErr, startErr))
 	}
 	state := service.Evaluate(ctx, adapter, record, &artifact)
 	result.State = &state
@@ -309,57 +465,75 @@ func enableService(ctx context.Context, adapter service.Adapter, records *servic
 }
 
 func disableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
-	record, exists, err := records.Load(connection.Metadata.Name)
+	record, err := loadServiceRecord(records, connection, declarationPath)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, false, "low", nil)
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
 	}
-	if err := ensureDeclarationOwner(record, exists, declarationPath); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, false, "low", nil)
+	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+	if err != nil {
+		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
 	}
-	target := adapter.Target(connection.Metadata.Name)
-	record.APIVersion, record.Connection, record.Adapter = service.RecordVersion, connection.Metadata.Name, adapter.Name()
-	record.DesiredState, record.ArtifactPath, record.UnitName = service.DesiredDisabled, target.Path, target.UnitName
-	record.DeclarationPath = declarationPath
-	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(target)}
+	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
+		return succeededServiceItem(connection.Metadata.Name, before)
+	}
+	if record.Mode == service.ModeBackground {
+		return failedServiceItem(connection.Metadata.Name, "background_connection", errors.New("connection is in background mode; use stop"), "low", nil)
+	}
+	if before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before disabling"), "low", resolveActions(connection.Metadata.Name))
+	}
+	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(artifact)}
 	if opts.DryRun {
 		result.Outcome = "planned"
+		result.State = &before
 		return result
 	}
+	if err := adapter.Disable(ctx, record.Reference()); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_disable_failed", err,
+			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
+	}
+	record.Mode = service.ModeStopped
 	if err := records.Write(ctx, record); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_write_failed", err, false, "low", nil)
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
+			adapter.Enable(recoveryCtx, record.Reference()))
 	}
-	if err := adapter.Disable(ctx, connection.Metadata.Name); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_disable_failed", err, false, "low",
-			[]core.Action{{Type: "sync_connection", Parameters: map[string]any{"connection": connection.Metadata.Name}}})
-	}
-	state := service.Evaluate(ctx, adapter, record, nil)
+	state := service.Evaluate(ctx, adapter, record, &artifact)
 	result.State = &state
 	return result
 }
 
 func restartService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
-	record, exists, err := records.Load(connection.Metadata.Name)
+	record, err := loadServiceRecord(records, connection, declarationPath)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, false, "low", nil)
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
 	}
-	if err := ensureDeclarationOwner(record, exists, declarationPath); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, false, "low", nil)
+	if record.Mode != service.ModeBackground && record.Mode != service.ModePersistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_stopped", errors.New("connection is stopped; use start or enable instead of restart"), "low", nil)
 	}
-	if record.DesiredState != service.DesiredEnabled {
-		return failedServiceItem(connection.Metadata.Name, "connection_disabled", errors.New("connection is disabled; enable it before restarting"), false, "low",
-			[]core.Action{{Type: "enable_connection", Parameters: map[string]any{"connection": connection.Metadata.Name}}})
-	}
-	artifact, err := buildServiceArtifact(ctx, adapter, connection)
+	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, false, "low", nil)
+		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
+	}
+	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before restarting"), "low", resolveActions(connection.Metadata.Name))
 	}
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(artifact)}
 	if opts.DryRun {
 		result.Outcome = "planned"
+		result.State = &before
 		return result
 	}
-	if err := adapter.Restart(ctx, connection.Metadata.Name); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_restart_failed", err, false, "low", nil)
+	if err := adapter.Restart(ctx, record.Reference()); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_restart_failed", err,
+			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
 	}
 	state := service.Evaluate(ctx, adapter, record, &artifact)
 	result.State = &state
@@ -369,19 +543,72 @@ func restartService(ctx context.Context, adapter service.Adapter, records *servi
 func statusService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string) serviceItemResult {
 	record, exists, err := records.Load(connection.Metadata.Name)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, false, "low", nil)
+		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
 	}
-	if err := ensureDeclarationOwner(record, exists, declarationPath); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, false, "low", nil)
+	if !exists {
+		artifact, planErr := buildServiceArtifact(ctx, adapter, connection)
+		consistency := service.ConsistencyMissing
+		serviceState := service.ServiceAbsent
+		mode := service.ModeStopped
+		processState := service.ProcessInactive
+		statusCondition := core.Condition{
+			Code: "service_missing", Severity: "warning", Message: "native service has not been materialized on this machine",
+			Connection: connection.Metadata.Name, Actions: []core.Action{{Type: "start_connection", Parameters: map[string]any{"connection": connection.Metadata.Name}}},
+		}
+		if planErr != nil {
+			consistency = service.ConsistencyBlocked
+			statusCondition = core.Condition{
+				Code: "execution_plan_blocked", Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
+				Driver: connection.Spec.Driver, Actions: []core.Action{},
+			}
+		} else if observation, inspectErr := adapter.Inspect(ctx, artifact.Reference()); inspectErr != nil {
+			consistency = service.ConsistencyBlocked
+			serviceState = service.ServiceUnknown
+			processState = service.ProcessUnknown
+			statusCondition = core.Condition{
+				Code: "service_manager_unavailable", Severity: "error", Message: inspectErr.Error(), Connection: connection.Metadata.Name,
+				Actions: []core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{"adapter": adapter.Name()}}},
+			}
+		} else if observation.Installed {
+			consistency = service.ConsistencyBlocked
+			serviceState = service.ServiceRegistered
+			mode = observedMode(observation)
+			processState = observation.ProcessState
+			statusCondition = core.Condition{
+				Code: "service_binding_missing", Severity: "error",
+				Message:    "a native service exists at the expected identity but Tunlite has no management binding",
+				Connection: connection.Metadata.Name,
+				Actions: []core.Action{
+					{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "tunlite"}},
+					{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "system"}},
+				},
+			}
+		}
+		state := service.State{
+			Connection: connection.Metadata.Name, Adapter: adapter.Name(), ServiceState: serviceState,
+			Mode: mode, ProcessState: processState, Health: service.HealthUnknown,
+			ConsistencyState: consistency, ObservedAt: time.Now().UTC(),
+			Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{statusCondition},
+		}
+		if records.RunActive(connection.Metadata.Name) {
+			state.Mode, state.ProcessState = service.ModeForeground, service.ProcessRunning
+		}
+		return succeededServiceItem(connection.Metadata.Name, state)
 	}
-	artifact, planErr := buildServiceArtifact(ctx, adapter, connection)
+	if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, "low", nil)
+	}
+	artifact, planErr := buildBoundServiceArtifact(ctx, adapter, connection, &record)
 	var expected *service.Artifact
 	if planErr == nil {
 		expected = &artifact
 	}
 	state := service.Evaluate(ctx, adapter, record, expected)
-	if planErr != nil && record.DesiredState == service.DesiredEnabled {
-		state.SyncState = service.SyncBlocked
+	if records.RunActive(connection.Metadata.Name) {
+		state.Mode, state.ProcessState = service.ModeForeground, service.ProcessRunning
+	}
+	if planErr != nil {
+		state.ConsistencyState = service.ConsistencyBlocked
 		state.Conditions = append(state.Conditions, core.Condition{
 			Code: "execution_plan_blocked", Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
 			Driver: connection.Spec.Driver, Actions: []core.Action{},
@@ -390,81 +617,7 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 	return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
 }
 
-func syncService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, approved bool, opts options) serviceItemResult {
-	record, exists, err := records.Load(connection.Metadata.Name)
-	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, false, "low", nil)
-	}
-	if err := ensureDeclarationOwner(record, exists, declarationPath); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, false, "low", nil)
-	}
-	if record.DesiredState == service.DesiredDisabled {
-		before := service.Evaluate(ctx, adapter, record, nil)
-		if before.SyncState == service.SyncSynced {
-			return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &before, Conditions: []core.Condition{}}
-		}
-		result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(adapter.Target(connection.Metadata.Name))}
-		if opts.DryRun {
-			result.Outcome = "planned"
-			result.State = &before
-			return result
-		}
-		if err := adapter.Disable(ctx, connection.Metadata.Name); err != nil {
-			return failedServiceItem(connection.Metadata.Name, "service_sync_failed", err, false, "low", nil)
-		}
-		after := service.Evaluate(ctx, adapter, record, nil)
-		result.State = &after
-		return result
-	}
-	artifact, err := buildServiceArtifact(ctx, adapter, connection)
-	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, false, "low", nil)
-	}
-	before := service.Evaluate(ctx, adapter, record, &artifact)
-	approval := planApprovalConditions(connection, artifact.Plan, "sync")
-	approvalNeeded := len(approval) > 0 && record.ApprovedPlanDigest != artifact.PlanDigest
-	if approvalNeeded && !approved && !opts.DryRun {
-		return failedServiceItem(connection.Metadata.Name, "approval_required", errors.New("the execution plan requires explicit --approve before sync"), true, "high",
-			[]core.Action{{Type: "approve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "operation": "sync"}}})
-	}
-	if before.SyncState == service.SyncSynced && (before.ProcessState == service.ProcessRunning || before.ProcessState == service.ProcessStarting) {
-		if approvalNeeded {
-			result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, State: &before, Conditions: approval, Artifact: artifactResult(artifact)}
-			if opts.DryRun {
-				result.Outcome = "planned"
-				return result
-			}
-			record.ApprovedPlanDigest = artifact.PlanDigest
-			if err := records.Write(ctx, record); err != nil {
-				return failedServiceItem(connection.Metadata.Name, "service_state_write_failed", err, false, "low", nil)
-			}
-			return result
-		}
-		return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &before, Conditions: []core.Condition{}}
-	}
-	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: approval, Artifact: artifactResult(artifact)}
-	if opts.DryRun {
-		result.Outcome = "planned"
-		result.State = &before
-		return result
-	}
-	approvedDigest := record.ApprovedPlanDigest
-	record = recordForArtifact(artifact, service.DesiredEnabled, declarationPath)
-	if len(approval) > 0 && (approved || approvedDigest == artifact.PlanDigest) {
-		record.ApprovedPlanDigest = artifact.PlanDigest
-	}
-	if err := records.Write(ctx, record); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_write_failed", err, false, "low", nil)
-	}
-	if err := adapter.Enable(ctx, artifact); err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_sync_failed", err, false, "low", nil)
-	}
-	after := service.Evaluate(ctx, adapter, record, &artifact)
-	result.State = &after
-	return result
-}
-
-func planApprovalConditions(connection core.Connection, executionPlan plan.ExecutionPlan, operation string) []core.Condition {
+func planRiskConditions(connection core.Connection, executionPlan plan.ExecutionPlan) []core.Condition {
 	var reasons []string
 	for _, endpoint := range executionPlan.Endpoints {
 		if endpoint.Direction == "publish" {
@@ -486,9 +639,9 @@ func planApprovalConditions(connection core.Connection, executionPlan plan.Execu
 	sort.Strings(reasons)
 	reasons = compactStrings(reasons)
 	return []core.Condition{{
-		Code: "approval_required", Severity: "warning", Connection: connection.Metadata.Name, Driver: connection.Spec.Driver,
+		Code: "network_exposure", Severity: "warning", Connection: connection.Metadata.Name, Driver: connection.Spec.Driver,
 		Message: "connection " + strings.Join(reasons, " and "),
-		Actions: []core.Action{{Type: "approve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "operation": operation, "riskLevel": "high"}}},
+		Actions: []core.Action{},
 	}}
 }
 
@@ -505,33 +658,53 @@ func compactStrings(values []string) []string {
 	return result
 }
 
-func recordForArtifact(artifact service.Artifact, desired, declarationPath string) service.Record {
+func recordForArtifact(artifact service.Artifact, mode, declarationPath string) service.Record {
 	return service.Record{
-		APIVersion: service.RecordVersion, Connection: artifact.Connection, Adapter: artifact.Adapter,
-		DesiredState: desired, ArtifactPath: artifact.Path, UnitName: artifact.UnitName, PlanDigest: artifact.PlanDigest,
-		DeclarationPath: declarationPath,
+		RecordRevision: service.CurrentRecordRevision, Connection: artifact.Connection, ServiceKey: artifact.Connection, Adapter: artifact.Adapter,
+		Mode: mode, ArtifactPath: artifact.Path, UnitName: artifact.UnitName,
+		LogPaths: append([]string(nil), artifact.LogPaths...), PlanDigest: artifact.PlanDigest,
+		BaselineDigest: service.ContentDigest(artifact.Content), DeclarationPath: declarationPath, Origin: "tunlite",
 	}
 }
 
-func ensureDeclarationOwner(record service.Record, exists bool, declarationPath string) error {
-	if exists && record.DeclarationPath != "" && record.DeclarationPath != declarationPath {
+func ensureDeclarationOwner(record service.Record, declarationPath string) error {
+	if record.DeclarationPath != "" && record.DeclarationPath != declarationPath {
 		return fmt.Errorf("connection name %q is already owned by declarations at %s", record.Connection, record.DeclarationPath)
 	}
 	return nil
+}
+
+func resolveActions(connection string) []core.Action {
+	return []core.Action{
+		{Type: "resolve_connection", Parameters: map[string]any{"connection": connection, "use": "tunlite"}},
+		{Type: "resolve_connection", Parameters: map[string]any{"connection": connection, "use": "system"}},
+	}
 }
 
 func artifactResult(artifact service.Artifact) *serviceArtifactResult {
 	return &serviceArtifactResult{Adapter: artifact.Adapter, UnitName: artifact.UnitName, Path: artifact.Path, PlanDigest: artifact.PlanDigest}
 }
 
-func failedServiceItem(connection, code string, err error, approval bool, risk string, actions []core.Action) serviceItemResult {
+func succeededServiceItem(connection string, state service.State) serviceItemResult {
+	return serviceItemResult{Connection: connection, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
+}
+
+func failedServiceItem(connection, code string, err error, risk string, actions []core.Action) serviceItemResult {
 	if actions == nil {
 		actions = []core.Action{}
 	}
 	return serviceItemResult{
 		Connection: connection, Outcome: "failed", Changed: false, Conditions: []core.Condition{},
-		Error: &serviceItemError{Code: code, Message: err.Error(), RiskLevel: risk, RequiresApproval: approval, Actions: actions},
+		Error: &serviceItemError{Code: code, Message: err.Error(), RiskLevel: risk, Actions: actions},
 	}
+}
+
+func failedServiceItemAfterRecovery(connection, code string, cause, recovery error) serviceItemResult {
+	if recovery == nil {
+		return failedServiceItem(connection, code, cause, "low", nil)
+	}
+	return failedServiceItem(connection, "recovery_blocked",
+		errors.Join(cause, fmt.Errorf("automatic recovery failed: %w", recovery)), "high", resolveActions(connection))
 }
 
 func renderServiceResults(streams IO, opts options, operation string, results []serviceItemResult) error {
@@ -543,9 +716,8 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 			succeeded++
 		}
 	}
-	effectiveDryRun := opts.DryRun && operation != "status"
 	outcome := "succeeded"
-	if effectiveDryRun {
+	if opts.DryRun && operation != "status" {
 		outcome = "planned"
 	}
 	if failed > 0 {
@@ -556,11 +728,29 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 		}
 	}
 	if opts.JSON {
-		if err := writeJSON(streams.Out, map[string]any{
-			"contractVersion": ContractVersion, "outcome": outcome, "operation": operation,
-			"results": results, "dryRun": effectiveDryRun,
+		if err := writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "operation": operation,
+			"results": results, "dryRun": opts.DryRun && operation != "status",
 		}); err != nil {
 			return err
+		}
+	} else if operation == "status" {
+		rows := sortedStatusRows(results)
+		detailed := false
+		for _, result := range results {
+			detailed = detailed || result.Detailed
+			if result.Error != nil {
+				fmt.Fprintf(streams.Err, "%s: failed: %s\n", result.Connection, result.Error.Message)
+			}
+		}
+		if len(rows) == 1 && detailed {
+			for _, line := range renderStatusDetail(rows[0], outputUsesColor(streams, opts)) {
+				fmt.Fprintln(streams.Out, line)
+			}
+		} else {
+			for _, line := range renderStatusTable(rows, outputUsesColor(streams, opts)) {
+				fmt.Fprintln(streams.Out, line)
+			}
 		}
 	} else {
 		for _, result := range results {
@@ -569,7 +759,9 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 				continue
 			}
 			if result.State != nil {
-				fmt.Fprintf(streams.Out, "%s\t%s\t%s\t%s\t%s\n", result.Connection, result.State.DesiredState, result.State.ProcessState, result.State.Health, result.State.SyncState)
+				fmt.Fprintf(streams.Out, "%s\t%s\t%s\t%s\t%s\t%s\n", result.Connection,
+					result.State.ServiceState, result.State.Mode, result.State.ProcessState,
+					result.State.Health, result.State.ConsistencyState)
 			} else {
 				fmt.Fprintf(streams.Out, "%s: %s\n", result.Connection, result.Outcome)
 			}
@@ -601,26 +793,83 @@ func serviceLogs(ctx context.Context, args []string, streams IO, opts options) e
 	if flags.NArg() != 0 || lines < 1 || lines > 100000 {
 		return usageError("logs requires --lines between 1 and 100000")
 	}
-	if opts.JSON && follow {
-		return usageError("--json cannot be combined with --follow")
-	}
-	adapter, _, _, document, err := serviceDependencies(opts)
+	adapter, records, config, document, err := serviceDependencies(opts)
 	if err != nil {
-		return err
+		return capabilityError(err.Error())
 	}
-	if _, connection := configstore.Find(&document, name); connection == nil {
+	_, connection := configstore.Find(&document, name)
+	if connection == nil {
 		return notFoundError(fmt.Sprintf("no such connection: %s", name))
 	}
+	record, err := loadServiceRecord(records, *connection, config.Path())
+	if err != nil {
+		return capabilityError(err.Error())
+	}
+	if opts.JSON && follow {
+		var lock sync.Mutex
+		stdout := &ndjsonLogWriter{destination: streams.Out, connection: name, stream: "stdout", lock: &lock}
+		stderr := &ndjsonLogWriter{destination: streams.Out, connection: name, stream: "stderr", lock: &lock}
+		err := adapter.Logs(ctx, record.Reference(), lines, true, service.Streams{Out: stdout, Err: stderr})
+		stdout.Flush()
+		stderr.Flush()
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
 	if !opts.JSON {
-		return adapter.Logs(ctx, name, lines, follow, service.Streams{Out: streams.Out, Err: streams.Err})
+		return adapter.Logs(ctx, record.Reference(), lines, follow, service.Streams{Out: streams.Out, Err: streams.Err})
 	}
 	var stdout, stderr bytes.Buffer
-	if err := adapter.Logs(ctx, name, lines, false, service.Streams{Out: &stdout, Err: &stderr}); err != nil {
+	if err := adapter.Logs(ctx, record.Reference(), lines, false, service.Streams{Out: &stdout, Err: &stderr}); err != nil {
 		return err
 	}
 	logs := append(splitLogLines(stdout.String()), splitLogLines(stderr.String())...)
-	return writeJSON(streams.Out, map[string]any{
-		"contractVersion": ContractVersion, "outcome": "succeeded", "connection": name, "logs": logs,
+	return writeResponse(streams.Out, map[string]any{
+		"outcome": "succeeded", "connection": name, "logs": logs,
+	})
+}
+
+type ndjsonLogWriter struct {
+	destination io.Writer
+	connection  string
+	stream      string
+	lock        *sync.Mutex
+	pending     []byte
+}
+
+func (writer *ndjsonLogWriter) Write(value []byte) (int, error) {
+	writer.lock.Lock()
+	defer writer.lock.Unlock()
+	writer.pending = append(writer.pending, value...)
+	for {
+		index := bytes.IndexByte(writer.pending, '\n')
+		if index < 0 {
+			break
+		}
+		line := strings.TrimSuffix(string(writer.pending[:index]), "\r")
+		writer.pending = writer.pending[index+1:]
+		if err := writer.emit(line); err != nil {
+			return 0, err
+		}
+	}
+	return len(value), nil
+}
+
+func (writer *ndjsonLogWriter) Flush() {
+	writer.lock.Lock()
+	defer writer.lock.Unlock()
+	if len(writer.pending) == 0 {
+		return
+	}
+	_ = writer.emit(strings.TrimSuffix(string(writer.pending), "\r"))
+	writer.pending = nil
+}
+
+func (writer *ndjsonLogWriter) emit(line string) error {
+	return writeResponse(writer.destination, map[string]any{
+		"outcome": "log", "connection": writer.connection, "stream": writer.stream,
+		"line": line, "observedAt": time.Now().UTC(),
 	})
 }
 
