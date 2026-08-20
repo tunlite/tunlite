@@ -98,9 +98,9 @@ main() {
   mkdir -p "$install_dir"
   install_temporary="${install_dir}/.tunlite-install-$$"
   install -m 0755 "${temporary}/tunlite" "$install_temporary"
+  "$install_temporary" version
   mv -f "$install_temporary" "${install_dir}/tunlite"
   install_temporary=""
-  "${install_dir}/tunlite" version
   echo "tunlite: 已安装到 ${install_dir}/tunlite"
   case ":${PATH}:" in
     *":${install_dir}:"*) ;;
