@@ -15,23 +15,13 @@
 
 命令里的 `<连接名>`、`user@example-host` 和端口都要换成真实值，不要原样执行占位符。
 
-## 一、在 Intel Mac 生成并校验候选包
+## 一、使用维护者提供的候选包
 
-在 Go V1 仓库执行：
+测试者不需要安装 Go，不需要克隆源码，也不要自己运行打包脚本。候选包由维护者使用固定
+工具链生成，并在交付前运行 `scripts/verify-release.sh` 完成 checksum、归档内容、
+Universal 2 架构和嵌入版本校验。
 
-```bash
-cd /Users/admin/jly_gh/tunlite-go-v1
-
-VERSION=v1.0.0-preview.1
-BUILD_ROOT="$(mktemp -d)"
-DIST="$BUILD_ROOT/dist"
-
-scripts/package-release.sh "$VERSION" "$DIST"
-scripts/verify-release.sh "$VERSION" "$DIST"
-ls -lh "$DIST"
-```
-
-必须看到校验成功，并得到这四个文件：
+本轮 `v1.0.0-preview.1` 候选包已经生成并校验，交付目录中只有这四个文件：
 
 ```text
 SHA256SUMS
@@ -40,8 +30,17 @@ tunlite_1.0.0-preview.1_linux_x64.tar.gz
 tunlite_1.0.0-preview.1_linux_arm64.tar.gz
 ```
 
-后续 Intel Mac 直接使用 `$DIST`。把 macOS 压缩包和 `SHA256SUMS` 一起复制到 Apple
-Silicon Mac；不要只传未校验的裸二进制。
+如果候选包就在当前 Go V1 工作树的 `dist` 目录，Intel Mac 先进入工作树并设置：
+
+```bash
+DIST="$PWD/dist"
+test -f "$DIST/tunlite_1.0.0-preview.1_macos.tar.gz"
+test -f "$DIST/SHA256SUMS"
+```
+
+如果候选包由其他方式交付，就把 `DIST` 改成收到的目录绝对路径。把 macOS 压缩包和
+`SHA256SUMS` 一起复制到 Apple Silicon Mac；不要传裸二进制，也不需要把 Linux 包复制
+到 Mac。
 
 ## 二、Intel Mac：验证 0.10.3 迁移和回滚
 
@@ -76,7 +75,7 @@ printf '旧配置：%s\n旧配置备份：%s\n旧配置 SHA-256：%s\n' \
 
 ### 2. 在独立目录运行 V1
 
-继续使用第一节产生的变量；如果换了终端，先把 `DIST` 设为真实 `dist` 绝对路径。
+使用维护者提供的候选包目录；如果换了终端，先把 `DIST` 重新设为真实 `dist` 绝对路径。
 
 ```bash
 V1_ROOT="$HOME/.tunlite-v1-preview-binary-$(date +%Y%m%d-%H%M%S)"
