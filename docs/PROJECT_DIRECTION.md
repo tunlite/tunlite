@@ -1089,10 +1089,12 @@ Envelope 和 Driver 接口不能因此绑定 SSH。未来 Driver 使用自己的
 | `disable` | `tunlite disable <name> \| --tag tag... \| --all` | 把后台长期运行变为停止：同时停止当前进程并取消以后自动启动；对临时后台运行提示使用 `stop`。保留。 |
 | `status` | `tunlite status [<name> \| --tag tag... \| --all]` | 读取声明、服务、进程、健康和一致性状态；无目标时查看全部。保留，作为脚本和 Agent 的状态入口。 |
 | `logs` | `tunlite logs <name> [--lines N] [--follow]` | 通过原生服务适配器查看一条 Connection 的历史或实时日志。保留。 |
-| `monitor` | `tunlite monitor [--tag tag...] [--interval seconds]` | 唯一交互式实时总览，可查看状态、日志并执行常用生命周期动作；多个 tag 使用 AND；不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
+| `monitor` | `tunlite monitor [--tag tag...] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局并显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；停止和重启需要 `y` 二次确认，其他键取消，启动直接执行。多个 tag 使用 AND；不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
 
 四种用户可见运行模式固定为：停止、前台运行、后台运行、后台长期运行。原生服务定义
 从 `add` 起就存在；`start` 和 `enable` 的差异只在持久意图，不在是否“注册过”。
+任何可能等待 SSH、原生服务管理器或批量状态采集的人工终端操作，都必须在进入等待前
+输出动作指示；稳定 JSON Envelope 不得混入这些人类进度文本。
 
 ### 9.3 系统服务接管与漂移
 
@@ -1265,7 +1267,9 @@ v1 不能为了保留 0.x 的每个字段，而把 daemon 换个名字重新实�
 - `status` 返回公共 OS 状态和 Driver 支持的细节，不伪造所有 Driver 都能
   证明端到端连接。
 - `monitor` 保留为唯一实时交互入口，采用前台轮询视图；不新增 `status --watch`，也
-  不能以它为理由引入后台控制进程。
+  不能以它为理由引入后台控制进程。用户触发生命周期动作后，界面立即显示
+  `starting`、`stopping` 或 `restarting` 临时状态；这些只是前台操作反馈，不写入
+  Connection 声明或 Service Record，完成后由真实观察状态替换。
 - 日志来自原生服务日志或确定性的每 Connection 日志文件，不经过 IPC Fan-out。
 - Webhook 告警暂缓，不纳入 V1 基础能力恢复范围。未来如果恢复，应采用无状态 Hook、
   插件集成或外部监控，不能要求核心常驻事件引擎；在此之前 CLI、能力契约和文档不得

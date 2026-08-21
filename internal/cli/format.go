@@ -40,6 +40,7 @@ type tableColumn struct {
 type statusRow struct {
 	connection core.Connection
 	state      service.State
+	transition string
 }
 
 func outputUsesColor(streams IO, opts options) bool {
@@ -101,6 +102,15 @@ func displayState(value service.State) stateStyle {
 	}
 }
 
+func displayStatusRow(row statusRow) stateStyle {
+	switch row.transition {
+	case "starting", "stopping", "restarting":
+		return stateStyle{glyph: "◌", color: ansiYellow, label: row.transition}
+	default:
+		return displayState(row.state)
+	}
+}
+
 func renderStatusTable(rows []statusRow, color bool) []string {
 	return renderStatusTableSelected(rows, color, -1)
 }
@@ -109,7 +119,7 @@ func renderStatusTableSelected(rows []statusRow, color bool, selected int) []str
 	columns := []tableColumn{
 		{header: "NAME", max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
 		{header: "STATE", max: 16, value: func(row statusRow) string {
-			style := displayState(row.state)
+			style := displayStatusRow(row)
 			return style.glyph + " " + style.label
 		}},
 		{header: "HOST", max: 36, value: statusHost},
@@ -139,7 +149,7 @@ func renderStatusTableSelected(rows []statusRow, color bool, selected int) []str
 		for index, column := range columns {
 			cells[index] = fitCell(column.value(row), widths[index])
 			if column.header == "STATE" {
-				cells[index] = colorize(cells[index], displayState(row.state).color, color)
+				cells[index] = colorize(cells[index], displayStatusRow(row).color, color)
 			}
 		}
 		line := strings.Join(cells, "  ")
@@ -289,7 +299,7 @@ func formatDuration(value time.Duration) string {
 }
 
 func renderStatusDetail(row statusRow, color bool) []string {
-	style := displayState(row.state)
+	style := displayStatusRow(row)
 	lines := []string{row.connection.Metadata.Name}
 	appendRow := func(label, value, shade string) {
 		lines = append(lines, fmt.Sprintf("  %-12s %s", label, colorize(value, shade, color)))
