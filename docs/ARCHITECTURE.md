@@ -710,16 +710,16 @@ V1 Preview 发布必须满足：
 
 ## 22. 当前实现与目标差距
 
-以下盘点基于 `rewrite/v1-go` 分支 2026-08-20 的工作区。公共模型和命令面已经按本文
+以下盘点基于 `rewrite/v1-go` 分支 2026-08-22 的工作区。公共模型和命令面已经按本文
 收口，剩余工作集中在内部边界、规模预算和真实平台验证。
 
 | 领域 | 当前情况 | V1 必须完成的变化 |
 | --- | --- | --- |
 | 核心分层 | Connection、Driver、Plan、Adapter 边界已存在；CLI 包仍承担业务用例编排 | 保持逻辑边界；物理提取 `internal/app` 不阻塞 Preview，在 Desktop 或第二个 Driver 前渐进完成 |
 | 依赖注入 | Adapter 已通过每次调用显式 factory 注入，不再使用包级可变全局 | 后续提取 Application 层时保持实例级 Dependencies，不退回全局替换 |
-| 无 daemon | Go 后台链路已使用逐 Connection systemd/launchd | 用真实平台测试证明 CLI 删除后仍存活 |
-| 运行语义 | 四种模式、完整转换矩阵、幂等、冲突和失败补偿测试已完成 | 继续补 systemd 真机和跨登录恢复证明 |
-| 接管/交还 | manage 会显式扫描并过滤受管项，unmanage 保留原生服务；Intel Mac 已连续证明接管与交还不改变 Provider PID | 补 systemd 真机、Apple Silicon 和两个 resolve 方向的漂移验收 |
+| 无 daemon | Go 后台链路已使用逐 Connection systemd/launchd；Intel Mac 和 Linux systemd 容器已证明移走 CLI 后不断流，Linux 容器在 CLI 缺失时重启仍恢复 | 补非容器 Linux 和 Apple Silicon 的同等验收 |
+| 运行语义 | 四种模式、完整转换矩阵、幂等、冲突和失败补偿测试已完成；Linux systemd 容器已证明跨重启恢复 | 继续补非容器 Linux 登录恢复和长期运行证明 |
+| 接管/交还 | manage 会显式扫描并过滤受管项，unmanage 保留原生服务；Intel Mac 与 Linux systemd 容器已连续证明接管与交还不改变 Provider PID | 补非容器 Linux、Apple Silicon 和以系统为准的 resolve 漂移验收 |
 | 风险提示 | 已删除 V1 approval 状态；公开监听和 Publish 返回结构化 warning | 保持风险提示测试，不引入批准持久态 |
 | 状态性能 | status/monitor 共用 5 秒整体、2 秒单项、最大并发 8 的观察器；100 Connection 自动测试已覆盖并发上限和超时降级 | 在 macOS、Linux 真机记录 100 Connection 数据，再决定是否调整内部预算 |
 | SSH options | 已使用保守允许列表拒绝执行命令、额外 Forward、配置加载和可靠性覆盖；0.x import 复用同一校验 | 用真实用户配置持续验证允许列表，新增选项必须先证明可安全序列化和回读 |
@@ -728,7 +728,7 @@ V1 Preview 发布必须满足：
 | 命令契约 | 已收敛为 26 个一级命令，Skill 接受运行时契约测试 | 持续保证帮助、Schema、文档和 capabilities 同步 |
 | 0.x 导入 | 已实现只读转换、独立路径和 stopped 导入，并固化真实 0.10.3 四 Connection export fixture | 完成真实旧 daemon 逐条切换和回退验收，继续保留旧文件不变 |
 | 配置演进 | V1 没有第二种正式配置格式，也没有运行时 migration gate | 真正设计 configVersion 2 时，按产品设计第 11.1 节实现原子备份、转换和短期排他协调 |
-| 测试现状 | 单元、黑盒、契约、竞态、真实 OpenSSH 三类转发，以及 Intel Mac launchd 生命周期、日志、崩溃恢复和接管/交还零中断已通过 | 补 systemd、Apple Silicon、漂移、跨登录、CLI 删除后存活和 0.x 逐条回退真机门禁 |
+| 测试现状 | 单元、黑盒、契约、竞态、真实 OpenSSH 三类转发、Intel Mac launchd，以及 Ubuntu 24.04 PID 1 systemd 容器的崩溃恢复、跨重启、CLI 移除/替换、漂移和接管/交还零中断已通过；真实 0.10.3 切换回退已通过 | 补非容器 Linux、Apple Silicon、真实登录会话和长期运行门禁 |
 
 已经基本符合且应保留：无中心 daemon、逐 Connection 原生服务、direct 服务不依赖
 Tunlite 二进制、通用 ExecutionPlan、内置 SSH Driver 边界、四种运行方式、五维状态、

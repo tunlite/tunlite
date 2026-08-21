@@ -143,9 +143,10 @@ TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -c
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
 scripts/test-release-e2e.sh v1.0.0-preview.1
 scripts/test-migration-e2e.sh v1.0.0-preview.1
+scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
 
-最后一条门禁只在 macOS 上运行：它重新构建并独立校验完整 Release 目录，再使用归档中的
+Release E2E 门禁只在 macOS 上运行：它重新构建并独立校验完整 Release 目录，再使用归档中的
 原生二进制驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
 background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
 执行前必须确认该标签未被占用，结束后移除 plist 和进程。
@@ -154,10 +155,18 @@ background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复�
 它启动隔离的 0.10.3 daemon 和真实隧道，确认 dry-run/import 不修改旧配置且不中断旧流量，
 然后验证 `0.10.3 disable → V1 start → V1 stop → 0.10.3 enable` 的真实流量切换与回滚。
 
+Linux Docker E2E 使用 Ubuntu 24.04、PID 1 systemd、lingering systemd user manager 和真实
+OpenSSH。它验证 `-L`、`-R`、`-D` 流量，background → persistent 不换 PID，SSH 被
+`SIGKILL` 后由 systemd 恢复，移走 CLI 后连接不断流、在 CLI 仍缺失时重启容器仍自动
+恢复，恢复或替换 CLI 不重启连接，`unmanage → manage` 不断流，以及原生 unit 漂移的
+检测、dry-run 和修复。失败时保留测试镜像用于诊断；成功后自动清理容器和镜像。
+该门禁证明 Linux 产物与 systemd Adapter 的真实集成，但不能替代至少一台非容器 Linux
+主机的登录、发行版差异和长期运行验收。
+
 发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.25 是开发和源码兼容基线。发布只使用
 CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
 
-还必须在 Linux 真机完成 systemd 用户服务的
+还必须在非容器 Linux 真机完成 systemd 用户服务的
 `add → start → stop → enable → status → restart → disable → remove`
 验收，逐个平台解压产物并确认嵌入版本正确，核对 `SHA256SUMS`。没有完成的项目必须在
 Release Notes 和支持矩阵中明确写出，不能用“预计支持”替代事实。
