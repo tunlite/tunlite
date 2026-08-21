@@ -173,7 +173,7 @@ printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
 验收结果：
 
 - Connection 创建成功。
-- 状态是 `stopped`。
+- 状态显示“已停止 / 运行位置：— / 登录自启：否”。
 - 没有 SSH 隧道进程被启动。
 - macOS/Linux 支持原生服务时，服务定义已经创建，但尚未运行。
 
@@ -215,7 +215,7 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
 "$TL" status "$TL_NAME"
 ```
 
-状态应回到 `stopped`。这一步证明 `run` 的生命周期确实属于当前终端。
+状态应回到“已停止”。这一步证明 `run` 的生命周期确实属于当前终端。
 
 ### 第四步：临时后台运行
 
@@ -228,7 +228,7 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
 
 验收结果：
 
-- 状态是 `background` 和 `running`。
+- 状态显示“正常运行 / 系统后台 / 登录自启：否”。
 - 关闭启动它的终端后，隧道仍然存在。
 - 真实 SOCKS 流量仍能通过。
 - 日志来自 launchd 或 systemd，而不是 Tunlite 自建的 daemon。
@@ -243,15 +243,15 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
 curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 ```
 
-新端口必须可用，状态仍为 `background`。修改执行计划时这一条隧道会短暂重启，但不需要
-用户执行 `sync`。然后停止：
+新端口必须可用，状态仍显示“正常运行 / 系统后台 / 登录自启：否”。修改执行计划时这一
+条隧道会短暂重启，但不需要用户执行 `sync`。然后停止：
 
 ```bash
 "$TL" stop "$TL_NAME"
 "$TL" status "$TL_NAME"
 ```
 
-状态应回到 `stopped`。
+状态应回到“已停止”。
 
 ### 第六步：长期后台和登录恢复
 
@@ -261,7 +261,7 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 ```
 
-状态必须是 `persistent` 和 `running`。
+状态必须显示“正常运行 / 系统后台 / 登录自启：是”。
 
 完整平台验收还需要退出并重新登录当前用户，或者重启测试机；重新进入终端后再次设置：
 
@@ -273,14 +273,14 @@ TL_PORT_2=18081
 curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 ```
 
-必须仍为 `persistent`，真实流量能够通过。不要在一条承担当前唯一远程登录通道的隧道上
-执行重启验收，以免把自己锁在服务器外面。
+必须仍显示“正常运行 / 系统后台 / 登录自启：是”，真实流量能够通过。不要在一条承担
+当前唯一远程登录通道的隧道上执行重启验收，以免把自己锁在服务器外面。
 
 ## 6. 接管与交还专项验收
 
 这是产品的核心能力，但普通首次试用可以在第五节通过后再做。
 
-先确认测试 Connection 仍处于 `persistent`：
+先确认测试 Connection 仍显示“正常运行 / 系统后台 / 登录自启：是”：
 
 ```bash
 "$TL" status "$TL_NAME"
@@ -376,19 +376,19 @@ systemd 真机通过。容器、WSL 或交叉编译结果不能代替这项验�
 "$TL" status "$TL_NAME"
 ```
 
-如果是 `persistent`：
+如果“登录自启”为“是”：
 
 ```bash
 "$TL" disable "$TL_NAME"
 ```
 
-如果是 `background`：
+如果“运行位置”为“系统后台”且“登录自启”为“否”：
 
 ```bash
 "$TL" stop "$TL_NAME"
 ```
 
-状态变成 `stopped` 后删除：
+状态变成“已停止”后删除：
 
 ```bash
 "$TL" remove "$TL_NAME"

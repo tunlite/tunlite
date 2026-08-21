@@ -744,11 +744,11 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 			}
 		}
 		if len(rows) == 1 && detailed {
-			for _, line := range renderStatusDetail(rows[0], outputUsesColor(streams, opts)) {
+			for _, line := range renderStatusDetail(rows[0], outputUsesColor(streams, opts), opts.Language) {
 				fmt.Fprintln(streams.Out, line)
 			}
 		} else {
-			for _, line := range renderStatusTable(rows, outputUsesColor(streams, opts)) {
+			for _, line := range renderStatusTable(rows, outputUsesColor(streams, opts), opts.Language) {
 				fmt.Fprintln(streams.Out, line)
 			}
 		}
@@ -759,9 +759,17 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 				continue
 			}
 			if result.State != nil {
-				fmt.Fprintf(streams.Out, "%s\t%s\t%s\t%s\t%s\t%s\n", result.Connection,
-					result.State.ServiceState, result.State.Mode, result.State.ProcessState,
-					result.State.Health, result.State.ConsistencyState)
+				row := statusRow{state: *result.State}
+				style := displayStatusRow(row, opts.Language)
+				if isChinese(opts.Language) {
+					fmt.Fprintf(streams.Out, "%s  %s  运行位置：%s  登录自启：%s\n",
+						result.Connection, style.glyph+" "+style.label,
+						statusRunsAs(row, opts.Language), statusOnLogin(row, opts.Language))
+				} else {
+					fmt.Fprintf(streams.Out, "%s  %s  runs as: %s  on login: %s\n",
+						result.Connection, style.glyph+" "+style.label,
+						statusRunsAs(row, opts.Language), statusOnLogin(row, opts.Language))
+				}
 			} else {
 				fmt.Fprintf(streams.Out, "%s: %s\n", result.Connection, result.Outcome)
 			}

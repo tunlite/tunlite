@@ -41,13 +41,18 @@ func fixtureStatusRow(t *testing.T) statusRow {
 }
 
 func TestStatusTableRestoresAlignedHumanOutputAndColor(t *testing.T) {
-	lines := renderStatusTable([]statusRow{fixtureStatusRow(t)}, true)
+	lines := renderStatusTable([]statusRow{fixtureStatusRow(t)}, true, languageEnglish)
 	text := strings.Join(lines, "\n")
-	if !strings.Contains(text, "NAME") || !strings.Contains(text, "STATE") || !strings.Contains(text, "HOST") || !strings.Contains(text, "ROUTE") {
+	for _, column := range []string{"NAME", "STATE", "RUNS AS", "ON LOGIN", "PID", "UP", "RESTARTS", "HOST", "ROUTE"} {
+		if !strings.Contains(text, column) {
+			t.Fatalf("missing %s column:\n%s", column, text)
+		}
+	}
+	if strings.Contains(text, "TYPE") || strings.Contains(text, "MODE") {
 		t.Fatalf("missing table columns:\n%s", text)
 	}
-	if !strings.Contains(text, "\x1b[32m● healthy") {
-		t.Fatalf("healthy state is not green:\n%q", text)
+	if !strings.Contains(text, "\x1b[32m● running") {
+		t.Fatalf("running state is not green:\n%q", text)
 	}
 	if !strings.Contains(text, "127.0.0.1:5432 → localhost:5432") || !strings.Contains(text, "42") {
 		t.Fatalf("missing route or pid:\n%s", text)
@@ -55,17 +60,57 @@ func TestStatusTableRestoresAlignedHumanOutputAndColor(t *testing.T) {
 }
 
 func TestStatusTableHasNoANSIWhenColorDisabled(t *testing.T) {
-	text := strings.Join(renderStatusTable([]statusRow{fixtureStatusRow(t)}, false), "\n")
+	text := strings.Join(renderStatusTable([]statusRow{fixtureStatusRow(t)}, false, languageEnglish), "\n")
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("plain output leaked ANSI: %q", text)
 	}
 }
 
 func TestStatusDetailIncludesConnectionAndRuntimeDimensions(t *testing.T) {
-	text := strings.Join(renderStatusDetail(fixtureStatusRow(t), false), "\n")
-	for _, expected := range []string{"db", "state", "healthy", "mode", "background", "process", "running", "listen", "target"} {
+	text := strings.Join(renderStatusDetail(fixtureStatusRow(t), false, languageEnglish), "\n")
+	for _, expected := range []string{"db", "state", "running", "runs as", "background", "on login", "listen", "target", "restarts"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("detail missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestChineseStatusUsesPlainLanguageAndKeepsOperationalColumns(t *testing.T) {
+	text := strings.Join(renderStatusTable([]statusRow{fixtureStatusRow(t)}, false, languageChinese), "\n")
+	for _, expected := range []string{"名称", "状态", "正常运行", "运行位置", "系统后台", "登录自启", "PID", "已运行", "重启次数", "SSH 目标", "转发"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("Chinese status missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "MODE") || strings.Contains(text, "TYPE") {
+		t.Fatalf("Chinese status exposed internal columns:\n%s", text)
+	}
+}
+
+func TestLanguageResolutionSupportsFlagEnvironmentAndSystemLocale(t *testing.T) {
+	t.Setenv("TUNLITE_LANG", "zh_CN.UTF-8")
+	lang, err := resolveLanguage("")
+	if err != nil || lang != languageChinese {
+		t.Fatalf("environment language=%q err=%v", lang, err)
+	}
+	lang, err = resolveLanguage("en-US")
+	if err != nil || lang != languageEnglish {
+		t.Fatalf("explicit language=%q err=%v", lang, err)
+	}
+	if _, err := resolveLanguage("fr"); err == nil {
+		t.Fatal("unsupported explicit language was accepted")
+	}
+}
+
+func TestChineseHelpExplainsLifecycleWithoutChangingCommands(t *testing.T) {
+	var out, stderr bytes.Buffer
+	code := RunContext(context.Background(), []string{"help", "--lang", "zh-CN"}, IO{Out: &out, Err: &stderr})
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("help exit=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+	}
+	for _, expected := range []string{"运行方式", "start", "系统后台", "enable", "登录自启", "disable", "关闭登录自启"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("Chinese help missing %q:\n%s", expected, out.String())
 		}
 	}
 }
@@ -93,7 +138,7 @@ func TestDoctorHumanOutputRestoresGlyphsColorsAndSummary(t *testing.T) {
 
 func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, true, []string{"work"}, time.Second, "", nil, nil, false)
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, true, []string{"work"}, time.Second, "", nil, nil, false, languageEnglish)
 	text := out.String()
 	if !strings.Contains(text, "tunlite monitor") || !strings.Contains(text, "v"+Version) || !strings.Contains(text, "filter tag=work") || !strings.Contains(text, "Esc/q quit") {
 		t.Fatalf("incomplete monitor frame: %q", text)
@@ -108,7 +153,7 @@ func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 
 func TestMonitorDetailRendersRecentLogs(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, nil, time.Second, "", nil, nil, false)
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, nil, time.Second, "", nil, nil, false, languageEnglish)
 	text := out.String()
 	if !strings.Contains(text, "recent logs · latest 20 lines") || !strings.Contains(text, "connected") || !strings.Contains(text, "stderr: warning") || !strings.Contains(text, "←/Esc back") {
 		t.Fatalf("monitor detail did not render logs: %q", text)
@@ -120,16 +165,52 @@ func TestMonitorRendersTransitionsAndDestructiveConfirmation(t *testing.T) {
 	row.transition = "stopping"
 	transition := &monitorTransition{name: "db", label: "stopping"}
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{row}, 0, false, nil, false, nil, time.Second, "", nil, transition, false)
+	renderMonitor(&out, []statusRow{row}, 0, false, nil, false, nil, time.Second, "", nil, transition, false, languageEnglish)
 	if text := out.String(); !strings.Contains(text, "◌ stopping") || !strings.Contains(text, "stopping db…") {
 		t.Fatalf("monitor did not render an in-flight stop: %q", text)
 	}
 
 	out.Reset()
-	confirmation := &monitorConfirmation{key: monitorRestart, name: "db", verb: "restart"}
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, false, nil, time.Second, "", confirmation, nil, false)
-	if text := out.String(); !strings.Contains(text, `restart "db"?`) || !strings.Contains(text, "y confirm · any other key cancels") {
+	confirmation := &monitorConfirmation{key: monitorRestart, name: "db"}
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, false, nil, time.Second, "", confirmation, nil, false, languageEnglish)
+	if text := out.String(); !strings.Contains(text, `Restart "db"?`) || !strings.Contains(text, "y confirms; any other key cancels") {
 		t.Fatalf("monitor did not render restart confirmation: %q", text)
+	}
+}
+
+func TestMonitorPersistentStopAndRestartExplainTheirDifferentEffects(t *testing.T) {
+	persistentStop := monitorConfirmationText(monitorConfirmation{key: monitorStop, name: "db", persistent: true}, languageChinese)
+	if !strings.Contains(persistentStop, "关闭登录自启") || !strings.Contains(persistentStop, "重新登录后不会自动恢复") {
+		t.Fatalf("persistent stop warning is incomplete: %q", persistentStop)
+	}
+	restart := monitorConfirmationText(monitorConfirmation{key: monitorRestart, name: "db"}, languageChinese)
+	if !strings.Contains(restart, "连接会短暂中断") || !strings.Contains(restart, "登录自启设置不变") {
+		t.Fatalf("restart warning is incomplete: %q", restart)
+	}
+}
+
+func TestNarrowMonitorKeepsPIDUptimeAndRestartCount(t *testing.T) {
+	text := strings.Join(renderMonitorTable([]statusRow{fixtureStatusRow(t)}, 0, 0, 1, 60, false, languageEnglish), "\n")
+	for _, expected := range []string{"NAME", "STATE", "PID", "UP", "RESTARTS"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("narrow monitor dropped %s:\n%s", expected, text)
+		}
+	}
+	for _, hidden := range []string{"HOST", "ROUTE", "RUNS AS", "ON LOGIN"} {
+		if strings.Contains(text, hidden) {
+			t.Fatalf("narrow monitor kept lower-priority %s:\n%s", hidden, text)
+		}
+	}
+}
+
+func TestLanguageNeverChangesJSONContract(t *testing.T) {
+	var out, stderr bytes.Buffer
+	code := RunContext(context.Background(), []string{"version", "--json", "--lang", "zh-CN"}, IO{Out: &out, Err: &stderr})
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("version exit=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+	}
+	if !strings.Contains(out.String(), `"outcome":"succeeded"`) || !strings.Contains(out.String(), `"protocolVersion":1`) {
+		t.Fatalf("localized JSON contract changed: %s", out.String())
 	}
 }
 
@@ -199,20 +280,20 @@ func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
 
 	offset := len(output.String())
 	_, _ = writer.Write([]byte("r"))
-	waitForMonitorOutput(t, output, offset, `restart "db"?`)
+	waitForMonitorOutput(t, output, offset, `Restart "db"?`)
 	if len(adapter.restartCalls) != 0 {
 		t.Fatalf("restart ran before confirmation: %v", adapter.restartCalls)
 	}
 	offset = len(output.String())
 	_, _ = writer.Write([]byte("n"))
-	waitForMonitorOutput(t, output, offset, "restart cancelled")
+	waitForMonitorOutput(t, output, offset, "operation cancelled")
 	if len(adapter.restartCalls) != 0 {
 		t.Fatalf("cancelled restart ran: %v", adapter.restartCalls)
 	}
 
 	offset = len(output.String())
 	_, _ = writer.Write([]byte("r"))
-	waitForMonitorOutput(t, output, offset, `restart "db"?`)
+	waitForMonitorOutput(t, output, offset, `Restart "db"?`)
 	offset = len(output.String())
 	_, _ = writer.Write([]byte("y"))
 	waitForMonitorOutput(t, output, offset, "restarted db")
@@ -222,7 +303,7 @@ func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
 
 	offset = len(output.String())
 	_, _ = writer.Write([]byte("x"))
-	waitForMonitorOutput(t, output, offset, `stop "db"?`)
+	waitForMonitorOutput(t, output, offset, `Stop "db"?`)
 	if len(adapter.stopCalls) != 0 {
 		t.Fatalf("stop ran before confirmation: %v", adapter.stopCalls)
 	}

@@ -211,18 +211,45 @@ func help(args []string, streams IO, opts options) error {
 	if opts.JSON {
 		return capabilities(nil, streams, opts)
 	}
+	if isChinese(opts.Language) {
+		fmt.Fprintln(streams.Out, "Tunlite — 面向开发者和 AI Agent 的 SSH 连接工具")
+		fmt.Fprintln(streams.Out)
+		fmt.Fprintln(streams.Out, "用法：tunlite <命令> [选项]")
+		fmt.Fprintln(streams.Out)
+		fmt.Fprintln(streams.Out, "连接管理：add, list, set, rename, remove")
+		fmt.Fprintln(streams.Out, "运行检查：run, check, doctor, monitor")
+		fmt.Fprintln(streams.Out, "后台服务：start, stop, enable, disable, restart, status, logs")
+		fmt.Fprintln(streams.Out, "服务接管：manage, unmanage, resolve")
+		fmt.Fprintln(streams.Out, "声明文件：import, export, validate")
+		fmt.Fprintln(streams.Out, "机器接口：schema, capabilities, version")
+		fmt.Fprintln(streams.Out, "\n运行方式：")
+		fmt.Fprintln(streams.Out, "  run      在当前终端运行，退出终端即停止")
+		fmt.Fprintln(streams.Out, "  start    在系统后台运行，但下次登录不自动启动")
+		fmt.Fprintln(streams.Out, "  stop     停止临时后台连接，不修改登录自启设置")
+		fmt.Fprintln(streams.Out, "  enable   在系统后台运行，并开启登录自启")
+		fmt.Fprintln(streams.Out, "  disable  停止连接，并关闭登录自启")
+		fmt.Fprintln(streams.Out, "  restart  重启连接，不修改登录自启设置")
+		fmt.Fprintln(streams.Out, "\n语言：--lang en|zh-CN；也可设置 TUNLITE_LANG，默认跟随系统语言。")
+		return nil
+	}
 	fmt.Fprintln(streams.Out, "Tunlite — SSH connections for developers and AI agents")
-	fmt.Fprintln(streams.Out, "")
+	fmt.Fprintln(streams.Out)
 	fmt.Fprintln(streams.Out, "usage: tunlite <command> [options]")
-	fmt.Fprintln(streams.Out, "")
+	fmt.Fprintln(streams.Out)
 	fmt.Fprintln(streams.Out, "connections: add, list, set, rename, remove")
 	fmt.Fprintln(streams.Out, "foreground:  run, check, doctor, monitor")
 	fmt.Fprintln(streams.Out, "services:    start, stop, enable, disable, restart, status, logs")
 	fmt.Fprintln(streams.Out, "ownership:   manage, unmanage, resolve")
 	fmt.Fprintln(streams.Out, "declarations: import, export, validate")
 	fmt.Fprintln(streams.Out, "machine contract: schema, capabilities, version")
-	fmt.Fprintln(streams.Out, "")
-	fmt.Fprintln(streams.Out, "each background connection is owned directly by the native service manager; no daemon is used")
+	fmt.Fprintln(streams.Out, "\nruntime model:")
+	fmt.Fprintln(streams.Out, "  run      current terminal; stops when the terminal exits")
+	fmt.Fprintln(streams.Out, "  start    system background; does not start on the next login")
+	fmt.Fprintln(streams.Out, "  stop     stops a temporary background connection")
+	fmt.Fprintln(streams.Out, "  enable   system background and starts on future logins")
+	fmt.Fprintln(streams.Out, "  disable  stops the connection and turns off on-login")
+	fmt.Fprintln(streams.Out, "  restart  restarts without changing on-login")
+	fmt.Fprintln(streams.Out, "\nlanguage: --lang en|zh-CN, or TUNLITE_LANG; defaults to the system locale")
 	return nil
 }
 
@@ -237,7 +264,11 @@ func commandHelp(command string, streams IO, opts options) error {
 	if opts.JSON {
 		return writeResponse(streams.Out, map[string]any{"outcome": "succeeded", "command": command, "usage": commandUsage(command)})
 	}
-	fmt.Fprintln(streams.Out, commandUsage(command))
+	usage := commandUsage(command)
+	if isChinese(opts.Language) {
+		usage = "用法：" + strings.TrimPrefix(usage, "usage: ")
+	}
+	fmt.Fprintln(streams.Out, usage)
 	return nil
 }
 

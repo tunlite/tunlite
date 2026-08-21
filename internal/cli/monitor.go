@@ -38,9 +38,9 @@ const (
 const monitorEscapeDelay = 35 * time.Millisecond
 
 type monitorConfirmation struct {
-	key  monitorKey
-	name string
-	verb string
+	key        monitorKey
+	name       string
+	persistent bool
 }
 
 type monitorTransition struct {
@@ -118,7 +118,7 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 				}
 			}
 		}
-		renderMonitor(streams.Out, visible, selected, detail, logs, color, tags, interval, flash, confirmation, transition, loading)
+		renderMonitor(streams.Out, visible, selected, detail, logs, color, tags, interval, flash, confirmation, transition, loading, opts.Language)
 	}
 	refresh := func() error {
 		fresh, refreshErr := collectMonitorRows(monitorCtx, tags, opts)
@@ -194,7 +194,7 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 				if key == monitorConfirm {
 					beginMutation(pending.key)
 				} else {
-					flash = pending.verb + " cancelled"
+					flash = localized(opts.Language, "operation cancelled", "操作已取消")
 					render(false)
 					flash = ""
 				}
@@ -240,8 +240,10 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 					if planErr != nil {
 						flash = planErr.Error()
 					} else {
-						verb := map[monitorKey]string{monitorStop: "stop", monitorRestart: "restart"}[key]
-						confirmation = &monitorConfirmation{key: key, name: rows[selected].connection.Metadata.Name, verb: verb}
+						confirmation = &monitorConfirmation{
+							key: key, name: rows[selected].connection.Metadata.Name,
+							persistent: key == monitorStop && rows[selected].state.Mode == service.ModePersistent,
+						}
 					}
 				}
 			}
@@ -434,17 +436,18 @@ func renderMonitor(
 	confirmation *monitorConfirmation,
 	transition *monitorTransition,
 	loading bool,
+	lang language,
 ) {
 	width, height := monitorDimensions(out)
 	if selected < 0 || selected >= len(rows) {
 		selected = 0
 	}
-	view := "connections"
+	view := localized(lang, "connections", "连接")
 	if detail && len(rows) > 0 {
-		view = rows[selected].connection.Metadata.Name + " · detail"
+		view = rows[selected].connection.Metadata.Name + " · " + localized(lang, "detail", "详情")
 	}
 	left := fmt.Sprintf("tunlite monitor  v%s  ·  %s", Version, view)
-	right := fmt.Sprintf("%s  refresh %s", time.Now().Format("15:04:05"), interval)
+	right := fmt.Sprintf("%s  %s %s", time.Now().Format("15:04:05"), localized(lang, "refresh", "刷新"), interval)
 	title := monitorTitle(left, right, width)
 	lines := []string{colorize(title, ansiReverse, color)}
 	separator := strings.Repeat("─", width)
@@ -452,31 +455,35 @@ func renderMonitor(
 	if detail && len(rows) > 0 {
 		lines = append(lines, separator)
 		bodyCapacity := maxInt(1, height-4)
-		body := renderMonitorDetail(rows[selected], logs, bodyCapacity, width)
+		body := renderMonitorDetail(rows[selected], logs, bodyCapacity, width, lang)
 		lines = append(lines, body...)
 		for len(lines) < height-2 {
 			lines = append(lines, strings.Repeat(" ", width))
 		}
 	} else {
 		running, changing, problem, stopped := monitorCounts(rows)
-		summary := fmt.Sprintf("connections %d total   ● %d running   ◌ %d changing   ✕ %d problem   ○ %d stopped",
+		summary := fmt.Sprintf(localized(lang,
+			"connections %d total   ● %d running   ◌ %d changing   ✕ %d problem   ○ %d stopped",
+			"连接 %d 个   ● %d 运行   ◌ %d 变更中   ✕ %d 异常   ○ %d 停止"),
 			len(rows), running, changing, problem, stopped)
 		if width < 80 {
-			summary = fmt.Sprintf("all %d   ● run %d   ◌ change %d   ✕ bad %d   ○ stop %d",
+			summary = fmt.Sprintf(localized(lang,
+				"all %d   ● run %d   ◌ change %d   ✕ bad %d   ○ stop %d",
+				"共 %d  ● 运行 %d  ◌ 变更 %d  ✕ 异常 %d  ○ 停止 %d"),
 				len(rows), running, changing, problem, stopped)
 		}
 		if len(tags) > 0 {
-			summary += "   filter tag=" + strings.Join(tags, ",")
+			summary += "   " + localized(lang, "filter tag=", "筛选 标签=") + strings.Join(tags, ",")
 		}
 		lines = append(lines, fitCell(summary, width), separator)
 		bodyCapacity := maxInt(1, height-5)
 		if loading {
-			lines = append(lines, fitCell("  Loading connection status…", width))
+			lines = append(lines, fitCell(localized(lang, "  Loading connection status…", "  正在读取连接状态…"), width))
 		} else if len(rows) == 0 {
-			lines = append(lines, fitCell("  No matching connections.", width))
+			lines = append(lines, fitCell(localized(lang, "  No matching connections.", "  没有符合条件的连接。"), width))
 		} else {
 			start, end := monitorViewport(len(rows), selected, maxInt(0, bodyCapacity-1))
-			lines = append(lines, renderMonitorTable(rows, selected, start, end, width, color)...)
+			lines = append(lines, renderMonitorTable(rows, selected, start, end, width, color, lang)...)
 		}
 		for len(lines) < height-2 {
 			lines = append(lines, strings.Repeat(" ", width))
@@ -484,18 +491,24 @@ func renderMonitor(
 	}
 
 	lines = append(lines, separator)
-	footer := " ↑/↓ select   Enter/→ details   s start   x stop   r restart   Esc/q quit"
+	footer := localized(lang,
+		" ↑/↓ select   Enter/→ details   s start   x stop   r restart   Esc/q quit",
+		" ↑/↓ 选择   Enter/→ 详情   s 启动   x 停止   r 重启   Esc/q 退出")
 	if detail {
-		footer = " ←/Esc back   s start   x stop   r restart   q quit"
+		footer = localized(lang,
+			" ←/Esc back   s start   x stop   r restart   q quit",
+			" ←/Esc 返回   s 启动   x 停止   r 重启   q 退出")
 	} else if width < 80 {
-		footer = " ↑/↓ select  → detail  s start  x stop  r restart  Esc quit"
+		footer = localized(lang,
+			" ↑/↓ select  → detail  s start  x stop  r restart  Esc quit",
+			" ↑/↓ 选择  → 详情  s 启动  x 停止  r 重启  Esc 退出")
 	}
 	shade := ""
 	if confirmation != nil {
-		footer = fmt.Sprintf(" %s %q?  y confirm · any other key cancels", confirmation.verb, confirmation.name)
+		footer = monitorConfirmationText(*confirmation, lang)
 		shade = ansiYellow
 	} else if transition != nil {
-		footer = fmt.Sprintf(" %s %s…", transition.label, transition.name)
+		footer = fmt.Sprintf(" %s %s…", localizedTransition(transition.label, lang), transition.name)
 		shade = ansiYellow
 	} else if flash != "" {
 		footer = " " + flash
@@ -531,13 +544,12 @@ func monitorTitle(left, right string, width int) string {
 
 func monitorCounts(rows []statusRow) (running, changing, problem, stopped int) {
 	for _, row := range rows {
-		style := displayStatusRow(row)
-		switch style.label {
-		case "starting", "stopping", "restarting":
+		switch {
+		case row.transition != "" || row.state.ProcessState == service.ProcessStarting:
 			changing++
-		case "blocked", "drifted", "missing", "failed", "unhealthy":
+		case row.state.ConsistencyState != service.ConsistencyConsistent || row.state.ProcessState == service.ProcessFailed || row.state.Health == service.HealthUnhealthy:
 			problem++
-		case "healthy", "running", "foreground":
+		case row.state.ProcessState == service.ProcessRunning || row.state.Mode == service.ModeForeground:
 			running++
 		default:
 			stopped++
@@ -560,26 +572,29 @@ func monitorViewport(count, selected, capacity int) (int, int) {
 	return start, start + capacity
 }
 
-func renderMonitorTable(rows []statusRow, selected, start, end, width int, color bool) []string {
+func renderMonitorTable(rows []statusRow, selected, start, end, width int, color bool, lang language) []string {
 	columns := []tableColumn{
-		{header: "NAME", max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
-		{header: "STATE", max: 12, value: func(row statusRow) string {
-			style := displayStatusRow(row)
+		{header: localized(lang, "NAME", "名称"), max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
+		{header: localized(lang, "STATE", "状态"), max: 16, value: func(row statusRow) string {
+			style := displayStatusRow(row, lang)
 			return style.glyph + " " + style.label
 		}},
-		{header: "HOST", max: 28, value: statusHost},
-		{header: "TYPE", max: 8, value: statusTypes},
-		{header: "ROUTE", max: 38, value: statusRoutes},
-		{header: "MODE", max: 10, value: func(row statusRow) string { return row.state.Mode }},
+		{header: localized(lang, "RUNS AS", "运行位置"), max: 12, value: func(row statusRow) string { return statusRunsAs(row, lang) }},
+		{header: localized(lang, "ON LOGIN", "登录自启"), max: 10, value: func(row statusRow) string { return statusOnLogin(row, lang) }},
 		{header: "PID", max: 7, value: statusPID},
-		{header: "UP", max: 8, value: statusUptime},
-		{header: "RESTARTS", max: 8, value: statusRestarts},
+		{header: localized(lang, "UP", "已运行"), max: 8, value: statusUptime},
+		{header: localized(lang, "RESTARTS", "重启次数"), max: 8, value: statusRestarts},
+		{header: localized(lang, "HOST", "SSH 目标"), max: 28, value: statusHost},
+		{header: localized(lang, "ROUTE", "转发"), max: 38, value: statusRoutes},
+	}
+	if width < 120 {
+		columns = columns[:len(columns)-1]
 	}
 	if width < 100 {
-		columns = []tableColumn{columns[0], columns[1], columns[2], columns[5], columns[6], columns[7]}
+		columns = columns[:len(columns)-1]
 	}
-	if width < 72 {
-		columns = []tableColumn{columns[0], columns[1], columns[3], columns[4]}
+	if width < 82 {
+		columns = []tableColumn{columns[0], columns[1], columns[4], columns[5], columns[6]}
 	}
 	widths := make([]int, len(columns))
 	for index, column := range columns {
@@ -597,12 +612,11 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 	available := width - 2 - (len(columns) - 1)
 	for tableWidth(widths) > available {
 		changed := false
-		for _, header := range []string{"ROUTE", "HOST", "NAME", "STATE", "MODE", "TYPE", "UP", "RESTARTS", "PID"} {
-			for index, column := range columns {
-				if column.header == header && widths[index] > visibleWidth(column.header) {
-					widths[index]--
+		for _, columnIndex := range []int{len(columns) - 1, len(columns) - 2, 0, 1, 2, 3, 5, 6, 4} {
+			if columnIndex >= 0 && columnIndex < len(columns) {
+				if widths[columnIndex] > visibleWidth(columns[columnIndex].header) {
+					widths[columnIndex]--
 					changed = true
-					break
 				}
 			}
 			if tableWidth(widths) <= available {
@@ -623,8 +637,8 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 		cells := make([]string, len(columns))
 		for index, column := range columns {
 			cells[index] = fitCell(column.value(row), widths[index])
-			if column.header == "STATE" && rowIndex != selected {
-				cells[index] = colorize(cells[index], displayStatusRow(row).color, color)
+			if index == 1 && rowIndex != selected {
+				cells[index] = colorize(cells[index], displayStatusRow(row, lang).color, color)
 			}
 		}
 		marker := "  "
@@ -655,8 +669,8 @@ func maxInt(left, right int) int {
 	return right
 }
 
-func renderMonitorDetail(row statusRow, logs []string, capacity, width int) []string {
-	info := renderStatusDetail(row, false)
+func renderMonitorDetail(row statusRow, logs []string, capacity, width int, lang language) []string {
+	info := renderStatusDetail(row, false, lang)
 	lines := make([]string, 0, capacity)
 	for _, line := range info {
 		if len(lines) >= capacity {
@@ -665,7 +679,7 @@ func renderMonitorDetail(row statusRow, logs []string, capacity, width int) []st
 		lines = append(lines, fitCell(line, width))
 	}
 	if len(lines) < capacity {
-		label := " recent logs · latest 20 lines "
+		label := localized(lang, " recent logs · latest 20 lines ", " 最近日志 · 最新 20 行 ")
 		left := maxInt(0, (width-visibleWidth(label))/2)
 		divider := strings.Repeat("─", left) + label
 		divider += strings.Repeat("─", maxInt(0, width-visibleWidth(divider)))
@@ -676,7 +690,7 @@ func renderMonitorDetail(row statusRow, logs []string, capacity, width int) []st
 		return lines
 	}
 	if len(logs) == 0 {
-		lines = append(lines, fitCell("  No logs yet.", width))
+		lines = append(lines, fitCell(localized(lang, "  No logs yet.", "  暂无日志。"), width))
 		return lines
 	}
 	start := maxInt(0, len(logs)-remaining)
@@ -722,6 +736,40 @@ func executeMonitorMutation(ctx context.Context, command string, row statusRow, 
 		}
 		return message
 	}
-	past := map[string]string{"start": "started", "stop": "stopped", "disable": "stopped", "restart": "restarted"}
+	past := map[string]string{
+		"start":   localized(opts.Language, "started", "已启动"),
+		"stop":    localized(opts.Language, "stopped", "已停止"),
+		"disable": localized(opts.Language, "stopped and disabled on login", "已停止并关闭登录自启"),
+		"restart": localized(opts.Language, "restarted", "已重启"),
+	}
 	return past[command] + " " + row.connection.Metadata.Name
+}
+
+func localizedTransition(value string, lang language) string {
+	switch value {
+	case "starting":
+		return localized(lang, "starting", "正在启动")
+	case "stopping":
+		return localized(lang, "stopping", "正在停止")
+	case "restarting":
+		return localized(lang, "restarting", "正在重启")
+	default:
+		return value
+	}
+}
+
+func monitorConfirmationText(confirmation monitorConfirmation, lang language) string {
+	if confirmation.key == monitorRestart {
+		return fmt.Sprintf(localized(lang,
+			" Restart %q? Connection will briefly drop; on-login stays unchanged. y confirms; any other key cancels",
+			" 重启“%s”？连接会短暂中断，登录自启设置不变。按 y 确认，其他任意键取消"), confirmation.name)
+	}
+	if confirmation.persistent {
+		return fmt.Sprintf(localized(lang,
+			" Stop %q and turn off on-login? It will not return after login. y confirms; any other key cancels",
+			" 停止“%s”并关闭登录自启？重新登录后不会自动恢复。按 y 确认，其他任意键取消"), confirmation.name)
+	}
+	return fmt.Sprintf(localized(lang,
+		" Stop %q? y confirms; any other key cancels",
+		" 停止“%s”？按 y 确认，其他任意键取消"), confirmation.name)
 }

@@ -42,6 +42,7 @@ type options struct {
 	JSON           bool
 	NonInteractive bool
 	DryRun         bool
+	Language       language
 	serviceAdapter func() (service.Adapter, error)
 }
 
@@ -339,7 +340,8 @@ func renderPlan(streams IO, opts options, connection core.Connection, executionP
 
 func extractGlobalOptions(args []string) ([]string, options, error) {
 	cleaned := make([]string, 0, len(args))
-	var opts options
+	opts := options{Language: languageEnglish}
+	explicitLanguage := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
@@ -350,9 +352,25 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 		case "--dry-run":
 			opts.DryRun = true
 		default:
-			cleaned = append(cleaned, arg)
+			switch {
+			case arg == "--lang":
+				if i+1 >= len(args) {
+					return cleaned, opts, errors.New("--lang requires en or zh-CN")
+				}
+				i++
+				explicitLanguage = args[i]
+			case strings.HasPrefix(arg, "--lang="):
+				explicitLanguage = strings.TrimPrefix(arg, "--lang=")
+			default:
+				cleaned = append(cleaned, arg)
+			}
 		}
 	}
+	lang, err := resolveLanguage(explicitLanguage)
+	if err != nil {
+		return cleaned, opts, err
+	}
+	opts.Language = lang
 	return cleaned, opts, nil
 }
 
@@ -390,7 +408,7 @@ func renderError(streams IO, opts options, err error) int {
 			},
 		})
 	} else {
-		fmt.Fprintln(streams.Err, message)
+		fmt.Fprintln(streams.Err, localizeHumanError(kind, message, opts.Language))
 	}
 	return code
 }
