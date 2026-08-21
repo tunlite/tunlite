@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,10 +93,13 @@ func TestDoctorHumanOutputRestoresGlyphsColorsAndSummary(t *testing.T) {
 
 func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, true, []string{"work"}, time.Second, "")
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, true, []string{"work"}, time.Second, "", nil, nil, false)
 	text := out.String()
-	if !strings.Contains(text, "tunlite monitor") || !strings.Contains(text, "tag work") || !strings.Contains(text, "q quit") {
+	if !strings.Contains(text, "tunlite monitor") || !strings.Contains(text, "v"+Version) || !strings.Contains(text, "filter tag=work") || !strings.Contains(text, "Esc/q quit") {
 		t.Fatalf("incomplete monitor frame: %q", text)
+	}
+	if !strings.Contains(text, "connections 1 total") || !strings.Contains(text, "NAME") || !strings.Contains(text, "STATE") {
+		t.Fatalf("monitor frame is missing top-style summary or table: %q", text)
 	}
 	if !strings.Contains(text, ansiReverse) {
 		t.Fatalf("selected monitor row is not highlighted: %q", text)
@@ -104,10 +108,179 @@ func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 
 func TestMonitorDetailRendersRecentLogs(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, nil, time.Second, "")
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, nil, time.Second, "", nil, nil, false)
 	text := out.String()
-	if !strings.Contains(text, "LOGS · latest 20 lines") || !strings.Contains(text, "connected") || !strings.Contains(text, "stderr: warning") {
+	if !strings.Contains(text, "recent logs · latest 20 lines") || !strings.Contains(text, "connected") || !strings.Contains(text, "stderr: warning") || !strings.Contains(text, "←/Esc back") {
 		t.Fatalf("monitor detail did not render logs: %q", text)
+	}
+}
+
+func TestMonitorRendersTransitionsAndDestructiveConfirmation(t *testing.T) {
+	row := fixtureStatusRow(t)
+	row.transition = "stopping"
+	transition := &monitorTransition{name: "db", label: "stopping"}
+	var out bytes.Buffer
+	renderMonitor(&out, []statusRow{row}, 0, false, nil, false, nil, time.Second, "", nil, transition, false)
+	if text := out.String(); !strings.Contains(text, "◌ stopping") || !strings.Contains(text, "stopping db…") {
+		t.Fatalf("monitor did not render an in-flight stop: %q", text)
+	}
+
+	out.Reset()
+	confirmation := &monitorConfirmation{key: monitorRestart, name: "db", verb: "restart"}
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, false, nil, time.Second, "", confirmation, nil, false)
+	if text := out.String(); !strings.Contains(text, `restart "db"?`) || !strings.Contains(text, "y confirm · any other key cancels") {
+		t.Fatalf("monitor did not render restart confirmation: %q", text)
+	}
+}
+
+func TestMonitorKeysSupportDetailsBackAndStandaloneEscape(t *testing.T) {
+	keys := make(chan monitorKey, 16)
+	readMonitorKeys(bytes.NewBufferString("\x1b[A\x1b[B\x1b[C\x1b[D\r\x1b"), keys)
+	got := make([]monitorKey, 0, len(keys))
+	for len(keys) > 0 {
+		got = append(got, <-keys)
+	}
+	want := []monitorKey{monitorUp, monitorDown, monitorEnterDetail, monitorBack, monitorEnterDetail, monitorEscape}
+	if len(got) != len(want) {
+		t.Fatalf("keys=%v want=%v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("keys=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestMonitorStopAndRestartPlansRequireConfirmationBeforeExecution(t *testing.T) {
+	row := fixtureStatusRow(t)
+	command, transition, err := monitorMutationPlan(monitorStop, row)
+	if err != nil || command != "stop" || transition != "stopping" {
+		t.Fatalf("background stop plan command=%q transition=%q err=%v", command, transition, err)
+	}
+	row.state.Mode = service.ModePersistent
+	command, transition, err = monitorMutationPlan(monitorStop, row)
+	if err != nil || command != "disable" || transition != "stopping" {
+		t.Fatalf("persistent stop plan command=%q transition=%q err=%v", command, transition, err)
+	}
+	command, transition, err = monitorMutationPlan(monitorRestart, row)
+	if err != nil || command != "restart" || transition != "restarting" {
+		t.Fatalf("restart plan command=%q transition=%q err=%v", command, transition, err)
+	}
+}
+
+func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com", "-D", "1080"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	if code, out, stderr := invoke(t, "start", "db"); code != 0 {
+		t.Fatalf("start exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	adapter.stopCalls = nil
+	adapter.restartCalls = nil
+
+	input, writer := io.Pipe()
+	defer writer.Close()
+	output := &lockedBuffer{}
+	terminal := true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- monitor(ctx, []string{"--interval", "60"}, IO{In: input, Out: output, Err: output, Terminal: &terminal}, options{
+			serviceAdapter: func() (service.Adapter, error) { return adapter, nil },
+		})
+	}()
+	waitForMonitorOutput(t, output, 0, "tunlite monitor")
+
+	offset := len(output.String())
+	_, _ = writer.Write([]byte("r"))
+	waitForMonitorOutput(t, output, offset, `restart "db"?`)
+	if len(adapter.restartCalls) != 0 {
+		t.Fatalf("restart ran before confirmation: %v", adapter.restartCalls)
+	}
+	offset = len(output.String())
+	_, _ = writer.Write([]byte("n"))
+	waitForMonitorOutput(t, output, offset, "restart cancelled")
+	if len(adapter.restartCalls) != 0 {
+		t.Fatalf("cancelled restart ran: %v", adapter.restartCalls)
+	}
+
+	offset = len(output.String())
+	_, _ = writer.Write([]byte("r"))
+	waitForMonitorOutput(t, output, offset, `restart "db"?`)
+	offset = len(output.String())
+	_, _ = writer.Write([]byte("y"))
+	waitForMonitorOutput(t, output, offset, "restarted db")
+	if len(adapter.restartCalls) != 1 || adapter.restartCalls[0] != "db" {
+		t.Fatalf("confirmed restart calls=%v", adapter.restartCalls)
+	}
+
+	offset = len(output.String())
+	_, _ = writer.Write([]byte("x"))
+	waitForMonitorOutput(t, output, offset, `stop "db"?`)
+	if len(adapter.stopCalls) != 0 {
+		t.Fatalf("stop ran before confirmation: %v", adapter.stopCalls)
+	}
+	offset = len(output.String())
+	_, _ = writer.Write([]byte("y"))
+	waitForMonitorOutput(t, output, offset, "stopped db")
+	if len(adapter.stopCalls) != 1 || adapter.stopCalls[0] != "db" {
+		t.Fatalf("confirmed stop calls=%v", adapter.stopCalls)
+	}
+
+	_, _ = writer.Write([]byte("q"))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("monitor did not exit after q")
+	}
+	if text := output.String(); !strings.Contains(text, "\x1b[?1049h") || !strings.Contains(text, "\x1b[?1049l") {
+		t.Fatalf("monitor did not enter and restore the alternate screen: %q", text)
+	}
+}
+
+func waitForMonitorOutput(t *testing.T, output *lockedBuffer, offset int, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		text := output.String()
+		if offset <= len(text) && strings.Contains(text[offset:], want) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("monitor output after byte %d never contained %q: %q", offset, want, output.String())
+}
+
+func TestInteractiveLongOperationsAnnounceProgressWithoutPollutingJSON(t *testing.T) {
+	terminal := true
+	var stderr bytes.Buffer
+	renderCommandProgress(IO{Err: &stderr, Terminal: &terminal}, options{}, []string{"start", "db"})
+	if stderr.String() != "Starting db…\n" {
+		t.Fatalf("progress=%q", stderr.String())
+	}
+	stderr.Reset()
+	renderCommandProgress(IO{Err: &stderr, Terminal: &terminal}, options{}, []string{"status"})
+	if stderr.String() != "Checking status…\n" {
+		t.Fatalf("status progress=%q", stderr.String())
+	}
+	stderr.Reset()
+	renderCommandProgress(IO{Err: &stderr, Terminal: &terminal}, options{}, []string{"start"})
+	if stderr.Len() != 0 {
+		t.Fatalf("invalid command showed progress before usage validation: %q", stderr.String())
+	}
+	stderr.Reset()
+	renderCommandProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, []string{"start", "db"})
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON progress leaked to stderr: %q", stderr.String())
 	}
 }
 

@@ -50,6 +50,13 @@ as the product's focused entry point.
 
 - Persistent Connections are owned directly by the operating system and execute the
   Provider command without a central Tunlite controller or IPC socket.
+- `tunlite monitor` now uses a full-screen, `top`-style dashboard with the running
+  version, state totals, terminal-width-aware columns, detail navigation through
+  Enter/right and Esc/left, visible `starting`/`stopping`/`restarting` transitions,
+  and `y` confirmation before stop or restart. Esc exits from the outer view.
+- Interactive commands that may wait for SSH, native service managers, or batch
+  observation now print the operation before waiting; JSON output remains free of
+  human progress text, and `version --json` retains its protocol version field.
 - The installer downloads and verifies a platform Go binary; Node.js and npm are no
   longer v1 runtime prerequisites.
 - The Agent Skill now follows the runtime capability and schema contract and is tested

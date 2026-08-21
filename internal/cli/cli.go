@@ -87,6 +87,7 @@ func runContext(ctx context.Context, args []string, streams IO, serviceAdapter f
 		}
 		return 0
 	}
+	renderCommandProgress(streams, opts, cleaned)
 	switch cleaned[0] {
 	case "help", "--help", "-h":
 		err = help(cleaned[1:], streams, opts)
@@ -97,8 +98,9 @@ func runContext(ctx context.Context, args []string, streams IO, serviceAdapter f
 		}
 		if opts.JSON {
 			if err := writeResponse(streams.Out, map[string]any{
-				"outcome": "succeeded",
-				"version": Version,
+				"outcome":         "succeeded",
+				"protocolVersion": ProtocolVersion,
+				"version":         Version,
 			}); err != nil {
 				return renderError(streams, opts, err)
 			}
