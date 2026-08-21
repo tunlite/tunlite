@@ -13,7 +13,8 @@
 2. 同一条 Connection 不能同时运行在 `0.10.3` 和 V1，两边会争抢端口或重复建立远端转发。
 3. Intel Mac 上不要覆盖旧命令、不要删除旧配置；先旁路验证，失败就切回 `0.10.3`。
 
-命令里的 `<连接名>`、`user@example-host` 和端口都要换成真实值，不要原样执行占位符。
+Intel 迁移命令里的 `<连接名>`，以及两台机器命令里的 `user@example-host`，都要替换成
+真实值。Apple Silicon 测试默认直接使用文中的固定端口，只有端口被占用时才修改数字。
 
 ## 一、使用维护者提供的候选包
 
@@ -21,7 +22,7 @@
 工具链生成，并在交付前运行 `scripts/verify-release.sh` 完成 checksum、归档内容、
 Universal 2 架构和嵌入版本校验。
 
-本轮 `v1.0.0-preview.1` 候选包已经生成并校验，交付目录中只有这四个文件：
+本轮 `v1.0.0-preview.1` 候选包已经生成并校验。维护者保留的标准 Release 目录包含：
 
 ```text
 SHA256SUMS
@@ -30,7 +31,8 @@ tunlite_1.0.0-preview.1_linux_x64.tar.gz
 tunlite_1.0.0-preview.1_linux_arm64.tar.gz
 ```
 
-如果候选包就在当前 Go V1 工作树的 `dist` 目录，Intel Mac 先进入工作树并设置：
+Intel Mac 迁移测试需要从标准 macOS 归档旁路运行。如果候选包就在当前 Go V1 工作树的
+`dist` 目录，先进入工作树并设置：
 
 ```bash
 DIST="$PWD/dist"
@@ -38,9 +40,11 @@ test -f "$DIST/tunlite_1.0.0-preview.1_macos.tar.gz"
 test -f "$DIST/SHA256SUMS"
 ```
 
-如果候选包由其他方式交付，就把 `DIST` 改成收到的目录绝对路径。把 macOS 压缩包和
-`SHA256SUMS` 一起复制到 Apple Silicon Mac；不要传裸二进制，也不需要把 Linux 包复制
-到 Mac。
+如果候选包由其他方式交付，就把 `DIST` 改成收到的目录绝对路径。
+
+全新的 Apple Silicon Mac 不参与构建和归档校验。维护者从已校验的 macOS 归档中提取
+一个原始可执行文件，文件名就是 `tunlite`。新机器只接收这一个文件，然后把它安装到
+`/usr/local/bin/tunlite`；不需要接收压缩包、`SHA256SUMS`、源码或 Go 工具链。
 
 ## 二、Intel Mac：验证 0.10.3 迁移和回滚
 
@@ -225,49 +229,26 @@ TUNLITE_HOME="$V1_HOME" "$V1" remove '<连接名>'
 对所有导入项重复 `remove`，确认没有残留服务后，隔离的 `$V1_HOME` 和 `$V1_ROOT` 才
 可以手工删除。旧配置和 `*.before-v1-manual-test-*` 备份继续保留，不要删除。
 
-## 三、Apple Silicon Mac：全新安装验证
+## 三、Apple Silicon Mac：一个文件直接验证
 
-### 1. 校验包和 Universal 2 架构
+新机器收到的文件名就是 `tunlite`。下面假设终端已经进入这个文件所在目录。
 
-把以下两个文件放在同一目录：
-
-```text
-SHA256SUMS
-tunlite_1.0.0-preview.1_macos.tar.gz
-```
-
-进入该目录后执行：
+### 1. 放进 bin 目录
 
 ```bash
-uname -a
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 ./tunlite /usr/local/bin/tunlite
+
+command -v tunlite
+tunlite version --json
+uname -m
 sw_vers
-
-ARCHIVE=tunlite_1.0.0-preview.1_macos.tar.gz
-grep " $ARCHIVE\$" SHA256SUMS | shasum -a 256 --check -
-
-EXTRACT_ROOT="$(mktemp -d)"
-tar -xzf "$ARCHIVE" -C "$EXTRACT_ROOT"
-lipo -archs "$EXTRACT_ROOT/tunlite"
-"$EXTRACT_ROOT/tunlite" version --json
 ```
 
-校验必须成功，`lipo` 必须同时列出 `x86_64 arm64`，版本必须是
-`1.0.0-preview.1`。
+`command -v tunlite` 应输出 `/usr/local/bin/tunlite`，`uname -m` 应输出 `arm64`，版本必须
+是 `1.0.0-preview.1`。安装只复制这一个文件，不创建 Connection，也不修改 Shell 配置。
 
-### 2. 安装到用户级 bin 目录
-
-```bash
-mkdir -p "$HOME/.local/bin"
-install -m 0755 "$EXTRACT_ROOT/tunlite" "$HOME/.local/bin/tunlite"
-
-TL="$HOME/.local/bin/tunlite"
-"$TL" version --json
-launchctl print "gui/$(id -u)"
-```
-
-这一步只安装一个二进制，不会创建或启动 Connection，也不会修改 `.zshrc`。
-
-### 3. 准备真实 SSH 目标
+### 2. 准备真实 SSH 目标
 
 ```bash
 ssh -o BatchMode=yes user@example-host true
@@ -279,113 +260,99 @@ ssh -o BatchMode=yes user@example-host true
 ssh -p 2222 -o BatchMode=yes user@example-host true
 ```
 
-设置本次测试变量：
+后面的命令统一使用固定测试名 `preview-test`、SOCKS 端口 `18080` 和 `18081`，不需要
+设置任何变量。把 `user@example-host` 替换成真实目标；自定义 SSH 端口时写成
+`user@example-host:2222`。端口被占用时再直接修改命令中的端口数字。
+
+### 3. 创建和认证检查
 
 ```bash
-TL="$HOME/.local/bin/tunlite"
-TL_NAME="acceptance-$(date +%s)"
-TL_TARGET='user@example-host'
-TL_PORT=18080
-TL_PORT_2=18081
-printf '测试名称：%s\n' "$TL_NAME"
-```
-
-自定义 SSH 端口时把 `TL_TARGET` 写成 `user@example-host:2222`。端口被占用时，换成其他
-大于 1024 的空闲端口。
-
-### 4. 创建和认证检查
-
-```bash
-"$TL" add "$TL_NAME" --to "$TL_TARGET" -D "$TL_PORT"
-"$TL" status "$TL_NAME"
-"$TL" check "$TL_NAME" --timeout 12
+tunlite add preview-test --to user@example-host -D 18080
+tunlite status preview-test
+tunlite check preview-test --timeout 12
 ```
 
 状态应为 `stopped`，`check` 必须显示 `ssh_authentication_succeeded`。
 
-### 5. 前台运行和真实流量
+### 4. 前台运行和真实流量
 
 终端 A：
 
 ```bash
-"$TL" run "$TL_NAME"
+tunlite run preview-test
 ```
 
 保持终端 A 不动，在终端 B：
 
 ```bash
-curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
+curl --socks5-hostname 127.0.0.1:18080 https://example.com/
 ```
 
 必须返回网页内容。回到终端 A 按 `Ctrl-C`：
 
 ```bash
-"$TL" status "$TL_NAME"
+tunlite status preview-test
 ```
 
 状态应回到 `stopped`。
 
-### 6. 临时后台运行
+### 5. 临时后台运行
 
 ```bash
-"$TL" start "$TL_NAME"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
-"$TL" logs "$TL_NAME" --lines 50
-launchctl print "gui/$(id -u)/dev.tunlite.connection.$TL_NAME"
+tunlite start preview-test
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18080 https://example.com/
+tunlite logs preview-test --lines 50
+launchctl print "gui/$(id -u)/dev.tunlite.connection.preview-test"
 ```
 
 状态应为 `background` 和 `running`；关闭启动终端以后流量仍应正常。
 
-### 7. 修改端口并验证自动联动
+### 6. 修改端口并验证自动联动
 
 ```bash
-"$TL" set "$TL_NAME" -D "$TL_PORT_2"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite set preview-test -D 18081
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 
-"$TL" stop "$TL_NAME"
-"$TL" status "$TL_NAME"
+tunlite stop preview-test
+tunlite status preview-test
 ```
 
 新端口必须可用，停止后状态应回到 `stopped`。
 
-### 8. 长期运行和重新登录恢复
+### 7. 长期运行和重新登录恢复
 
 ```bash
-"$TL" enable "$TL_NAME"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite enable preview-test
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
-状态必须是 `persistent` 和 `running`。记录 `TL_NAME` 和 `TL_PORT_2`，然后退出并重新登录
-当前 macOS 用户，或者重启测试机。
+状态必须是 `persistent` 和 `running`。然后退出并重新登录当前 macOS 用户，或者重启
+测试机。
 
 重新登录以后：
 
 ```bash
-TL="$HOME/.local/bin/tunlite"
-TL_NAME='<之前记录的测试名称>'
-TL_PORT_2=18081
-
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
-"$TL" logs "$TL_NAME" --lines 50
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
+tunlite logs preview-test --lines 50
 ```
 
 必须仍为 `persistent` 和 `running`，真实流量必须正常。
 
-### 9. 清理 Apple Silicon Mac 测试项
+### 8. 清理 Apple Silicon Mac 测试项
 
 ```bash
-"$TL" disable "$TL_NAME"
-"$TL" status "$TL_NAME"
-"$TL" remove "$TL_NAME"
-"$TL" list
+tunlite disable preview-test
+tunlite status preview-test
+tunlite remove preview-test
+tunlite list
 ```
 
 测试 Connection、launchd 服务和 SSH 进程都应消失。二进制可以保留用于后续验证；如要
-卸载，在所有 Connection 都已停止并删除后，再删除 `~/.local/bin/tunlite`。
+卸载，在所有 Connection 都已停止并删除后，再删除 `/usr/local/bin/tunlite`。
 
 ## 四、把这些结果发回来
 
