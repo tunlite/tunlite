@@ -153,7 +153,8 @@ TUNLITE_HOME="$V1_HOME" "$V1" status "$NAME"
 TUNLITE_HOME="$V1_HOME" "$V1" logs "$NAME" --lines 50
 ```
 
-现在执行同一条真实业务请求。必须确认 V1 状态为 `background`、SSH 真实流量正常。
+现在执行同一条真实业务请求。必须确认 V1 显示“正常运行 / 系统后台 / 登录自启：否”，
+并且 SSH 真实流量正常。
 
 如果 V1 启动或流量验证失败，立即回滚：
 
@@ -177,7 +178,7 @@ TUNLITE_HOME="$V1_HOME" "$V1" stop "$NAME"
 
 真实流量恢复后，说明回退路径有效。
 
-### 6. 再切到 V1，验证 persistent 和重新登录恢复
+### 6. 再切到 V1，验证登录自启和重新登录恢复
 
 ```bash
 "$OLD_TUNLITE" disable "$NAME"
@@ -186,8 +187,8 @@ TUNLITE_HOME="$V1_HOME" "$V1" enable "$NAME"
 TUNLITE_HOME="$V1_HOME" "$V1" status "$NAME"
 ```
 
-状态必须是 `persistent` 和 `running`，真实流量必须正常。然后退出并重新登录当前 macOS
-用户，或者重启这台测试机。不要在当前唯一远程登录依赖该隧道时做这一步。
+状态必须显示“正常运行 / 系统后台 / 登录自启：是”，真实流量必须正常。然后退出并重新
+登录当前 macOS 用户，或者重启这台测试机。不要在当前唯一远程登录依赖该隧道时做这一步。
 
 重新登录后恢复变量并检查：
 
@@ -200,7 +201,7 @@ TUNLITE_HOME="$V1_HOME" "$V1" status "$NAME"
 TUNLITE_HOME="$V1_HOME" "$V1" logs "$NAME" --lines 50
 ```
 
-状态仍应为 `persistent` 和 `running`，真实业务流量仍应正常。
+状态仍应显示“正常运行 / 系统后台 / 登录自启：是”，真实业务流量仍应正常。
 
 ### 7. Intel Mac 最终恢复旧版
 
@@ -272,7 +273,8 @@ tunlite status preview-test
 tunlite check preview-test --timeout 12
 ```
 
-状态应为 `stopped`，`check` 必须显示 `ssh_authentication_succeeded`。
+状态应显示“已停止 / 运行位置：— / 登录自启：否”，`check` 必须显示
+`ssh_authentication_succeeded`。
 
 ### 4. 前台运行和真实流量
 
@@ -294,7 +296,7 @@ curl --socks5-hostname 127.0.0.1:18080 https://example.com/
 tunlite status preview-test
 ```
 
-状态应回到 `stopped`。
+状态应回到“已停止”，运行位置显示 `—`，登录自启显示“否”。
 
 ### 5. 临时后台运行
 
@@ -306,7 +308,7 @@ tunlite logs preview-test --lines 50
 launchctl print "gui/$(id -u)/dev.tunlite.connection.preview-test"
 ```
 
-状态应为 `background` 和 `running`；关闭启动终端以后流量仍应正常。
+状态应显示“正常运行 / 系统后台 / 登录自启：否”；关闭启动终端以后流量仍应正常。
 
 ### 6. 修改端口并验证自动联动
 
@@ -319,7 +321,7 @@ tunlite stop preview-test
 tunlite status preview-test
 ```
 
-新端口必须可用，停止后状态应回到 `stopped`。
+新端口必须可用，停止后状态应回到“已停止”。
 
 ### 7. 长期运行和重新登录恢复
 
@@ -329,8 +331,8 @@ tunlite status preview-test
 curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
-状态必须是 `persistent` 和 `running`。然后退出并重新登录当前 macOS 用户，或者重启
-测试机。
+状态必须显示“正常运行 / 系统后台 / 登录自启：是”。然后退出并重新登录当前 macOS
+用户，或者重启测试机。
 
 重新登录以后：
 
@@ -340,7 +342,7 @@ curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 tunlite logs preview-test --lines 50
 ```
 
-必须仍为 `persistent` 和 `running`，真实流量必须正常。
+必须仍显示“正常运行 / 系统后台 / 登录自启：是”，真实流量必须正常。
 
 ### 8. 清理 Apple Silicon Mac 测试项
 

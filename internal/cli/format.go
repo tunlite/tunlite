@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
@@ -77,58 +76,62 @@ func colorize(value, color string, enabled bool) string {
 	return color + value + ansiReset
 }
 
-func displayState(value service.State) stateStyle {
+func displayState(value service.State, lang language) stateStyle {
 	switch {
 	case value.ConsistencyState == service.ConsistencyBlocked:
-		return stateStyle{glyph: "⊘", color: ansiRed, label: "blocked"}
+		return stateStyle{glyph: "⊘", color: ansiRed, label: localized(lang, "needs attention", "需要处理")}
 	case value.ConsistencyState == service.ConsistencyDrifted:
-		return stateStyle{glyph: "!", color: ansiYellow, label: "drifted"}
+		return stateStyle{glyph: "!", color: ansiYellow, label: localized(lang, "needs attention", "需要处理")}
 	case value.ConsistencyState == service.ConsistencyMissing:
-		return stateStyle{glyph: "✕", color: ansiRed, label: "missing"}
+		return stateStyle{glyph: "✕", color: ansiRed, label: localized(lang, "needs attention", "需要处理")}
 	case value.ProcessState == service.ProcessFailed:
-		return stateStyle{glyph: "✕", color: ansiRed, label: "failed"}
+		return stateStyle{glyph: "✕", color: ansiRed, label: localized(lang, "unhealthy", "运行异常")}
 	case value.Health == service.HealthUnhealthy:
-		return stateStyle{glyph: "✕", color: ansiRed, label: "unhealthy"}
+		return stateStyle{glyph: "✕", color: ansiRed, label: localized(lang, "unhealthy", "运行异常")}
 	case value.ProcessState == service.ProcessStarting:
-		return stateStyle{glyph: "◌", color: ansiYellow, label: "starting"}
+		return stateStyle{glyph: "◌", color: ansiYellow, label: localized(lang, "starting", "启动中")}
 	case value.ProcessState == service.ProcessRunning && value.Health == service.HealthHealthy:
-		return stateStyle{glyph: "●", color: ansiGreen, label: "healthy"}
+		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
 	case value.ProcessState == service.ProcessRunning:
-		return stateStyle{glyph: "●", color: ansiGreen, label: "running"}
+		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
 	case value.Mode == service.ModeForeground:
-		return stateStyle{glyph: "●", color: ansiGreen, label: "foreground"}
+		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
 	default:
-		return stateStyle{glyph: "○", color: ansiDim, label: "stopped"}
+		return stateStyle{glyph: "○", color: ansiDim, label: localized(lang, "stopped", "已停止")}
 	}
 }
 
-func displayStatusRow(row statusRow) stateStyle {
+func displayStatusRow(row statusRow, lang language) stateStyle {
 	switch row.transition {
-	case "starting", "stopping", "restarting":
-		return stateStyle{glyph: "◌", color: ansiYellow, label: row.transition}
+	case "starting":
+		return stateStyle{glyph: "◌", color: ansiYellow, label: localized(lang, "starting", "启动中")}
+	case "stopping":
+		return stateStyle{glyph: "◌", color: ansiYellow, label: localized(lang, "stopping", "停止中")}
+	case "restarting":
+		return stateStyle{glyph: "◌", color: ansiYellow, label: localized(lang, "restarting", "重启中")}
 	default:
-		return displayState(row.state)
+		return displayState(row.state, lang)
 	}
 }
 
-func renderStatusTable(rows []statusRow, color bool) []string {
-	return renderStatusTableSelected(rows, color, -1)
+func renderStatusTable(rows []statusRow, color bool, lang language) []string {
+	return renderStatusTableSelected(rows, color, -1, lang)
 }
 
-func renderStatusTableSelected(rows []statusRow, color bool, selected int) []string {
+func renderStatusTableSelected(rows []statusRow, color bool, selected int, lang language) []string {
 	columns := []tableColumn{
-		{header: "NAME", max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
-		{header: "STATE", max: 16, value: func(row statusRow) string {
-			style := displayStatusRow(row)
+		{header: localized(lang, "NAME", "名称"), max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
+		{header: localized(lang, "STATE", "状态"), max: 16, value: func(row statusRow) string {
+			style := displayStatusRow(row, lang)
 			return style.glyph + " " + style.label
 		}},
-		{header: "HOST", max: 36, value: statusHost},
-		{header: "TYPE", max: 12, value: statusTypes},
-		{header: "ROUTE", max: 42, value: statusRoutes},
-		{header: "MODE", max: 12, value: func(row statusRow) string { return row.state.Mode }},
+		{header: localized(lang, "RUNS AS", "运行位置"), max: 14, value: func(row statusRow) string { return statusRunsAs(row, lang) }},
+		{header: localized(lang, "ON LOGIN", "登录自启"), max: 10, value: func(row statusRow) string { return statusOnLogin(row, lang) }},
 		{header: "PID", max: 10, value: statusPID},
-		{header: "UP", max: 10, value: statusUptime},
-		{header: "RESTARTS", max: 8, value: statusRestarts},
+		{header: localized(lang, "UP", "已运行"), max: 10, value: statusUptime},
+		{header: localized(lang, "RESTARTS", "重启次数"), max: 8, value: statusRestarts},
+		{header: localized(lang, "HOST", "SSH 目标"), max: 36, value: statusHost},
+		{header: localized(lang, "ROUTE", "转发"), max: 42, value: statusRoutes},
 	}
 	widths := make([]int, len(columns))
 	for index, column := range columns {
@@ -148,8 +151,8 @@ func renderStatusTableSelected(rows []statusRow, color bool, selected int) []str
 		cells := make([]string, len(columns))
 		for index, column := range columns {
 			cells[index] = fitCell(column.value(row), widths[index])
-			if column.header == "STATE" {
-				cells[index] = colorize(cells[index], displayStatusRow(row).color, color)
+			if index == 1 {
+				cells[index] = colorize(cells[index], displayStatusRow(row, lang).color, color)
 			}
 		}
 		line := strings.Join(cells, "  ")
@@ -180,16 +183,48 @@ func joinTableCells(columns []tableColumn, widths []int, value func(tableColumn)
 
 func fitCell(value string, width int) string {
 	if visibleWidth(value) > width {
-		runes := []rune(value)
 		if width <= 1 {
 			return "…"
 		}
-		value = string(runes[:width-1]) + "…"
+		limit := width - 1
+		used := 0
+		var fitted strings.Builder
+		for _, current := range value {
+			currentWidth := 1
+			if runeIsWide(current) {
+				currentWidth = 2
+			}
+			if used+currentWidth > limit {
+				break
+			}
+			fitted.WriteRune(current)
+			used += currentWidth
+		}
+		value = fitted.String() + "…"
 	}
 	return value + strings.Repeat(" ", width-visibleWidth(value))
 }
 
-func visibleWidth(value string) int { return utf8.RuneCountInString(value) }
+func visibleWidth(value string) int {
+	width := 0
+	for _, current := range value {
+		if runeIsWide(current) {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
+}
+
+func runeIsWide(value rune) bool {
+	return value >= 0x1100 && (value <= 0x115f || value == 0x2329 || value == 0x232a ||
+		(value >= 0x2e80 && value <= 0xa4cf) || (value >= 0xac00 && value <= 0xd7a3) ||
+		(value >= 0xf900 && value <= 0xfaff) || (value >= 0xfe10 && value <= 0xfe19) ||
+		(value >= 0xfe30 && value <= 0xfe6f) || (value >= 0xff00 && value <= 0xff60) ||
+		(value >= 0xffe0 && value <= 0xffe6) || (value >= 0x1f300 && value <= 0x1faff) ||
+		(value >= 0x20000 && value <= 0x3fffd))
+}
 
 func statusHost(row statusRow) string {
 	config, err := sshdriver.DecodeConfig(row.connection.Spec.Config)
@@ -200,22 +235,6 @@ func statusHost(row statusRow) string {
 		return config.Host + ":" + strconv.Itoa(config.Port)
 	}
 	return config.Host
-}
-
-func statusTypes(row statusRow) string {
-	config, err := sshdriver.DecodeConfig(row.connection.Spec.Config)
-	if err != nil {
-		return "—"
-	}
-	seen := map[string]bool{}
-	var values []string
-	for _, forward := range config.Forwards {
-		if !seen[forward.Type] {
-			seen[forward.Type] = true
-			values = append(values, forward.Type)
-		}
-	}
-	return strings.Join(values, ",")
 }
 
 func statusRoutes(row statusRow) string {
@@ -235,6 +254,24 @@ func statusRoutes(row statusRow) string {
 		}
 	}
 	return strings.Join(values, ", ")
+}
+
+func statusRunsAs(row statusRow, lang language) string {
+	switch row.state.Mode {
+	case service.ModeForeground:
+		return localized(lang, "terminal", "当前终端")
+	case service.ModeBackground, service.ModePersistent:
+		return localized(lang, "background", "系统后台")
+	default:
+		return "—"
+	}
+}
+
+func statusOnLogin(row statusRow, lang language) string {
+	if row.state.Mode == service.ModePersistent {
+		return localized(lang, "yes", "是")
+	}
+	return localized(lang, "no", "否")
 }
 
 func statusPID(row statusRow) string {
@@ -298,48 +335,45 @@ func formatDuration(value time.Duration) string {
 	return fmt.Sprintf("%ds", int(value/time.Second))
 }
 
-func renderStatusDetail(row statusRow, color bool) []string {
-	style := displayStatusRow(row)
+func renderStatusDetail(row statusRow, color bool, lang language) []string {
+	style := displayStatusRow(row, lang)
 	lines := []string{row.connection.Metadata.Name}
 	appendRow := func(label, value, shade string) {
-		lines = append(lines, fmt.Sprintf("  %-12s %s", label, colorize(value, shade, color)))
+		lines = append(lines, "  "+fitCell(label, 12)+" "+colorize(value, shade, color))
 	}
-	appendRow("state", style.glyph+" "+style.label, style.color)
-	appendRow("mode", row.state.Mode, "")
-	appendRow("process", row.state.ProcessState, "")
-	appendRow("health", row.state.Health, "")
-	appendRow("consistency", row.state.ConsistencyState, "")
-	appendRow("service", row.state.ServiceState, "")
-	appendRow("host", statusHost(row), "")
-	appendRow("pid", statusPID(row), "")
-	appendRow("up", statusUptime(row), "")
-	appendRow("restarts", statusRestarts(row), "")
+	appendRow(localized(lang, "state", "状态"), style.glyph+" "+style.label, style.color)
+	appendRow(localized(lang, "runs as", "运行位置"), statusRunsAs(row, lang), "")
+	appendRow(localized(lang, "on login", "登录自启"), statusOnLogin(row, lang), "")
+	appendRow("PID", statusPID(row), "")
+	appendRow(localized(lang, "up", "已运行"), statusUptime(row), "")
+	appendRow(localized(lang, "restarts", "重启次数"), statusRestarts(row), "")
+	appendRow(localized(lang, "SSH host", "SSH 目标"), statusHost(row), "")
 	if config, err := sshdriver.DecodeConfig(row.connection.Spec.Config); err == nil {
 		if len(config.Jump) > 0 {
-			appendRow("jump", strings.Join(config.Jump, ", "), "")
+			appendRow(localized(lang, "jump", "跳板"), strings.Join(config.Jump, ", "), "")
 		}
 		for _, forward := range config.Forwards {
-			appendRow("type", forward.Type, "")
+			appendRow(localized(lang, "forward", "转发类型"), localizedForwardType(forward.Type, lang), "")
 			switch forward.Type {
 			case "remote":
-				appendRow("listen", fmt.Sprintf("%s:%d (on server)", defaultBind(forward.Bind), forward.SrcPort), "")
-				appendRow("target", fmt.Sprintf("%s:%d (on this machine)", forward.DestHost, forward.DestPort), "")
+				appendRow(localized(lang, "listen", "监听"), fmt.Sprintf(localized(lang, "%s:%d (on server)", "%s:%d（远程服务器）"), defaultBind(forward.Bind), forward.SrcPort), "")
+				appendRow(localized(lang, "target", "目标"), fmt.Sprintf(localized(lang, "%s:%d (on this machine)", "%s:%d（本机）"), forward.DestHost, forward.DestPort), "")
 			case "dynamic":
-				appendRow("listen", fmt.Sprintf("%s:%d (local SOCKS)", defaultBind(forward.Bind), forward.SrcPort), "")
+				appendRow(localized(lang, "listen", "监听"), fmt.Sprintf(localized(lang, "%s:%d (local SOCKS)", "%s:%d（本机 SOCKS）"), defaultBind(forward.Bind), forward.SrcPort), "")
 			default:
-				appendRow("listen", fmt.Sprintf("%s:%d (local)", defaultBind(forward.Bind), forward.SrcPort), "")
-				appendRow("target", fmt.Sprintf("%s:%d (reachable from server)", forward.DestHost, forward.DestPort), "")
+				appendRow(localized(lang, "listen", "监听"), fmt.Sprintf(localized(lang, "%s:%d (local)", "%s:%d（本机）"), defaultBind(forward.Bind), forward.SrcPort), "")
+				appendRow(localized(lang, "target", "目标"), fmt.Sprintf(localized(lang, "%s:%d (reachable from server)", "%s:%d（由服务器访问）"), forward.DestHost, forward.DestPort), "")
 			}
 		}
 		if config.IdentityFile != "" {
-			appendRow("identity", config.IdentityFile, "")
+			appendRow(localized(lang, "identity", "密钥"), config.IdentityFile, "")
 		}
 		if len(config.SSHOptions) > 0 {
-			appendRow("options", strings.Join(config.SSHOptions, " "), "")
+			appendRow(localized(lang, "options", "SSH 选项"), strings.Join(config.SSHOptions, " "), "")
 		}
 	}
 	if tags := row.connection.Metadata.Tags; len(tags) > 0 {
-		appendRow("tags", strings.Join(tags, ", "), "")
+		appendRow(localized(lang, "tags", "标签"), strings.Join(tags, ", "), "")
 	}
 	for _, condition := range row.state.Conditions {
 		shade := ansiYellow
@@ -349,6 +383,22 @@ func renderStatusDetail(row statusRow, color bool) []string {
 		appendRow(condition.Severity, condition.Message, shade)
 	}
 	return lines
+}
+
+func localizedForwardType(value string, lang language) string {
+	if !isChinese(lang) {
+		return value
+	}
+	switch value {
+	case "local":
+		return "本地转发"
+	case "remote":
+		return "远程转发"
+	case "dynamic":
+		return "动态转发"
+	default:
+		return value
+	}
 }
 
 func doctorStyle(severity string) (string, string) {

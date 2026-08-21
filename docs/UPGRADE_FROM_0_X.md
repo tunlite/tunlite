@@ -291,14 +291,14 @@ tunlite doctor --offline
 
 ### 10.1 旧版尚未卸载
 
-如果 V1 Connection 是 `background`：
+如果 V1 Connection 显示“系统后台 / 登录自启：否”：
 
 ```bash
 ./tunlite-v1 stop <连接名>
 tunlite enable <连接名>
 ```
 
-如果 V1 Connection 已经是 `persistent`：
+如果 V1 Connection 显示“系统后台 / 登录自启：是”：
 
 ```bash
 ./tunlite-v1 disable <连接名>

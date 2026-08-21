@@ -588,8 +588,12 @@ V1 公开命令只允许来自产品设计列出的 26 个一级命令。命令�
 - 默认使用清楚的颜色、对齐表格和可操作提示。
 - 非 TTY、`--json` 或 `NO_COLOR` 时不输出 ANSI。
 - `monitor` 是唯一实时交互总览；不增加 `watch` 别名。
-- 文案用稳定的产品词汇：Connection、foreground、background、persistent、manage、
-  unmanage、resolve；不得让内部 Record、digest 或 lock 成为日常概念。
+- 人类界面用“状态 / 运行位置 / 登录自启”解释生命周期；`foreground`、`background`、
+  `persistent` 保留为机器契约值，不要求新手先理解内部模式。
+- 人类文案首批支持中文和英文；语言优先级为 `--lang`、`TUNLITE_LANG`、系统语言、英文
+  回退。命令、配置、JSON 字段与枚举、错误码保持英文，原生工具日志不翻译。
+- 文案使用稳定的 Connection、接管/交还等产品词汇；不得让内部 Record、digest 或 lock
+  成为日常概念。
 
 ## 17. 0.x 直接导入
 

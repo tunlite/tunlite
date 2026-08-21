@@ -36,6 +36,9 @@ as the product's focused entry point.
 - Color-aware aligned status output, per-Connection status details, an environment
   and Connection `doctor`, and the foreground `tunlite monitor` dashboard. Human
   output respects TTY detection and `NO_COLOR`; JSON never contains ANSI escapes.
+- Chinese and English human interfaces selected by `--lang`, `TUNLITE_LANG`, or the
+  system locale. Command names, configuration, error codes, and JSON fields and
+  values remain stable English machine contracts.
 - One canonical configuration path, root-only `configVersion`, long-lived tags with
   AND selection, and explicit `--all` batch selection.
 - A single native binary whose installation, upgrades, and removal are owned by the
@@ -54,6 +57,10 @@ as the product's focused entry point.
   version, state totals, terminal-width-aware columns, detail navigation through
   Enter/right and Esc/left, visible `starting`/`stopping`/`restarting` transitions,
   and `y` confirmation before stop or restart. Esc exits from the outer view.
+- Human status views now explain lifecycle through `STATE`, `RUNS AS`, and
+  `ON LOGIN` instead of exposing the internal `MODE` directly. Monitor keeps PID,
+  uptime, and restart count as operational columns, drops the redundant `TYPE`
+  column, and hides host/route details first on narrow terminals.
 - Interactive commands that may wait for SSH, native service managers, or batch
   observation now print the operation before waiting; JSON output remains free of
   human progress text, and `version --json` retains its protocol version field.
