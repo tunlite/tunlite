@@ -53,7 +53,7 @@ Forward 采用 OpenSSH 形式，可重复使用：
 
 ```bash
 # 本机 5432 -> 远端数据库 5432
-tunlite add db-5432 --to user@host -L 5432:localhost:5432 --tag work --json --non-interactive
+tunlite add db-5432 --to user@host -L 5432:localhost:5432 --group work --json --non-interactive
 
 # 远端 9000 -> 本机 3000
 tunlite add preview-9000 --to user@host -R 9000:localhost:3000 --json --non-interactive
@@ -105,12 +105,12 @@ tunlite restart db-5432 --json --non-interactive
 tunlite disable db-5432 --json --non-interactive
 ```
 
-批量选择支持 `--all` 或一个或多个 `--tag`；多个 tag 使用 AND 语义。名称、`--all`
-和 `--tag` 三种选择器互斥。批量操作可能部分成功，必须检查每个结果：
+批量选择支持 `--all` 或单值 `--group`。名称、`--all` 和 `--group` 三种选择器互斥。
+批量操作可能部分成功，必须检查每个结果：
 
 ```bash
 tunlite enable --all --json --non-interactive
-tunlite status --tag work --json --non-interactive
+tunlite status --group work --json --non-interactive
 ```
 
 状态必须同时读取五个维度，不能只看进程是否存在：
@@ -128,7 +128,7 @@ tunlite status --tag work --json --non-interactive
 
 ```bash
 tunlite list --json --non-interactive
-tunlite list --tag work --json --non-interactive
+tunlite list --group work --json --non-interactive
 
 # 只修改目标；未给出的字段保持不变
 tunlite set db-5432 --to deploy@new-host --json --non-interactive

@@ -115,7 +115,24 @@ func displayStatusRow(row statusRow, lang language) stateStyle {
 }
 
 func renderStatusTable(rows []statusRow, color bool, lang language) []string {
-	return renderStatusTableSelected(rows, color, -1, lang)
+	if len(rows) == 0 {
+		return renderStatusTableSelected(rows, color, -1, lang)
+	}
+	lines := make([]string, 0, len(rows)*2)
+	for start := 0; start < len(rows); {
+		end := start + 1
+		group := rows[start].connection.Metadata.Group
+		for end < len(rows) && rows[end].connection.Metadata.Group == group {
+			end++
+		}
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, colorize(groupHeading(group, end-start, lang), ansiReverse, color))
+		lines = append(lines, renderStatusTableSelected(rows[start:end], color, -1, lang)...)
+		start = end
+	}
+	return lines
 }
 
 func renderStatusTableSelected(rows []statusRow, color bool, selected int, lang language) []string {
@@ -372,9 +389,7 @@ func renderStatusDetail(row statusRow, color bool, lang language) []string {
 			appendRow(localized(lang, "options", "SSH 选项"), strings.Join(config.SSHOptions, " "), "")
 		}
 	}
-	if tags := row.connection.Metadata.Tags; len(tags) > 0 {
-		appendRow(localized(lang, "tags", "标签"), strings.Join(tags, ", "), "")
-	}
+	appendRow(localized(lang, "group", "分组"), groupLabel(row.connection.Metadata.Group, lang), "")
 	for _, condition := range row.state.Conditions {
 		shade := ansiYellow
 		if condition.Severity == "error" {
@@ -420,6 +435,6 @@ func sortedStatusRows(results []serviceItemResult) []statusRow {
 		}
 		rows = append(rows, statusRow{connection: *result.Declaration, state: *result.State})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].connection.Metadata.Name < rows[j].connection.Metadata.Name })
+	sort.Slice(rows, func(i, j int) bool { return connectionLess(rows[i].connection, rows[j].connection) })
 	return rows
 }

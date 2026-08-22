@@ -123,7 +123,7 @@ func TestPreviewEnvelopeIsReadOnlyUntilFirstSuccessfulWrite(t *testing.T) {
 		t.Fatalf("failed update created preview backups: %v err=%v", backups, err)
 	}
 	if err := store.Update(context.Background(), func(document *Document) error {
-		document.Items[0].Metadata.Tags = []string{"migrated"}
+		document.Items[0].Metadata.Group = "migrated"
 		return nil
 	}); err != nil {
 		t.Fatal(err)

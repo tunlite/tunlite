@@ -25,8 +25,10 @@ type connectionFlags struct {
 	remote       stringsFlag
 	dynamic      stringsFlag
 	sshOptions   stringsFlag
-	tags         stringsFlag
-	noTags       bool
+	group        string
+	legacyTags   stringsFlag
+	noGroup      bool
+	legacyNoTags bool
 	noSSHOptions bool
 	visited      map[string]bool
 }
@@ -118,17 +120,38 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 func list(args []string, streams IO, opts options) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var rawTags stringsFlag
-	flags.Var(&rawTags, "tag", "filter by tag")
+	var group string
+	var legacyTags stringsFlag
+	flags.StringVar(&group, "group", "", "filter by group")
+	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	if err := flags.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
 	if flags.NArg() != 0 {
 		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
 	}
-	tags, err := parseTags(rawTags)
-	if err != nil {
-		return err
+	groupSet := false
+	legacyTagSet := false
+	flags.Visit(func(item *flag.Flag) {
+		groupSet = groupSet || item.Name == "group"
+		legacyTagSet = legacyTagSet || item.Name == "tag"
+	})
+	if groupSet && legacyTagSet {
+		return usageError("use --group, not --group and legacy --tag together")
+	}
+	if groupSet {
+		var err error
+		group, err = parseGroup(group)
+		if err != nil {
+			return err
+		}
+	} else if legacyTagSet {
+		var err error
+		group, err = parseLegacyGroup(legacyTags)
+		if err != nil {
+			return err
+		}
+		groupSet = true
 	}
 	store, err := connectionStore(opts)
 	if err != nil {
@@ -140,12 +163,12 @@ func list(args []string, streams IO, opts options) error {
 	}
 	results := make([]core.Connection, 0, len(document.Items))
 	for _, connection := range document.Items {
-		if len(tags) == 0 || hasAllTags(connection.Metadata.Tags, tags) {
+		if !groupSet || connection.Metadata.Group == group {
 			results = append(results, connection)
 		}
 	}
-	if len(tags) > 0 && len(results) == 0 {
-		return notFoundError(fmt.Sprintf("no connections tagged %s", quoteList(tags)))
+	if groupSet && len(results) == 0 {
+		return notFoundError(fmt.Sprintf("no connections in group %q", group))
 	}
 	if opts.JSON {
 		return writeResponse(streams.Out, map[string]any{
@@ -157,8 +180,17 @@ func list(args []string, streams IO, opts options) error {
 		fmt.Fprintln(streams.Out, "no connections defined")
 		return nil
 	}
-	for _, connection := range results {
-		fmt.Fprintln(streams.Out, describeConnection(connection))
+	sort.Slice(results, func(i, j int) bool { return connectionLess(results[i], results[j]) })
+	currentGroup := "\x00"
+	for index, connection := range results {
+		if connection.Metadata.Group != currentGroup {
+			if index > 0 {
+				fmt.Fprintln(streams.Out)
+			}
+			currentGroup = connection.Metadata.Group
+			fmt.Fprintln(streams.Out, groupHeading(currentGroup, countConnectionsInGroup(results, currentGroup), opts.Language))
+		}
+		fmt.Fprintln(streams.Out, "  "+describeConnection(connection))
 	}
 	return nil
 }
@@ -175,8 +207,8 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(values.visited) == 0 {
 		return usageError("nothing to set")
 	}
-	if values.noTags && values.visited["tag"] {
-		return usageError("use --tag or --no-tags, not both")
+	if (values.noGroup || values.legacyNoTags) && (values.visited["group"] || values.visited["tag"]) {
+		return usageError("use a group value or clear the group, not both")
 	}
 	if values.noSSHOptions && values.visited["ssh-opt"] {
 		return usageError("use --ssh-opt or --no-ssh-options, not both")
@@ -449,9 +481,11 @@ func parseConnectionFlags(command string, args []string, allowClear bool) (conne
 	flags.Var(&values.remote, "R", "remote forward")
 	flags.Var(&values.dynamic, "D", "dynamic forward")
 	flags.Var(&values.sshOptions, "ssh-opt", "OpenSSH Key=Value option")
-	flags.Var(&values.tags, "tag", "connection tag")
+	flags.StringVar(&values.group, "group", "", "connection group")
+	flags.Var(&values.legacyTags, "tag", "deprecated compatibility alias for --group")
 	if allowClear {
-		flags.BoolVar(&values.noTags, "no-tags", false, "clear tags")
+		flags.BoolVar(&values.noGroup, "no-group", false, "clear group")
+		flags.BoolVar(&values.legacyNoTags, "no-tags", false, "deprecated compatibility alias for --no-group")
 		flags.BoolVar(&values.noSSHOptions, "no-ssh-options", false, "clear SSH options")
 	}
 	if err := flags.Parse(args); err != nil {
@@ -481,7 +515,7 @@ func newSSHConnection(name string, values connectionFlags) (core.Connection, err
 	if err != nil {
 		return core.Connection{}, usageError(err.Error())
 	}
-	tags, err := parseTags(values.tags)
+	group, err := connectionGroup(values)
 	if err != nil {
 		return core.Connection{}, err
 	}
@@ -499,7 +533,7 @@ func newSSHConnection(name string, values connectionFlags) (core.Connection, err
 	connection := core.Connection{
 		ConfigVersion: core.ConfigVersion,
 		Kind:          core.Kind,
-		Metadata:      core.Metadata{Name: name, Tags: tags},
+		Metadata:      core.Metadata{Name: name, Group: group},
 		Spec: core.ConnectionSpec{
 			Driver: sshdriver.ID, Config: raw,
 		},
@@ -548,14 +582,14 @@ func applyConnectionFlags(connection core.Connection, values connectionFlags) (c
 		}
 		config.Forwards = forwards
 	}
-	if values.visited["tag"] {
-		tags, err := parseTags(values.tags)
+	if values.visited["group"] || values.visited["tag"] {
+		group, err := connectionGroup(values)
 		if err != nil {
 			return core.Connection{}, err
 		}
-		updated.Metadata.Tags = tags
-	} else if values.noTags {
-		updated.Metadata.Tags = nil
+		updated.Metadata.Group = group
+	} else if values.noGroup || values.legacyNoTags {
+		updated.Metadata.Group = ""
 	}
 	if err := sshdriver.Validate(config); err != nil {
 		return core.Connection{}, usageError(err.Error())
@@ -585,44 +619,47 @@ func parseForwards(values connectionFlags) ([]sshdriver.Forward, error) {
 	return forwards, nil
 }
 
-func parseTags(values []string) ([]string, error) {
-	seen := make(map[string]struct{})
-	var tags []string
-	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
-			tag := strings.TrimSpace(part)
-			if tag == "" {
-				continue
-			}
-			if len(tag) > 63 {
-				return nil, usageError(fmt.Sprintf("invalid tag %q", tag))
-			}
-			for _, char := range tag {
-				if !(unicode.IsLetter(char) || unicode.IsDigit(char) || char == '.' || char == '_' || char == '-') || char > unicode.MaxASCII {
-					return nil, usageError(fmt.Sprintf("invalid tag %q (use ASCII letters, digits, . _ -)", tag))
-				}
-			}
-			if _, exists := seen[tag]; !exists {
-				seen[tag] = struct{}{}
-				tags = append(tags, tag)
-			}
+func parseGroup(value string) (string, error) {
+	group := strings.TrimSpace(value)
+	if group == "" || len(group) > 63 {
+		return "", usageError(fmt.Sprintf("invalid group %q", value))
+	}
+	for _, char := range group {
+		if !(unicode.IsLetter(char) || unicode.IsDigit(char) || char == '.' || char == '_' || char == '-') || char > unicode.MaxASCII {
+			return "", usageError(fmt.Sprintf("invalid group %q (use ASCII letters, digits, . _ -)", group))
 		}
 	}
-	sort.Strings(tags)
-	return tags, nil
+	return group, nil
 }
 
-func hasAllTags(connectionTags, selected []string) bool {
-	available := make(map[string]struct{}, len(connectionTags))
-	for _, tag := range connectionTags {
-		available[tag] = struct{}{}
-	}
-	for _, tag := range selected {
-		if _, exists := available[tag]; !exists {
-			return false
+func parseLegacyGroup(values []string) (string, error) {
+	var group string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			candidate := strings.TrimSpace(part)
+			if candidate == "" {
+				continue
+			}
+			if group != "" && candidate != group {
+				return "", usageError("legacy --tag contains multiple values; choose one --group")
+			}
+			group = candidate
 		}
 	}
-	return true
+	return parseGroup(group)
+}
+
+func connectionGroup(values connectionFlags) (string, error) {
+	if values.visited["group"] && values.visited["tag"] {
+		return "", usageError("use --group, not --group and legacy --tag together")
+	}
+	if values.visited["group"] {
+		return parseGroup(values.group)
+	}
+	if values.visited["tag"] {
+		return parseLegacyGroup(values.legacyTags)
+	}
+	return "", nil
 }
 
 func connectionRiskConditions(ctx context.Context, connection core.Connection, nonInteractive bool) ([]condition, error) {
@@ -738,11 +775,49 @@ func describeConnection(connection core.Connection) string {
 			parts = append(parts, fmt.Sprintf("L:%s:%d→%s:%d", defaultBind(forward.Bind), forward.SrcPort, forward.DestHost, forward.DestPort))
 		}
 	}
-	tagText := ""
-	if tags := connection.Metadata.Tags; len(tags) > 0 {
-		tagText = " [" + strings.Join(tags, ",") + "]"
+	return fmt.Sprintf("%s\t%s\t%s", connection.Metadata.Name, config.Host, strings.Join(parts, " "))
+}
+
+func connectionLess(left, right core.Connection) bool {
+	leftGroup, rightGroup := left.Metadata.Group, right.Metadata.Group
+	if leftGroup == rightGroup {
+		return left.Metadata.Name < right.Metadata.Name
 	}
-	return fmt.Sprintf("%s\t%s\t%s%s", connection.Metadata.Name, config.Host, strings.Join(parts, " "), tagText)
+	if leftGroup == "" {
+		return false
+	}
+	if rightGroup == "" {
+		return true
+	}
+	return leftGroup < rightGroup
+}
+
+func groupLabel(group string, lang language) string {
+	if group == "" {
+		return localized(lang, "Ungrouped", "未分组")
+	}
+	return group
+}
+
+func groupHeading(group string, count int, lang language) string {
+	if isChinese(lang) {
+		return fmt.Sprintf("分组 %s · %d 个连接", groupLabel(group, lang), count)
+	}
+	unit := "connections"
+	if count == 1 {
+		unit = "connection"
+	}
+	return fmt.Sprintf("Group %s · %d %s", groupLabel(group, lang), count, unit)
+}
+
+func countConnectionsInGroup(connections []core.Connection, group string) int {
+	count := 0
+	for _, connection := range connections {
+		if connection.Metadata.Group == group {
+			count++
+		}
+	}
+	return count
 }
 
 func defaultBind(value string) string {
@@ -754,7 +829,6 @@ func defaultBind(value string) string {
 
 func cloneConnection(connection core.Connection) core.Connection {
 	connection.Spec.Config = append(json.RawMessage(nil), connection.Spec.Config...)
-	connection.Metadata.Tags = append([]string(nil), connection.Metadata.Tags...)
 	return connection
 }
 
@@ -775,10 +849,8 @@ func connectionDifference(left, right core.Connection) string {
 	if left.Metadata.Name != right.Metadata.Name {
 		fields = append(fields, "metadata.name")
 	}
-	leftTags, _ := json.Marshal(left.Metadata.Tags)
-	rightTags, _ := json.Marshal(right.Metadata.Tags)
-	if !bytes.Equal(leftTags, rightTags) {
-		fields = append(fields, "metadata.tags")
+	if left.Metadata.Group != right.Metadata.Group {
+		fields = append(fields, "metadata.group")
 	}
 	if left.Spec.Driver != right.Spec.Driver {
 		fields = append(fields, "spec.driver")
@@ -790,12 +862,4 @@ func connectionDifference(left, right core.Connection) string {
 		return "serialization"
 	}
 	return strings.Join(fields, ", ")
-}
-
-func quoteList(values []string) string {
-	quoted := make([]string, len(values))
-	for i, value := range values {
-		quoted[i] = fmt.Sprintf("%q", value)
-	}
-	return strings.Join(quoted, ", ")
 }

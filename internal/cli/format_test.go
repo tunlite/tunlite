@@ -138,13 +138,18 @@ func TestDoctorHumanOutputRestoresGlyphsColorsAndSummary(t *testing.T) {
 
 func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, true, []string{"work"}, time.Second, "", nil, nil, false, languageEnglish)
+	row := fixtureStatusRow(t)
+	row.connection.Metadata.Group = "work"
+	renderMonitor(&out, []statusRow{row}, 0, false, nil, true, "work", time.Second, "", nil, nil, false, languageEnglish)
 	text := out.String()
-	if !strings.Contains(text, "tunlite monitor") || !strings.Contains(text, "v"+Version) || !strings.Contains(text, "filter tag=work") || !strings.Contains(text, "Esc/q quit") {
+	if !strings.Contains(text, "tunlite monitor") || !strings.Contains(text, "v"+Version) || !strings.Contains(text, "filter group=work") || !strings.Contains(text, "Esc/q quit") {
 		t.Fatalf("incomplete monitor frame: %q", text)
 	}
 	if !strings.Contains(text, "connections 1 total") || !strings.Contains(text, "NAME") || !strings.Contains(text, "STATE") {
 		t.Fatalf("monitor frame is missing top-style summary or table: %q", text)
+	}
+	if !strings.Contains(text, "Group work · 1") || !strings.Contains(text, "● 1") {
+		t.Fatalf("monitor frame is missing grouped status counts: %q", text)
 	}
 	if !strings.Contains(text, ansiReverse) {
 		t.Fatalf("selected monitor row is not highlighted: %q", text)
@@ -153,7 +158,7 @@ func TestMonitorFrameUsesOnePublicMonitorView(t *testing.T) {
 
 func TestMonitorDetailRendersRecentLogs(t *testing.T) {
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, nil, time.Second, "", nil, nil, false, languageEnglish)
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, true, []string{"connected", "stderr: warning"}, false, "", time.Second, "", nil, nil, false, languageEnglish)
 	text := out.String()
 	if !strings.Contains(text, "recent logs · latest 20 lines") || !strings.Contains(text, "connected") || !strings.Contains(text, "stderr: warning") || !strings.Contains(text, "←/Esc back") {
 		t.Fatalf("monitor detail did not render logs: %q", text)
@@ -165,14 +170,14 @@ func TestMonitorRendersTransitionsAndDestructiveConfirmation(t *testing.T) {
 	row.transition = "stopping"
 	transition := &monitorTransition{name: "db", label: "stopping"}
 	var out bytes.Buffer
-	renderMonitor(&out, []statusRow{row}, 0, false, nil, false, nil, time.Second, "", nil, transition, false, languageEnglish)
+	renderMonitor(&out, []statusRow{row}, 0, false, nil, false, "", time.Second, "", nil, transition, false, languageEnglish)
 	if text := out.String(); !strings.Contains(text, "◌ stopping") || !strings.Contains(text, "stopping db…") {
 		t.Fatalf("monitor did not render an in-flight stop: %q", text)
 	}
 
 	out.Reset()
 	confirmation := &monitorConfirmation{key: monitorRestart, name: "db"}
-	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, false, nil, time.Second, "", confirmation, nil, false, languageEnglish)
+	renderMonitor(&out, []statusRow{fixtureStatusRow(t)}, 0, false, nil, false, "", time.Second, "", confirmation, nil, false, languageEnglish)
 	if text := out.String(); !strings.Contains(text, `Restart "db"?`) || !strings.Contains(text, "y confirms; any other key cancels") {
 		t.Fatalf("monitor did not render restart confirmation: %q", text)
 	}
@@ -375,7 +380,7 @@ func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	opts := options{serviceAdapter: func() (service.Adapter, error) { return adapter, nil }}
-	rows, err := collectMonitorRows(context.Background(), nil, opts)
+	rows, err := collectMonitorRows(context.Background(), "", opts)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows=%#v err=%v", rows, err)
 	}

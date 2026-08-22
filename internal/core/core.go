@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"time"
 
@@ -18,8 +19,8 @@ const (
 )
 
 var (
-	validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
-	validTag  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,63}$`)
+	validName  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+	validGroup = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,63}$`)
 )
 
 type Connection struct {
@@ -34,8 +35,51 @@ type Connection struct {
 }
 
 type Metadata struct {
-	Name string   `json:"name"`
-	Tags []string `json:"tags,omitempty"`
+	Name  string `json:"name"`
+	Group string `json:"group,omitempty"`
+}
+
+// UnmarshalJSON keeps a narrow compatibility bridge for configs created by
+// the unreleased tag-based Go preview. A single tag has an unambiguous group
+// meaning; multiple tags must be resolved by the user instead of guessed.
+// Encoding always emits only the public V1 group field.
+func (m *Metadata) UnmarshalJSON(raw []byte) error {
+	var value struct {
+		Name  string   `json:"name"`
+		Group string   `json:"group,omitempty"`
+		Tags  []string `json:"tags,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return err
+	}
+	if value.Group != "" && len(value.Tags) > 0 {
+		return errors.New("metadata.group and legacy metadata.tags cannot be used together")
+	}
+	if len(value.Tags) > 1 {
+		return errors.New("legacy metadata.tags has multiple values; choose one and save it as metadata.group")
+	}
+	m.Name = value.Name
+	m.Group = value.Group
+	if len(value.Tags) == 1 {
+		m.Group = value.Tags[0]
+	}
+	return nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 type ConnectionSpec struct {
@@ -221,15 +265,8 @@ func ValidateConnection(connection Connection) error {
 	if !validName.MatchString(connection.Metadata.Name) {
 		return fmt.Errorf("invalid connection name %q", connection.Metadata.Name)
 	}
-	seenTags := make(map[string]struct{}, len(connection.Metadata.Tags))
-	for _, tag := range connection.Metadata.Tags {
-		if !validTag.MatchString(tag) {
-			return fmt.Errorf("invalid connection tag %q", tag)
-		}
-		if _, exists := seenTags[tag]; exists {
-			return fmt.Errorf("duplicate connection tag %q", tag)
-		}
-		seenTags[tag] = struct{}{}
+	if connection.Metadata.Group != "" && !validGroup.MatchString(connection.Metadata.Group) {
+		return fmt.Errorf("invalid connection group %q", connection.Metadata.Group)
 	}
 	if connection.Spec.Driver == "" {
 		return errors.New("spec.driver is required")

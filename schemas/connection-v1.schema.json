@@ -13,11 +13,7 @@
       "required": ["name"],
       "properties": {
         "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" },
-        "tags": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,63}$" },
-          "uniqueItems": true
-        }
+        "group": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,63}$" }
       }
     },
     "spec": {

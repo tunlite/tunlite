@@ -193,7 +193,7 @@ core + plan -X-> cli / app / ssh / systemd / launchd
       "kind": "Connection",
       "metadata": {
         "name": "staging-db",
-        "tags": ["staging", "database"]
+        "group": "staging"
       },
       "spec": {
         "driver": "io.tunlite.ssh",
@@ -221,19 +221,20 @@ core + plan -X-> cli / app / ssh / systemd / launchd
 - `configVersion` 只在文档根节点出现一次，不能在每个 Connection 中重复。
 - Core 校验公共 Envelope，Driver 校验 `spec.config`。
 - Connection 声明不保存 foreground、background、persistent、PID 或平台服务名。
-- `metadata.tags` 是无序、去重的字符串集合；它只用于选择和批量操作，不形成另一种
-  Group 资源，也不承载生命周期或共享配置。
+- `metadata.group` 是可选的单值业务归属，同时用于状态分组、过滤和批量操作。它不是
+  独立资源，不拥有生命周期、嵌套、共享配置或独立管理命令。
 - 配置读取必须拒绝未知字段、混合版本和不支持的更高版本。
 - 只读命令不得改写配置；真正需要新格式的首次写操作才允许按产品设计执行版本升级。
 - 输出顺序必须确定；同一输入不应因 map 遍历产生无意义 diff。
 
-Tag 选择语义从 V1 起固定：
+Group 选择语义从 V1 起固定：
 
-- 修改命令必须明确选择一个 Connection 名称、一个或多个 `--tag`，或者 `--all`。
-- 多个 `--tag` 使用 AND 语义，只选择同时包含全部 tag 的 Connection。
+- 修改命令必须明确选择一个 Connection 名称、一个 `--group`，或者 `--all`。
 - `--all` 是显式批量标志，不把字符串 `all` 保留成魔法 Connection 名称。
-- `list`、无参数 `status` 和无参数 `monitor` 是只读查询，默认展示全部。
-- `set <name> --tag ...` 替换该 Connection 的完整 tag 集合；import/export 原样保留。
+- `list`、无参数 `status` 和无参数 `monitor` 默认按 Group 展示全部；未设置 Group 的
+  Connection 进入“未分组”。
+- `set <name> --group ...` 修改归属，`set <name> --no-group` 清除归属。
+- 0.x 导入只在恰好一个旧 Tag 时无歧义转换为 Group；多个旧 Tag 必须由用户先选择一个。
 
 ### 6.2 SSH Driver 配置
 

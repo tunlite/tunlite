@@ -60,10 +60,10 @@
 <span>#</span> remote publish and SOCKS proxy
 <span>$</span> tunlite add preview --to deploy@app01 -R 9000:localhost:3000
 <span>$</span> tunlite add socks --to deploy@app01 -D 1080</pre>
-        <p>Identity files, jump hosts, tags, and safe OpenSSH <code>Key=Value</code> options are explicit fields:</p>
+        <p>Identity files, jump hosts, groups, and safe OpenSSH <code>Key=Value</code> options are explicit fields:</p>
         <pre class="code"><span>$</span> tunlite add private-db --to deploy@app01:2222 \
     -i ~/.ssh/work_ed25519 --jump bastion@example.com \
-    -L 5432:localhost:5432 --tag work</pre>
+    -L 5432:localhost:5432 --group work</pre>
       </section>
 
       <section id="lifecycle">

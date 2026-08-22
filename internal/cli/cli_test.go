@@ -210,7 +210,7 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com:2222",
-		"-L", "5432:localhost:5432", "--tag", "work,db", "--json")
+		"-L", "5432:localhost:5432", "--group", "work", "--json")
 	if code != 0 {
 		t.Fatalf("add exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -226,7 +226,7 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 		t.Fatalf("unexpected add result: %#v", added)
 	}
 
-	code, out, stderr = invoke(t, "list", "--tag", "work", "--json")
+	code, out, stderr = invoke(t, "list", "--group", "work", "--json")
 	if code != 0 {
 		t.Fatalf("list exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -242,7 +242,7 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	}
 
 	code, out, stderr = invoke(t, "set", "db", "--to", "deploy@db.internal", "-D", "1080",
-		"--no-tags", "--ssh-opt", "Compression=yes", "--json")
+		"--no-group", "--ssh-opt", "Compression=yes", "--json")
 	if code != 0 {
 		t.Fatalf("set exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -259,8 +259,8 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	if sshConfig.Host != "deploy@db.internal" || len(sshConfig.Forwards) != 1 || sshConfig.Forwards[0].Type != "dynamic" {
 		t.Fatalf("unexpected SSH config: %#v", sshConfig)
 	}
-	if len(updated.Connection.Metadata.Tags) != 0 {
-		t.Fatalf("tags were not cleared: %#v", updated.Connection.Metadata.Tags)
+	if updated.Connection.Metadata.Group != "" {
+		t.Fatalf("group was not cleared: %q", updated.Connection.Metadata.Group)
 	}
 
 	code, _, stderr = invoke(t, "rename", "db", "database")
@@ -289,6 +289,41 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	code, out, _ = invoke(t, "remove", "database", "--json")
 	if code != 3 || !strings.Contains(out, `"code":"not_found"`) {
 		t.Fatalf("unexpected not-found result: exit=%d stdout=%s", code, out)
+	}
+}
+
+func TestHumanListAndStatusAreGroupedByBusinessOwnership(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+
+	for _, args := range [][]string{
+		{"add", "prod-db", "--to", "me@example.com", "-D", "1081", "--group", "prod"},
+		{"add", "prod-api", "--to", "me@example.com", "-D", "1082", "--group", "prod"},
+		{"add", "personal", "--to", "me@example.com", "-D", "1083"},
+	} {
+		if code, out, stderr := invoke(t, args...); code != 0 {
+			t.Fatalf("%v exit=%d stdout=%s stderr=%s", args, code, out, stderr)
+		}
+	}
+
+	for _, args := range [][]string{{"list"}, {"status"}} {
+		code, out, stderr := invoke(t, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v exit=%d stdout=%s stderr=%s", args, code, out, stderr)
+		}
+		prod := strings.Index(out, "Group prod · 2 connections")
+		ungrouped := strings.Index(out, "Group Ungrouped · 1 connection")
+		if prod < 0 || ungrouped < 0 || prod > ungrouped {
+			t.Fatalf("%v did not group named ownership before ungrouped connections:\n%s", args, out)
+		}
+	}
+
+	code, out, stderr := invoke(t, "status", "--group", "prod", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"connection":"prod-db"`) ||
+		!strings.Contains(out, `"connection":"prod-api"`) || strings.Contains(out, `"connection":"personal"`) {
+		t.Fatalf("group selection exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 }
 
@@ -353,7 +388,7 @@ func TestImportAcceptsFrozenZeroXConfigWithoutChangingSourceOrRuntime(t *testing
   "tunnels": [{
     "name": "db", "host": "me@example.com", "port": 2222,
     "identityFile": "~/.ssh/id_ed25519", "jump": "me@bastion:2200",
-    "tags": ["work", "db"],
+		"tags": ["work"],
     "forwards": [{"type":"local","bind":"127.0.0.1","srcPort":5432,"destHost":"localhost","destPort":5432}],
     "sshOptions": ["-o", "Compression=yes"], "enabled": true, "autoSetupKey": true
   }]
@@ -377,8 +412,8 @@ func TestImportAcceptsFrozenZeroXConfigWithoutChangingSourceOrRuntime(t *testing
 		t.Fatalf("V1 config items=%d err=%v", len(document.Items), err)
 	}
 	connection := document.Items[0]
-	if !hasAllTags(connection.Metadata.Tags, []string{"work", "db"}) {
-		t.Fatalf("legacy tags were not imported: %#v", connection.Metadata.Tags)
+	if connection.Metadata.Group != "work" {
+		t.Fatalf("legacy tag was not imported as a group: %q", connection.Metadata.Group)
 	}
 	sshConfig, err := sshdriver.DecodeConfig(connection.Spec.Config)
 	if err != nil || sshConfig.Port != 2222 || len(sshConfig.Jump) != 1 ||

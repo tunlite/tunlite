@@ -17,7 +17,7 @@ import (
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
 )
 
-var validTag = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var validGroup = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type legacyDocument struct {
 	Version  int             `json:"version"`
@@ -144,14 +144,19 @@ func convertTunnel(tunnel legacyTunnel) (core.Connection, error) {
 	if err != nil {
 		return core.Connection{}, err
 	}
-	for _, tag := range tags {
-		if !validTag.MatchString(tag) {
-			return core.Connection{}, fmt.Errorf("invalid tag %q", tag)
+	if len(tags) > 1 {
+		return core.Connection{}, errors.New("multiple legacy tags cannot be converted safely; choose one group in the 0.x config before importing")
+	}
+	group := ""
+	if len(tags) == 1 {
+		group = tags[0]
+		if !validGroup.MatchString(group) {
+			return core.Connection{}, fmt.Errorf("invalid group %q converted from legacy tag", group)
 		}
 	}
 	connection := core.Connection{
 		ConfigVersion: core.ConfigVersion, Kind: core.Kind,
-		Metadata: core.Metadata{Name: tunnel.Name, Tags: tags},
+		Metadata: core.Metadata{Name: tunnel.Name, Group: group},
 		Spec:     core.ConnectionSpec{Driver: sshdriver.ID, Config: rawConfig},
 	}
 	if err := core.ValidateConnection(connection); err != nil {
