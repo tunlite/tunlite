@@ -38,7 +38,7 @@ V1： ~/.config/tunlite/connections.json
 以下字段有明确对应关系，会直接导入：
 
 - Connection 名称；
-- 标签；
+- 零个或一个旧标签：一个标签会转换为 V1 的单值 Group；
 - SSH Host 和 Port；
 - Identity File；
 - Jump Host；
@@ -47,6 +47,8 @@ V1： ~/.config/tunlite/connections.json
 
 以下内容没有 V1 的同义配置，不会导入：
 
+- 同一 Connection 的多个旧标签：它们没有可靠的主次关系，导入会停止并要求先选择
+  一个 Group，不会按数组顺序猜测；
 - 旧 daemon 的重试、Keepalive 和日志等级等全局设置；
 - Webhook 设置；
 - `enabled` 对应的当前运行状态；

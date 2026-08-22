@@ -274,7 +274,7 @@ Tunlite CLI -----------------------------------------> OS Service Adapter
 Go 核心负责：
 
 - 配置加载、校验、导入和导出，以及公共配置版本确有需要时的内部原子升级。
-- Connection 名称、标签、选择和批量操作。
+- Connection 名称、单值 Group、选择和批量操作。
 - Driver 发现、协议协商和调用。
 - 阶段 5 以后才加入插件安装、校验、锁定、更新、回滚和卸载。
 - 通过 OS Service Adapter 把 `ExecutionPlan` 转换成平台原生服务产物。
@@ -653,7 +653,7 @@ Schema 在实现阶段确定，但这个边界是强制性的：
       "kind": "Connection",
       "metadata": {
         "name": "staging-db",
-        "tags": ["staging", "database"]
+        "group": "staging"
       },
       "spec": {
         "driver": "io.tunlite.ssh",
@@ -716,10 +716,13 @@ Connection 声明不保存 `foreground`、`background` 或 `persistent` 生命�
 公共配置同样不提供 `autostart`、`restartPolicy`、`KeepAlive` 或 systemd `Restart`
 等高级生命周期覆盖。四种标准运行方式是产品契约；平台细节只允许作为只读诊断信息出现。
 
-`metadata.tags` 是长期稳定的 Connection 选择能力。它是无序、去重的字符串集合，只
-用于过滤和批量操作，不形成 Group 对象，不拥有生命周期、嵌套、共享配置或独立命令。
-修改命令必须明确选择名称、一个或多个 `--tag`，或者 `--all`；多个 tag 使用 AND
-语义。`all` 不再是魔法位置参数或保留 Connection 名称。
+`metadata.group` 是可选的单值业务归属，同时用于 `list`、`status`、`monitor` 的分组
+展示、过滤和批量操作。它不形成 Group 对象，不拥有生命周期、嵌套、共享配置或独立
+管理命令。修改命令必须明确选择名称、一个 `--group`，或者 `--all`。未设置 Group 的
+Connection 进入“未分组”；`all` 不再是魔法位置参数或保留 Connection 名称。
+
+V1 不公开 Tag 概念。0.x 或未发布 Go Preview 的旧输入仅在恰好一个 Tag 时转换为 Group；
+多个 Tag 没有稳定主次关系，导入必须停止并要求用户明确选择，不能按顺序猜测。
 
 ### 5.1 项目声明
 
@@ -1080,7 +1083,7 @@ V1 Preview 的公共命令面向 Connection，而不是绑定 SSH。下表是完
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
 | `add` | `tunlite add <name> --to user@host[:port] -L/-R/-D ...` | 创建具名 Connection，并同步建立停止状态的原生服务定义。保留；名称是全部生命周期操作的稳定身份。 |
-| `list` | `tunlite list [--tag tag...]` | 列出 Tunlite 已管理的 Connection，不扫描未管理的系统服务；多个 tag 使用 AND。保留；它回答“我管理了什么”。 |
+| `list` | `tunlite list [--group group]` | 按 Group 分段列出 Tunlite 已管理的 Connection，不扫描未管理的系统服务；未设置归属的进入“未分组”。保留；它回答“我管理了什么”。 |
 | `set` | `tunlite set <name> [--to ...] [-L/-R/-D ...]` | 修改声明，并在同一事务中联动原生服务；不要求再执行 `sync`。保留。 |
 | `rename` | `tunlite rename <name> <new-name>` | 原子修改 Connection 身份及其服务绑定。保留；不能退化成复制后删除。 |
 | `remove` | `tunlite remove <name>` | 只允许删除已停止且不再持久启用的 Connection，同时删除其原生服务定义。保留完整词，不提供 `rm` 公共别名。 |
@@ -1094,14 +1097,14 @@ Envelope 和 Driver 接口不能因此绑定 SSH。未来 Driver 使用自己的
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
 | `run` | `tunlite run <name>` | 在当前终端前台运行已有 Connection；退出即停止，不创建临时匿名配置。保留。 |
-| `start` | `tunlite start <name> \| --tag tag... \| --all` | 通过已有原生服务在后台运行，但不设置登录后自动启动。保留。 |
-| `stop` | `tunlite stop <name> \| --tag tag... \| --all` | 把临时后台运行变为停止；对后台长期运行明确拒绝并提示使用 `disable`，避免“现在停了、下次登录又出现”的隐藏状态。保留。 |
-| `restart` | `tunlite restart <name> \| --tag tag... \| --all` | 重新启动后台进程，不改变是否持久启用。保留；这是高频运维动作，不强迫用户组合两条命令。 |
-| `enable` | `tunlite enable <name> \| --tag tag... \| --all` | 设置用户会话启动后自动运行，并确保连接现在处于后台运行；已由 `start` 启动时直接升级为持久模式，不报冲突。保留。 |
-| `disable` | `tunlite disable <name> \| --tag tag... \| --all` | 把后台长期运行变为停止：同时停止当前进程并取消以后自动启动；对临时后台运行提示使用 `stop`。保留。 |
-| `status` | `tunlite status [<name> \| --tag tag... \| --all]` | 读取声明、服务、进程、健康和一致性状态；无目标时查看全部。保留，作为脚本和 Agent 的状态入口。 |
+| `start` | `tunlite start <name> \| --group group \| --all` | 通过已有原生服务在后台运行，但不设置登录后自动启动。保留。 |
+| `stop` | `tunlite stop <name> \| --group group \| --all` | 把临时后台运行变为停止；对后台长期运行明确拒绝并提示使用 `disable`，避免“现在停了、下次登录又出现”的隐藏状态。保留。 |
+| `restart` | `tunlite restart <name> \| --group group \| --all` | 重新启动后台进程，不改变是否持久启用。保留；这是高频运维动作，不强迫用户组合两条命令。 |
+| `enable` | `tunlite enable <name> \| --group group \| --all` | 设置用户会话启动后自动运行，并确保连接现在处于后台运行；已由 `start` 启动时直接升级为持久模式，不报冲突。保留。 |
+| `disable` | `tunlite disable <name> \| --group group \| --all` | 把后台长期运行变为停止：同时停止当前进程并取消以后自动启动；对临时后台运行提示使用 `stop`。保留。 |
+| `status` | `tunlite status [<name> \| --group group \| --all]` | 读取声明、服务、进程、健康和一致性状态；无目标时按 Group 查看全部。保留，作为脚本和 Agent 的状态入口。 |
 | `logs` | `tunlite logs <name> [--lines N] [--follow]` | 通过原生服务适配器查看一条 Connection 的历史或实时日志。保留。 |
-| `monitor` | `tunlite monitor [--tag tag...] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局并显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；停止和重启需要 `y` 二次确认，其他键取消，启动直接执行。多个 tag 使用 AND；不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
+| `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局，按 Group 分区显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；停止和重启需要 `y` 二次确认，其他键取消，启动直接执行。不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
 
 四种标准模式继续存在于机器契约，但人类界面使用“状态 / 运行位置 / 登录自启”三列表达。
 原生服务定义从 `add` 起就存在；`start` 和 `enable` 的差异只在登录自启意图，不在是否
@@ -1293,7 +1296,7 @@ v1 不能为了保留 0.x 的每个字段，而把 daemon 换个名字重新实�
 
 保留或增强：
 
-- 声明式名称、标签和批量操作。
+- 声明式名称、Group 分区和批量操作。
 - SSH `-L`、`-R`、`-D`、Jump Host、Identity File 和安全 argv 生成。
 - 导入、导出和配置校验。
 - 认证前置检查和可操作诊断。

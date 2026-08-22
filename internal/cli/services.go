@@ -24,7 +24,7 @@ import (
 
 type serviceSelection struct {
 	target string
-	tags   []string
+	group  string
 	all    bool
 }
 
@@ -172,8 +172,9 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var rawTags stringsFlag
-	flags.Var(&rawTags, "tag", "select connections by tag")
+	var legacyTags stringsFlag
+	flags.StringVar(&selection.group, "group", "", "select connections by group")
+	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	flags.BoolVar(&selection.all, "all", false, "select all connections")
 	if err := flags.Parse(args); err != nil {
 		return selection, usageError(err.Error())
@@ -181,26 +182,44 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	if flags.NArg() != 0 {
 		return selection, usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
 	}
-	var err error
-	selection.tags, err = parseTags(rawTags)
-	if err != nil {
-		return selection, err
+	groupSet := false
+	legacyTagSet := false
+	flags.Visit(func(item *flag.Flag) {
+		groupSet = groupSet || item.Name == "group"
+		legacyTagSet = legacyTagSet || item.Name == "tag"
+	})
+	if groupSet && legacyTagSet {
+		return selection, usageError("use --group, not --group and legacy --tag together")
+	}
+	if groupSet {
+		var err error
+		selection.group, err = parseGroup(selection.group)
+		if err != nil {
+			return selection, err
+		}
+	} else if legacyTagSet {
+		var err error
+		selection.group, err = parseLegacyGroup(legacyTags)
+		if err != nil {
+			return selection, err
+		}
+		groupSet = true
 	}
 	selectors := 0
 	if selection.target != "" {
 		selectors++
 	}
-	if len(selection.tags) > 0 {
+	if groupSet {
 		selectors++
 	}
 	if selection.all {
 		selectors++
 	}
 	if selectors > 1 {
-		return selection, usageError("choose exactly one of a connection name, --tag, or --all")
+		return selection, usageError("choose exactly one of a connection name, --group, or --all")
 	}
 	if selectors == 0 && command != "status" {
-		return selection, usageError(fmt.Sprintf("usage: tunlite %s <name> | --tag <tag> | --all", command))
+		return selection, usageError(fmt.Sprintf("usage: tunlite %s <name> | --group <group> | --all", command))
 	}
 	return selection, nil
 }
@@ -241,17 +260,17 @@ func selectServiceConnections(document configstore.Document, selection serviceSe
 		}
 		return []core.Connection{cloneConnection(*connection)}, nil
 	}
-	if !selection.all && len(selection.tags) == 0 && !defaultAll {
+	if !selection.all && selection.group == "" && !defaultAll {
 		return nil, usageError("a connection selector is required")
 	}
 	results := make([]core.Connection, 0, len(document.Items))
 	for _, connection := range document.Items {
-		if len(selection.tags) == 0 || hasAllTags(connection.Metadata.Tags, selection.tags) {
+		if selection.group == "" || connection.Metadata.Group == selection.group {
 			results = append(results, cloneConnection(connection))
 		}
 	}
-	if len(results) == 0 && len(selection.tags) > 0 {
-		return nil, notFoundError(fmt.Sprintf("no connections tagged %s", quoteList(selection.tags)))
+	if len(results) == 0 && selection.group != "" {
+		return nil, notFoundError(fmt.Sprintf("no connections in group %q", selection.group))
 	}
 	return results, nil
 }

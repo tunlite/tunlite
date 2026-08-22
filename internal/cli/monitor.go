@@ -57,9 +57,11 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	flags := flag.NewFlagSet("monitor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	intervalText := "1"
-	var rawTags stringsFlag
+	var group string
+	var legacyTags stringsFlag
 	flags.StringVar(&intervalText, "interval", "1", "refresh interval in seconds")
-	flags.Var(&rawTags, "tag", "filter by tag")
+	flags.StringVar(&group, "group", "", "filter by group")
+	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	if err := flags.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -79,9 +81,25 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	if err != nil || seconds < 0.25 || seconds > 60 {
 		return usageError("monitor interval must be between 0.25 and 60 seconds")
 	}
-	tags, err := parseTags(rawTags)
-	if err != nil {
-		return err
+	groupSet := false
+	legacyTagSet := false
+	flags.Visit(func(item *flag.Flag) {
+		groupSet = groupSet || item.Name == "group"
+		legacyTagSet = legacyTagSet || item.Name == "tag"
+	})
+	if groupSet && legacyTagSet {
+		return usageError("use --group, not --group and legacy --tag together")
+	}
+	if groupSet {
+		group, err = parseGroup(group)
+		if err != nil {
+			return err
+		}
+	} else if legacyTagSet {
+		group, err = parseLegacyGroup(legacyTags)
+		if err != nil {
+			return err
+		}
 	}
 	interval := time.Duration(seconds * float64(time.Second))
 	color := outputUsesColor(streams, opts)
@@ -118,10 +136,10 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 				}
 			}
 		}
-		renderMonitor(streams.Out, visible, selected, detail, logs, color, tags, interval, flash, confirmation, transition, loading, opts.Language)
+		renderMonitor(streams.Out, visible, selected, detail, logs, color, group, interval, flash, confirmation, transition, loading, opts.Language)
 	}
 	refresh := func() error {
-		fresh, refreshErr := collectMonitorRows(monitorCtx, tags, opts)
+		fresh, refreshErr := collectMonitorRows(monitorCtx, group, opts)
 		if refreshErr != nil {
 			return refreshErr
 		}
@@ -364,14 +382,14 @@ func emitMonitorKey(value byte, output chan<- monitorKey) {
 	}
 }
 
-func collectMonitorRows(ctx context.Context, tags []string, opts options) ([]statusRow, error) {
+func collectMonitorRows(ctx context.Context, group string, opts options) ([]statusRow, error) {
 	adapter, records, config, document, err := serviceDependencies(opts)
 	if err != nil {
 		return nil, err
 	}
 	targets := make([]core.Connection, 0)
 	for _, connection := range document.Items {
-		if len(tags) == 0 || hasAllTags(connection.Metadata.Tags, tags) {
+		if group == "" || connection.Metadata.Group == group {
 			targets = append(targets, connection)
 		}
 	}
@@ -420,7 +438,7 @@ func collectMonitorLogs(ctx context.Context, row statusRow, opts options) ([]str
 }
 
 func sortStatusRows(rows []statusRow) {
-	sort.Slice(rows, func(i, j int) bool { return rows[i].connection.Metadata.Name < rows[j].connection.Metadata.Name })
+	sort.Slice(rows, func(i, j int) bool { return connectionLess(rows[i].connection, rows[j].connection) })
 }
 
 func renderMonitor(
@@ -430,7 +448,7 @@ func renderMonitor(
 	detail bool,
 	logs []string,
 	color bool,
-	tags []string,
+	group string,
 	interval time.Duration,
 	flash string,
 	confirmation *monitorConfirmation,
@@ -472,8 +490,8 @@ func renderMonitor(
 				"共 %d  ● 运行 %d  ◌ 变更 %d  ✕ 异常 %d  ○ 停止 %d"),
 				len(rows), running, changing, problem, stopped)
 		}
-		if len(tags) > 0 {
-			summary += "   " + localized(lang, "filter tag=", "筛选 标签=") + strings.Join(tags, ",")
+		if group != "" {
+			summary += "   " + localized(lang, "filter group=", "筛选 分组=") + group
 		}
 		lines = append(lines, fitCell(summary, width), separator)
 		bodyCapacity := maxInt(1, height-5)
@@ -482,7 +500,7 @@ func renderMonitor(
 		} else if len(rows) == 0 {
 			lines = append(lines, fitCell(localized(lang, "  No matching connections.", "  没有符合条件的连接。"), width))
 		} else {
-			start, end := monitorViewport(len(rows), selected, maxInt(0, bodyCapacity-1))
+			start, end := monitorGroupedViewport(rows, selected, maxInt(1, bodyCapacity-1))
 			lines = append(lines, renderMonitorTable(rows, selected, start, end, width, color, lang)...)
 		}
 		for len(lines) < height-2 {
@@ -572,6 +590,44 @@ func monitorViewport(count, selected, capacity int) (int, int) {
 	return start, start + capacity
 }
 
+func monitorGroupedViewport(rows []statusRow, selected, capacity int) (int, int) {
+	if len(rows) == 0 || capacity <= 0 {
+		return 0, 0
+	}
+	if selected < 0 || selected >= len(rows) {
+		selected = 0
+	}
+	start, end := selected, selected+1
+	for {
+		grew := false
+		if end < len(rows) && monitorGroupedLineCount(rows, start, end+1) <= capacity {
+			end++
+			grew = true
+		}
+		if start > 0 && monitorGroupedLineCount(rows, start-1, end) <= capacity {
+			start--
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+	return start, end
+}
+
+func monitorGroupedLineCount(rows []statusRow, start, end int) int {
+	if start >= end {
+		return 0
+	}
+	lines := end - start
+	for index := start; index < end; index++ {
+		if index == start || rows[index-1].connection.Metadata.Group != rows[index].connection.Metadata.Group {
+			lines++
+		}
+	}
+	return lines
+}
+
 func renderMonitorTable(rows []statusRow, selected, start, end, width int, color bool, lang language) []string {
 	columns := []tableColumn{
 		{header: localized(lang, "NAME", "名称"), max: 24, value: func(row statusRow) string { return row.connection.Metadata.Name }},
@@ -634,6 +690,10 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 	lines := []string{colorize("  "+strings.Join(headerCells, " "), ansiDim, color)}
 	for rowIndex := start; rowIndex < end; rowIndex++ {
 		row := rows[rowIndex]
+		if rowIndex == start || rows[rowIndex-1].connection.Metadata.Group != row.connection.Metadata.Group {
+			heading := fitCell(monitorGroupHeading(rows, row.connection.Metadata.Group, lang), width)
+			lines = append(lines, colorize(heading, ansiDim, color))
+		}
 		cells := make([]string, len(columns))
 		for index, column := range columns {
 			cells[index] = fitCell(column.value(row), widths[index])
@@ -652,6 +712,22 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func monitorGroupHeading(rows []statusRow, group string, lang language) string {
+	groupRows := make([]statusRow, 0)
+	for _, row := range rows {
+		if row.connection.Metadata.Group == group {
+			groupRows = append(groupRows, row)
+		}
+	}
+	running, changing, problem, stopped := monitorCounts(groupRows)
+	if isChinese(lang) {
+		return fmt.Sprintf("  ── 分组 %s · %d 个  ● %d  ◌ %d  ✕ %d  ○ %d",
+			groupLabel(group, lang), len(groupRows), running, changing, problem, stopped)
+	}
+	return fmt.Sprintf("  ── Group %s · %d  ● %d  ◌ %d  ✕ %d  ○ %d",
+		groupLabel(group, lang), len(groupRows), running, changing, problem, stopped)
 }
 
 func tableWidth(widths []int) int {

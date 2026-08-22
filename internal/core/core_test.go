@@ -123,3 +123,28 @@ func TestValidateConnectionRequiresConfigObject(t *testing.T) {
 		t.Fatal("non-object driver config was accepted")
 	}
 }
+
+func TestMetadataConvertsOneUnreleasedPreviewTagToGroup(t *testing.T) {
+	var metadata Metadata
+	if err := json.Unmarshal([]byte(`{"name":"db","tags":["work"]}`), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Name != "db" || metadata.Group != "work" {
+		t.Fatalf("metadata=%#v", metadata)
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"tags"`)) || !bytes.Contains(encoded, []byte(`"group":"work"`)) {
+		t.Fatalf("legacy tag was not normalized to group: %s", encoded)
+	}
+}
+
+func TestMetadataRejectsAmbiguousLegacyTags(t *testing.T) {
+	var metadata Metadata
+	err := json.Unmarshal([]byte(`{"name":"db","tags":["work","database"]}`), &metadata)
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("choose one")) {
+		t.Fatalf("ambiguous tags error=%v", err)
+	}
+}

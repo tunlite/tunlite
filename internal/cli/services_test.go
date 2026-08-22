@@ -1332,7 +1332,7 @@ func TestResolveSystemReportsBlockedRecoveryAfterConcurrentChange(t *testing.T) 
 		func(ctx context.Context, _ service.Record) error {
 			if updateErr := config.Update(ctx, func(document *configstore.Document) error {
 				_, current := configstore.Find(document, "db")
-				current.Metadata.Tags = []string{"concurrent"}
+				current.Metadata.Group = "concurrent"
 				return nil
 			}); updateErr != nil {
 				return updateErr

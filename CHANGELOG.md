@@ -39,8 +39,8 @@ as the product's focused entry point.
 - Chinese and English human interfaces selected by `--lang`, `TUNLITE_LANG`, or the
   system locale. Command names, configuration, error codes, and JSON fields and
   values remain stable English machine contracts.
-- One canonical configuration path, root-only `configVersion`, long-lived tags with
-  AND selection, and explicit `--all` batch selection.
+- One canonical configuration path, root-only `configVersion`, one optional Group
+  per Connection for grouped status and batch selection, and explicit `--all`.
 - A single native binary whose installation, upgrades, and removal are owned by the
   release channel or package manager rather than the core CLI.
 - Shell completion is deliberately deferred from the v1 preview until ownership
@@ -61,6 +61,10 @@ as the product's focused entry point.
   `ON LOGIN` instead of exposing the internal `MODE` directly. Monitor keeps PID,
   uptime, and restart count as operational columns, drops the redundant `TYPE`
   column, and hides host/route details first on narrow terminals.
+- V1 exposes one optional `group` instead of multi-value tags. `list`, `status`, and
+  `monitor` group human output by this stable business ownership; `--group` selects
+  one group for batch operations. Historical input with one tag converts without
+  ambiguity, while multiple tags require the user to choose one group.
 - Interactive commands that may wait for SSH, native service managers, or batch
   observation now print the operation before waiting; JSON output remains free of
   human progress text, and `version --json` retains its protocol version field.
