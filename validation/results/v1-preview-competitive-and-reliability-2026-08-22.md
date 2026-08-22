@@ -80,7 +80,12 @@ Release API 声明完全一致，但 tar.gz 本身截断，无法完整解包。
 
 真实优点：
 
-- TOML 很短，`open/close/list`、group 和 glob 的学习成本低。
+- TOML 很短，`open/close/list`、group 和 glob 的学习成本低。这里的 group 不只是配置
+  字段：它让用户用一个业务分组理解、查看和批量操作隧道。
+- Tunlite 当前的多 Tag 只完整覆盖了选择能力：可用 AND 语义筛选并批量操作；`list`
+  仅在每行末尾显示标签，`status` 和 `monitor` 总览不显示或分组展示标签，只有单条详情
+  才显示。因此 Tag 过滤不能算作已经具备分组视图，日常观察的可发现性和认知负担是
+  boring 当前真实领先、Tunlite 需要补齐的体验。
 - 状态表紧凑，断线时明确显示 `reconn`。
 - Bash、Zsh、Fish 补全成熟，并能根据当前 open/closed 状态补全名称。
 - 支持 Unix socket、远端 SOCKS、ProxyJump 和 ssh-agent，SSH 使用面比 Tunlite Preview 宽。
