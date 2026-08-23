@@ -23,7 +23,6 @@
 | Intel Mac 上的真实 launchd 生命周期、日志与崩溃恢复 | 通过，连续 3 次 |
 | Intel Mac 上的接管与交还零中断（Provider PID 不变） | 通过，连续 3 次 |
 | Intel Mac Release 二进制 + 隔离 sshd + launchd + `-L/-R/-D` 真实流量与崩溃恢复 | 通过 |
-| 冻结 0.10.3 → V1 导入、逐条流量切换与回滚 | 通过 |
 | macOS x64/arm64、Linux x64/arm64 原生构建 | 通过 |
 | 三个发布归档的 SHA-256 | 通过 |
 | bootstrap 下载、校验、原子替换和真实 Release 安装 | 通过 |
@@ -66,9 +65,6 @@ command -v ssh
 
 应输出 `ssh` 的路径。发布后的在线安装脚本另外需要 `curl`、`tar` 和
 `sha256sum`/`shasum`。
-
-如果机器上已经安装 Tunlite 0.x，不要继续本节的覆盖安装，必须先按照
-[0.x 升级到 Go v1](UPGRADE_FROM_0_X.md)完成旁路迁移和人工切换。
 
 ### 3.1 现在：安装本地生成的原生二进制
 

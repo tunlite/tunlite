@@ -326,10 +326,6 @@ func containsString(values []string, target string) bool {
 }
 
 func suggestCommand(value string) string {
-	retired := map[string]string{"rm": "remove", "mon": "monitor", "watch": "monitor"}
-	if replacement := retired[value]; replacement != "" {
-		return replacement
-	}
 	best, distance := "", 4
 	for _, candidate := range publicCommands {
 		if current := editDistance(value, candidate); current < distance {

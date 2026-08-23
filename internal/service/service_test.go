@@ -259,7 +259,7 @@ func TestLaunchdEnableRunningBackgroundJobDoesNotRestartIt(t *testing.T) {
 	}
 }
 
-func TestLaunchdParsesCurrentAndLegacyDisabledOutput(t *testing.T) {
+func TestLaunchdParsesCurrentAndAlternateDisabledOutput(t *testing.T) {
 	label := "dev.tunlite.connection.db"
 	for _, output := range []string{
 		"disabled services = {\n\t\"dev.tunlite.connection.db\" => disabled\n}",
@@ -428,27 +428,16 @@ func TestServiceStoreRoundTrip(t *testing.T) {
 	}
 }
 
-func TestServiceStoreReadsPreviewAPIVersionAndWritesInternalRevision(t *testing.T) {
+func TestServiceStoreRejectsUnknownPreviewRecord(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "db.json")
-	legacy := []byte(`{"apiVersion":"tunlite.service/v2","connection":"db","serviceKey":"db","adapter":"systemd","mode":"stopped","unitName":"tunlite-db.service"}`)
-	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+	unknown := []byte(`{"recordRevision":1,"connection":"db","serviceKey":"db","adapter":"systemd","mode":"stopped","unitName":"tunlite-db.service","unknown":true}`)
+	if err := os.WriteFile(path, unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := NewStore(root)
-	record, exists, err := store.Load("db")
-	if err != nil || !exists || record.RecordRevision != CurrentRecordRevision {
-		t.Fatalf("record=%#v exists=%t err=%v", record, exists, err)
-	}
-	if err := store.Write(context.Background(), record); err != nil {
-		t.Fatal(err)
-	}
-	current, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(current, []byte(`"apiVersion"`)) || !bytes.Contains(current, []byte(`"recordRevision": 1`)) {
-		t.Fatalf("preview service record was not normalized: %s", current)
+	if _, _, err := store.Load("db"); err == nil {
+		t.Fatal("unknown preview service record was accepted")
 	}
 }
 

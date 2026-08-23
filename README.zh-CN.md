@@ -24,8 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootst
 ```
 
 每个 Release 都包含独立压缩包和 `SHA256SUMS`。第一次安装或参与发布验收，请按照
-[从零安装与验收手册](docs/INSTALL_AND_ACCEPTANCE.md)执行；现有 0.x 用户必须先阅读
-[0.x 升级到 Go v1](docs/UPGRADE_FROM_0_X.md)，版本边界见[预览版指南](docs/V1_PREVIEW.md)。
+[从零安装与验收手册](docs/INSTALL_AND_ACCEPTANCE.md)执行；当前版本边界和发布门禁见
+[预览版指南](docs/V1_PREVIEW.md)。
 
 拿到手动下载的原生二进制时，直接复制到 PATH：
 
@@ -102,7 +102,7 @@ tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-i
 仓库独立提供的 [`use-tunlite` Agent Skill](skill/use-tunlite/SKILL.md) 会在测试中与
 CLI 的命令、退出码、状态和 Schema 契约校验一致；安装和卸载由 Agent 自己负责。
 
-## 配置与迁移
+## 配置
 
 所有连接使用通用 `Connection` Envelope，SSH 专属字段只存在于内置
 `io.tunlite.ssh` Driver 的配置中。这样为未来 Driver 保留增量扩展能力，同时不在 v1
@@ -112,14 +112,10 @@ CLI 的命令、退出码、状态和 Schema 契约校验一致；安装和卸�
 tunlite export --output tunlite.json
 tunlite validate tunlite.json
 tunlite import tunlite.json --dry-run
-
-# 0.10.3 配置显式导入；旧文件和旧隧道不会被修改。
-tunlite import ~/.config/tunlite/config.json --dry-run --json --non-interactive
-tunlite import ~/.config/tunlite/config.json --json --non-interactive
 ```
 
-V1 配置写入 `~/.config/tunlite/connections.json`。导入后的 Connection 全部停止，用户
-按照升级文档逐条切换，避免新旧进程争用同一端口。
+V1 配置写入 `~/.config/tunlite/connections.json`。`import` 只接受文档定义的 V1
+`ConnectionList` 格式；不支持的版本和未知字段会被严格拒绝。
 
 ## 预览版范围
 
@@ -127,8 +123,8 @@ V1 配置写入 `~/.config/tunlite/connections.json`。导入后的 Connection �
   OpenSSH `Key=Value` Option、检查、诊断、日志和漂移修复。
 - 单文件原生二进制；安装、升级和卸载由发行渠道负责。
 - macOS 12+ 使用 launchd、Linux 使用 systemd 用户服务持久运行。
-- 首个预览版不发布 Windows 产物。每 Connection Task Scheduler Adapter、迁移和
-  Windows 真机验证完整通过后，Windows 才进入正式支持矩阵。
+- 首个预览版不发布 Windows 产物。每 Connection Task Scheduler Adapter 和 Windows
+  真机验证完整通过后，Windows 才进入正式支持矩阵。
 - 外部 Driver 和插件安装延后到真实非 SSH 需求得到验证之后。
 
 [产品设计](docs/PROJECT_DIRECTION.md)和[架构设计](docs/ARCHITECTURE.md)是 v1 以及后续

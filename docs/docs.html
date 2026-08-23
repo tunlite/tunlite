@@ -25,7 +25,6 @@
       <a href="#lifecycle">Lifecycle</a>
       <a href="#inspect">Inspect and repair</a>
       <a href="#automation">Automation</a>
-      <a href="#migration">Upgrade from 0.x</a>
       <a href="#support">Platform support</a>
       <p>DEEP DIVES</p>
       <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/ARCHITECTURE.md">Architecture ↗</a>
@@ -112,23 +111,8 @@
         <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite">Use the official Agent Skill →</a></p>
       </section>
 
-      <section id="migration">
-        <p class="kicker">06 · MIGRATE</p>
-        <h2>Move from 0.10.3 side by side</h2>
-        <p>Keep the old <code>tunlite</code> command and V1 binary separate. Import is one-way and read-only with respect to 0.x: it never edits the source file, stops the old daemon, or starts V1 connections.</p>
-        <pre class="code"><span>$</span> ./tunlite-v1 import ~/.config/tunlite/config.json \
-    --dry-run --json --non-interactive
-<span>$</span> ./tunlite-v1 import ~/.config/tunlite/config.json
-
-<span>#</span> switch one connection only after inspecting it
-<span>$</span> tunlite disable db
-<span>$</span> ./tunlite-v1 start db</pre>
-        <div class="callout warning-callout"><strong>Never run both versions of the same connection.</strong> Local ports conflict, and duplicate remote forwards can be ambiguous. Keep the old config until every connection has passed real traffic and login-recovery tests.</div>
-        <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md">Read the complete migration and rollback guide →</a></p>
-      </section>
-
       <section id="support">
-        <p class="kicker">07 · SUPPORT</p>
+        <p class="kicker">06 · SUPPORT</p>
         <h2>Preview support matrix</h2>
         <div class="docs-table support-table">
           <div class="table-head"><span>Platform</span><span>Artifact</span><span>Native lifecycle</span></div>

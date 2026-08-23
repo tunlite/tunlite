@@ -26,9 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootst
 
 Every release contains self-contained archives and `SHA256SUMS`. Follow the
 [zero-to-acceptance guide](docs/INSTALL_AND_ACCEPTANCE.md) for installation and
-platform verification. Existing 0.x users must follow the
-[0.x to Go v1 upgrade guide](docs/UPGRADE_FROM_0_X.md). See the [preview guide](docs/V1_PREVIEW.md) for version
-boundaries and migration from 0.10.3.
+platform verification. See the [preview guide](docs/V1_PREVIEW.md) for current
+version boundaries and release gates.
 
 A manually downloaded native binary can be copied directly into `PATH`:
 
@@ -107,7 +106,7 @@ The standalone [`use-tunlite` Agent Skill](skill/use-tunlite/SKILL.md) is tested
 against the same command, exit-code, state, and Schema contract exposed by the CLI.
 Its installation and removal belong to the Agent, not to Tunlite.
 
-## Configuration and migration
+## Configuration
 
 Connections use a generic `Connection` envelope. SSH-specific fields live only under
 the built-in `io.tunlite.ssh` driver config, leaving the core ready for future drivers
@@ -117,14 +116,10 @@ without making an untested public plugin protocol part of v1.
 tunlite export --output tunlite.json
 tunlite validate tunlite.json
 tunlite import tunlite.json --dry-run
-
-# Explicitly import 0.10.3 without changing the old file or runtime:
-tunlite import ~/.config/tunlite/config.json --dry-run --json --non-interactive
-tunlite import ~/.config/tunlite/config.json --json --non-interactive
 ```
 
-V1 writes `~/.config/tunlite/connections.json`. Imported connections remain stopped
-until the user switches them one by one.
+V1 writes `~/.config/tunlite/connections.json`. Import accepts only the documented
+V1 `ConnectionList` format; unsupported versions and unknown fields are rejected.
 
 ## Preview scope
 
@@ -135,8 +130,7 @@ until the user switches them one by one.
   distribution channel.
 - Native persistent services on macOS 12+ (launchd) and Linux (systemd user services).
 - Windows is not published in the first preview. It will enter the support matrix
-  only after the per-Connection Task Scheduler adapter and migration path pass real
-  Windows validation.
+  only after the per-Connection Task Scheduler adapter passes real Windows validation.
 - External drivers and plugin installation are deliberately deferred until real user
   demand validates more than SSH.
 

@@ -39,7 +39,7 @@ Agent 的所有操作使用 --json --non-interactive；修改前优先使用 --d
 
   https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md
 
-预览版边界和 0.10.3 迁移：
+预览版边界和发布门禁：
 
   https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md
 

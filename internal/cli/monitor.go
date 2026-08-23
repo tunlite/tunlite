@@ -58,10 +58,8 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	flags.SetOutput(io.Discard)
 	intervalText := "1"
 	var group string
-	var legacyTags stringsFlag
 	flags.StringVar(&intervalText, "interval", "1", "refresh interval in seconds")
 	flags.StringVar(&group, "group", "", "filter by group")
-	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	if err := flags.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -82,21 +80,11 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 		return usageError("monitor interval must be between 0.25 and 60 seconds")
 	}
 	groupSet := false
-	legacyTagSet := false
 	flags.Visit(func(item *flag.Flag) {
 		groupSet = groupSet || item.Name == "group"
-		legacyTagSet = legacyTagSet || item.Name == "tag"
 	})
-	if groupSet && legacyTagSet {
-		return usageError("use --group, not --group and legacy --tag together")
-	}
 	if groupSet {
 		group, err = parseGroup(group)
-		if err != nil {
-			return err
-		}
-	} else if legacyTagSet {
-		group, err = parseLegacyGroup(legacyTags)
 		if err != nil {
 			return err
 		}

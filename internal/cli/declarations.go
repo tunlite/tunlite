@@ -15,7 +15,6 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
-	"github.com/yuanyuanzijin/tunlite/internal/legacyconfig"
 )
 
 const exitPartial = 5
@@ -165,9 +164,7 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 		}
 		sourceConditions = append(sourceConditions, risks...)
 	}
-	// Import is the explicit way to create V1 data from a detected 0.x file, so
-	// it must not be blocked by the normal first-run legacy reminder.
-	target, err := unguardedConnectionStore(opts)
+	target, err := connectionStore(opts)
 	if err != nil {
 		return err
 	}
@@ -316,22 +313,10 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 
 func loadImportDocument(path string) (configstore.Document, string, []core.Condition, error) {
 	document, err := configstore.New(path).Load()
-	if err == nil {
-		return document, "tunlite-v1", []core.Condition{}, nil
-	}
-	var legacy *configstore.LegacyConfigError
-	if !errors.As(err, &legacy) {
+	if err != nil {
 		return configstore.Document{}, "", nil, err
 	}
-	raw, readErr := os.ReadFile(path)
-	if readErr != nil {
-		return configstore.Document{}, "", nil, readErr
-	}
-	document, conditions, decodeErr := legacyconfig.Decode(raw)
-	if decodeErr != nil {
-		return configstore.Document{}, "", nil, decodeErr
-	}
-	return document, "tunlite-0.x", conditions, nil
+	return document, "tunlite-v1", []core.Condition{}, nil
 }
 
 func validateConnections(args []string, streams IO, opts options) error {
@@ -462,9 +447,6 @@ func renderImportResult(streams IO, opts options, source, sourceFormat string, c
 			"conditions": conditions, "results": results, "dryRun": opts.DryRun,
 		})
 	} else {
-		if sourceFormat == "tunlite-0.x" {
-			fmt.Fprintf(streams.Out, "detected Tunlite 0.x configuration: %s\n", source)
-		}
 		for _, result := range results {
 			fmt.Fprintf(streams.Out, "%s: %s", result.Connection, result.Outcome)
 			if result.Message != "" {
@@ -478,9 +460,6 @@ func renderImportResult(streams IO, opts options, source, sourceFormat string, c
 			} else {
 				fmt.Fprintf(streams.Out, "%s: %s: %s\n", item.Severity, item.Connection, item.Message)
 			}
-		}
-		if sourceFormat == "tunlite-0.x" && !opts.DryRun {
-			fmt.Fprintln(streams.Out, "the 0.x file and running tunnels were not changed; stop the old runtime before starting the same V1 connections")
 		}
 	}
 	if failed > 0 && applied > 0 {

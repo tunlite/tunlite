@@ -27,8 +27,6 @@ as the product's focused entry point.
 - Integer-versioned CLI response envelopes, versioned portable configuration,
   embedded schemas, dry-run and non-interactive guarantees, structured actions and
   risk warnings, batch partial-failure semantics, and five independent state dimensions.
-- Safe, explicit 0.10.3 import into a separate ConnectionList without modifying the
-  old configuration, stopping the old daemon, or starting imported Connections.
 - Reproducible macOS and Linux release archives and `SHA256SUMS`; macOS ships as one
   Universal 2 binary for both Intel and Apple Silicon, while Linux keeps separate
   x64 and arm64 archives. Go CI also keeps the future Windows core build compiling
@@ -61,10 +59,8 @@ as the product's focused entry point.
   `ON LOGIN` instead of exposing the internal `MODE` directly. Monitor keeps PID,
   uptime, and restart count as operational columns, drops the redundant `TYPE`
   column, and hides host/route details first on narrow terminals.
-- V1 exposes one optional `group` instead of multi-value tags. `list`, `status`, and
-  `monitor` group human output by this stable business ownership; `--group` selects
-  one group for batch operations. Historical input with one tag converts without
-  ambiguity, while multiple tags require the user to choose one group.
+- V1 exposes one optional `group`. `list`, `status`, and `monitor` group human output
+  by this stable business ownership; `--group` selects one group for batch operations.
 - Interactive commands that may wait for SSH, native service managers, or batch
   observation now print the operation before waiting; JSON output remains free of
   human progress text, and `version --json` retains its protocol version field.
@@ -76,22 +72,22 @@ as the product's focused entry point.
 ### Deferred
 
 - Webhook connection alerts are intentionally deferred while v1 restores the core
-  CLI experience. The preview does not advertise or silently accept an inactive
-  webhook configuration; legacy settings remain in the untouched 0.x config and
-  migration backup.
+  CLI experience. The preview does not advertise or silently accept inactive webhook
+  configuration.
 
 ### Removed
 
 - The central supervisor, IPC protocol, PID ownership, daemon lifecycle alerts,
   implicit lifecycle-triggered SSH key installation, and the second layer of global lifecycle
   management from the v1 runtime.
-- The archived Node runtime, npm package, and Node test suite from the active V1
-  branch. The immutable `v0.10.3` tag remains the source for legacy verification,
-  migration E2E, and any exceptional 0.x maintenance branch.
+- The archived Node runtime, npm package, Node test suite, 0.x decoder, migration
+  fixtures, and migration E2E from the active V1 branch. The immutable `v0.10.3` Tag
+  and private archive retain the historical implementation.
 - CLI-managed Agent Skill installation; Tunlite no longer inspects Agent-specific
   extension directories.
 - The preview-only `--config`, approval state, `setup-key`, `migrate`, self-install,
-  self-update, self-uninstall, `tun` alias, and global configuration migration gate.
+  self-update, self-uninstall, `tun` alias, hidden Tag aliases, and unpublished
+  configuration/service-record compatibility layers.
 
 ## [0.10.3] - 2026-08-16
 

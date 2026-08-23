@@ -69,7 +69,7 @@ func TestConnectionListWritesConfigVersionOnlyAtDocumentRoot(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsLegacyConfigWithoutChangingIt(t *testing.T) {
+func TestStoreRejectsUnknownEnvelopeWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	raw := []byte(`{"version":1,"tunnels":[]}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
@@ -77,71 +77,31 @@ func TestStoreRejectsLegacyConfigWithoutChangingIt(t *testing.T) {
 	}
 	store := New(path)
 	_, err := store.Load()
-	var legacy *LegacyConfigError
-	if !errors.As(err, &legacy) {
-		t.Fatalf("got %v, want LegacyConfigError", err)
+	if err == nil {
+		t.Fatal("unknown envelope was accepted")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(after) != string(raw) {
-		t.Fatal("legacy config was changed")
+		t.Fatal("unknown input was changed")
 	}
 }
 
-func TestPreviewEnvelopeIsReadOnlyUntilFirstSuccessfulWrite(t *testing.T) {
+func TestStoreRejectsUnknownPreviewEnvelopeWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	raw := []byte(`{"apiVersion":"tunlite.dev/v1","kind":"ConnectionList","items":[{"apiVersion":"tunlite.dev/v1","kind":"Connection","metadata":{"name":"db"},"spec":{"driver":"example.test/fake","configVersion":1,"config":{"value":"old"}}}]}`)
+	raw := []byte(`{"format":"unknown","kind":"ConnectionList","items":[]}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := New(path)
-	document, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if document.ConfigVersion != core.ConfigVersion || len(document.Items) != 1 {
-		t.Fatalf("preview was not converted in memory: %#v", document)
+	if _, err := store.Load(); err == nil {
+		t.Fatal("unknown preview envelope was accepted")
 	}
 	unchanged, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(unchanged, raw) {
-		t.Fatalf("read-only load changed preview data: raw=%q err=%v", unchanged, err)
-	}
-	wantFailure := errors.New("do not apply")
-	if err := store.Update(context.Background(), func(document *Document) error {
-		document.Items[0].Metadata.Name = "not-saved"
-		return wantFailure
-	}); !errors.Is(err, wantFailure) {
-		t.Fatalf("failed preview update returned %v", err)
-	}
-	unchanged, err = os.ReadFile(path)
-	if err != nil || !bytes.Equal(unchanged, raw) {
-		t.Fatalf("failed update changed preview data: raw=%q err=%v", unchanged, err)
-	}
-	if backups, err := filepath.Glob(path + ".go-preview-sha256-*.bak"); err != nil || len(backups) != 0 {
-		t.Fatalf("failed update created preview backups: %v err=%v", backups, err)
-	}
-	if err := store.Update(context.Background(), func(document *Document) error {
-		document.Items[0].Metadata.Group = "migrated"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(migrated, []byte(`"configVersion": 1`)) || bytes.Contains(migrated, []byte(`"apiVersion"`)) || bytes.Contains(migrated, []byte(`"spec": {\n        "driver": "example.test/fake",\n        "configVersion"`)) {
-		t.Fatalf("unexpected migrated envelope:\n%s", migrated)
-	}
-	backups, err := filepath.Glob(path + ".go-preview-sha256-*.bak")
-	if err != nil || len(backups) != 1 {
-		t.Fatalf("preview backup count=%d err=%v", len(backups), err)
-	}
-	backup, err := os.ReadFile(backups[0])
-	if err != nil || !bytes.Equal(backup, raw) {
-		t.Fatalf("preview backup was not byte-for-byte: err=%v", err)
+		t.Fatalf("failed load changed input: raw=%q err=%v", unchanged, err)
 	}
 }
 
@@ -162,7 +122,7 @@ func TestStoreRejectsHigherAndMixedConfigVersionsBeforeUse(t *testing.T) {
 	}
 
 	mixedPath := filepath.Join(root, "mixed.json")
-	mixed := []byte(`{"configVersion":1,"kind":"ConnectionList","items":[{"apiVersion":"tunlite.dev/v1","kind":"Connection","metadata":{"name":"db"},"spec":{"driver":"example.test/fake","configVersion":1,"config":{}}}]}`)
+	mixed := []byte(`{"configVersion":1,"kind":"ConnectionList","items":[],"unknown":true}`)
 	if err := os.WriteFile(mixedPath, mixed, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -1,33 +1,12 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
-
-func TestLegacyLifecycleIsAcceptedButNotWrittenAgain(t *testing.T) {
-	raw := []byte(`{"apiVersion":"tunlite.dev/v1","kind":"Connection","metadata":{"name":"legacy"},"spec":{"driver":"example.test/fake","lifecycle":"persistent","configVersion":1,"config":{"value":"ok"}}}`)
-	var connection Connection
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&connection); err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(connection)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(encoded, []byte("lifecycle")) {
-		t.Fatalf("legacy lifecycle leaked back into the declaration: %s", encoded)
-	}
-	if bytes.Contains(encoded, []byte(`"configVersion"`)) || bytes.Contains(encoded, []byte(`"apiVersion"`)) {
-		t.Fatalf("legacy envelope was not normalized: %s", encoded)
-	}
-}
 
 type fakeDriver struct {
 	called bool
@@ -121,30 +100,5 @@ func TestValidateConnectionRequiresConfigObject(t *testing.T) {
 	}
 	if err := ValidateConnection(connection); err == nil {
 		t.Fatal("non-object driver config was accepted")
-	}
-}
-
-func TestMetadataConvertsOneUnreleasedPreviewTagToGroup(t *testing.T) {
-	var metadata Metadata
-	if err := json.Unmarshal([]byte(`{"name":"db","tags":["work"]}`), &metadata); err != nil {
-		t.Fatal(err)
-	}
-	if metadata.Name != "db" || metadata.Group != "work" {
-		t.Fatalf("metadata=%#v", metadata)
-	}
-	encoded, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(encoded, []byte(`"tags"`)) || !bytes.Contains(encoded, []byte(`"group":"work"`)) {
-		t.Fatalf("legacy tag was not normalized to group: %s", encoded)
-	}
-}
-
-func TestMetadataRejectsAmbiguousLegacyTags(t *testing.T) {
-	var metadata Metadata
-	err := json.Unmarshal([]byte(`{"name":"db","tags":["work","database"]}`), &metadata)
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("choose one")) {
-		t.Fatalf("ambiguous tags error=%v", err)
 	}
 }

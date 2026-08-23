@@ -446,8 +446,8 @@ func TestProductDirectionDocumentsExactlyThePublicCommands(t *testing.T) {
 	}
 }
 
-func TestMistypedAndRetiredCommandsSuggestThePublicCommand(t *testing.T) {
-	for input, want := range map[string]string{"stauts": "status", "rm": "remove", "mon": "monitor"} {
+func TestMistypedCommandsSuggestThePublicCommand(t *testing.T) {
+	for input, want := range map[string]string{"stauts": "status", "monitr": "monitor"} {
 		var out, stderr bytes.Buffer
 		code := RunContext(context.Background(), []string{input}, IO{Out: &out, Err: &stderr})
 		if code != 2 || !strings.Contains(out.String()+stderr.String(), `did you mean "`+want+`"`) {

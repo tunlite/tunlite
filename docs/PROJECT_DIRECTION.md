@@ -10,8 +10,8 @@
 负责说明当前用法，测试报告负责记录验证结果，Release Note 负责记录版本变化；它们
 都不能定义第三套产品或架构设计，也不能覆盖两份主文档的决策。
 
-`docs/superpowers/` 中的旧规格与计划、0.x 文档以及 Node.js/daemon 实现，只是产品
-演进的历史记录，不再具有规范性。未来可以编写临时实施清单和迁移记录，但它们必须
+`docs/superpowers/` 中的旧规格与计划以及 Node.js/daemon 实现，只是产品演进的历史
+记录，不再具有规范性。未来可以编写临时实施清单和版本升级记录，但它们必须
 引用本文档，不能成为相互竞争的路线图或架构指引。
 
 产品语义与范围冲突时以本文档为准，实现边界与工程约束由架构主文档定义。任何改变
@@ -181,9 +181,9 @@ v1 正式发布后，Connection Envelope、CLI 机器契约、状态维度和 OS
 
 ### 2.2 重写不等于删减用户能力
 
-从 Node.js 重写为 Go、删除中心 daemon 和更换后台运行机制，只是实现与架构变化，
-不是删除既有用户能力的授权。除非本文件明确记录了经过确认的产品取舍，0.10.3 已经
-公开提供的用户可见能力默认必须保留，并以兼容测试作为发布门禁。
+从 Node.js 重写为 Go、删除中心 daemon 和更换后台运行机制时，应重新确认真正需要的
+用户能力；历史实现和未形成真实用户依赖的接口不自动成为 V1 兼容承诺。V1 Preview
+发布后形成的公共契约才按版本规则演进。
 
 V1 的基础体验至少包括：彩色且可关闭颜色的人类输出、对齐的状态表格、单 Connection
 详情、`doctor` 环境与连接诊断、唯一实时入口 `tunlite monitor`、完整帮助、友好拼写提示、
@@ -704,10 +704,8 @@ Envelope；Driver 配置随锁定的 Driver 版本迁移。本机缓存、服务
   识别版本号、原样备份数据并提示用户改用兼容版本，不能以“尽力兼容”方式继续运行。
 
 因此多个新旧 Core 可以安装在同一台机器上，但不能在日常运行中各自维护一份配置或
-猜测字段含义。0.x 到 Go v1 是唯一的历史输入兼容：`import` 可以读取 0.x 的
-`{version, settings, tunnels}` 文件，把仍有同义语义的 SSH 字段写入版本化新配置。
-它不修改旧文件，不停止旧 daemon，不启动或启用导入的 Connection，也不做双向同步。
-旧文件本身就是回退依据，不需要迁移日志、额外备份或自动回滚子系统。
+猜测字段含义。V1 Preview 只接受唯一、严格的 `configVersion: 1` 文档；不读取 0.x 或
+未发布 Go Preview 格式，也不为它们提供别名和静默转换。
 
 Connection 声明不保存 `foreground`、`background` 或 `persistent` 生命周期字段。
 同一份具名声明可以被 `run`、`start` 或原生自动启动复用；当前进程和自动启动属于
@@ -721,8 +719,8 @@ Connection 声明不保存 `foreground`、`background` 或 `persistent` 生命�
 管理命令。修改命令必须明确选择名称、一个 `--group`，或者 `--all`。未设置 Group 的
 Connection 进入“未分组”；`all` 不再是魔法位置参数或保留 Connection 名称。
 
-V1 不公开 Tag 概念。0.x 或未发布 Go Preview 的旧输入仅在恰好一个 Tag 时转换为 Group；
-多个 Tag 没有稳定主次关系，导入必须停止并要求用户明确选择，不能按顺序猜测。
+V1 不公开 Tag 概念，也不读取旧 Tag 字段。Group 只通过当前 V1 Schema 和 `--group`
+显式表达，避免同时存在两个重叠概念。
 
 ### 5.1 项目声明
 
@@ -1053,7 +1051,7 @@ Artifact 和直接 Manifest URL。插件分发不是 Tunlite 产品 v1 的发布
 
 Driver 路线服务于验证，而不是预先承诺建设完整 Provider 矩阵。
 
-1. **内置 SSH：** 产品 v1 的全部正式 Driver 范围，也是 0.x 的迁移路径。
+1. **内置 SSH：** 产品 v1 的全部正式 Driver 范围。
 2. **Kubernetes port-forward：** v1 发布后的第一个实验性外部 Driver，用于验证
    独立仓库、公开协议和 `direct` 模式；它不使用私有核心接口。
 3. **第二个外部 Driver：** 从真实用户请求最多的 AWS SSM、GCP IAP、Azure
@@ -1132,11 +1130,11 @@ Envelope 和 Driver 接口不能因此绑定 SSH。未来 Driver 使用自己的
 | `check` | `tunlite check <connection-or-user@host> [-i key] [--jump host] [--timeout seconds]` | 对单个具名 Connection 或临时 SSH 目标执行只读连通性与认证检查。保留；临时目标只允许检查，不能借此运行匿名隧道。 |
 | `doctor` | `tunlite doctor [name] [--offline] [--timeout seconds]` | 综合检查本机环境、配置、原生服务和一个或全部 Connection；给出结构化问题与动作。保留，与只检查单个 SSH 目标的 `check` 分工明确。 |
 
-### 9.5 声明交换与历史格式导入
+### 9.5 声明交换
 
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
-| `import` | `tunlite import <path> [--force]` | 将 V1 声明文件合并到本机配置；也识别冻结的 0.x 配置或 `export` 文件并做一次直接字段映射。它不修改来源文件、不导入 daemon 设置、不继承运行状态、不自动取得系统服务，也不隐式启动。保留。 |
+| `import` | `tunlite import <path> [--force]` | 将严格校验的 V1 声明文件合并到本机配置；不修改来源文件、不自动取得系统服务，也不隐式启动。保留。 |
 | `export` | `tunlite export [--output path\|-] [--force]` | 导出可迁移的 Connection 声明，不导出本机服务绑定或凭据；已存在文件只有显式 `--force` 才覆盖。保留。 |
 | `validate` | `tunlite validate [path]` | 校验指定声明文件；省略路径时校验当前配置，不改变状态。保留。 |
 
@@ -1250,9 +1248,6 @@ CLI 机器响应 Envelope；`schema` 或 `export` 通过 `--output <path>` 写�
 Agent Skill 不是独立事实来源。它必须从 CLI Schema 和命令元数据生成，或由测试证明
 与其一致。CI 必须验证 Skill 中的命令、字段、退出码和示例，禁止长期维护一份无法
 校验的手写契约副本。
-
-如果完全兼容 0.x 输出意味着继续暴露 daemon 概念，则无需保持这种兼容。V1 只在
-`import` 中兼容能够无歧义映射的 Connection 字段，并提供清楚的升级说明。
 
 ## 10. 明确改变或删除的能力
 
@@ -1448,7 +1443,7 @@ V1 不提供 `purge` 或其他彻底清理命令。需要彻底清理时，用�
 - macOS/launchd 用户 LaunchAgent 是一等支持平台，Intel 与 Apple Silicon 使用同一
   语义；默认承诺用户登录后的自动启动，不静默创建需要管理员权限的系统 LaunchDaemon。
 - v1 首发平台是 Linux 和 macOS。Windows 不进入首发支持矩阵，原因是 Task Scheduler
-  Adapter、0.x 迁移和真实 Windows 验证不在本次交付范围，而不是把 GUI 当作某个平台
+  Adapter 和真实 Windows 验证不在本次交付范围，而不是把 GUI 当作某个平台
   是否获得核心支持的前置条件。
 - Alpine/OpenRC、Void/runit、容器、CI、没有用户级服务管理器的精简系统和其他
   尚无 Adapter 的平台，Connection 标记为 `foreground-only`，使用
@@ -1523,11 +1518,6 @@ Windows 只有同时满足以下条件后才能进入正式核心支持矩阵：
 - 每 Connection Task Scheduler Adapter 完成启停、登录自启、失败恢复、状态、日志、
   原子更新和回滚的真实 Windows 验证。
 - Windows 10/11 的发行渠道安装、OpenSSH 检查、升级和卸载形成完整用户旅程。
-- 0.x 配置可以通过 `import` 读取，旧全局 daemon/计划任务的人工退出步骤经过真实验证。
-
-在上述门槛通过前，Go v1 不向 Windows 0.x 用户自动升级。现有 Windows 用户只能继续
-使用已经冻结的最终 Node 版本 `v0.10.3`；它不再进行功能迭代或常规维护。未来 Windows
-正式版通过显式导入和人工切换完成升级，不能同时运行旧 daemon 和新的每 Connection 任务。
 Windows Tray 随跨平台 Desktop 计划交付，可以与 Windows Core 支持同期或随后发布，
 但不能形成另一套配置和生命周期实现。
 
@@ -1540,8 +1530,8 @@ Windows Tray 随跨平台 Desktop 计划交付，可以与 Windows Core 支持�
 - v1 切换前，为最后一个 Node 版本打 Tag；必要时保留 `legacy/node-0.x` 维护分支。
 - Go 版本成为默认分支时，代码位于仓库根目录。
 - 不长期发布两套核心实现或两套 runtime backend。
-- 把 0.x 的重要行为转换成与语言无关的黑盒契约测试：输入命令、初始配置、退出码、
-  stdout JSON、stderr 和最终状态。
+- 用与语言无关的 V1 Preview 黑盒契约测试固定输入命令、初始配置、退出码、stdout JSON、
+  stderr 和最终状态。
 - 公开仓库保持唯一权威。私有开发不能产生第二份事实来源。
 
 ## 14. 周发布计划
@@ -1564,7 +1554,7 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 - 完成单二进制 Go CLI、内置 SSH Driver 和通用 `ExecutionPlan` 边界。
 - 覆盖 SSH `-L`、`-R`、`-D`、多 Forward、Jump Host、Identity File 和前台运行。
 - 提供配置管理、`--json`、`--non-interactive`、`--dry-run` 和基础诊断。
-- 用 0.x 黑盒契约、真实 OpenSSH 端到端测试和测试用假 Driver 验证行为与扩展边界。
+- 用 V1 Preview 黑盒契约、真实 OpenSSH 端到端测试和测试用假 Driver 验证行为与扩展边界。
 
 ### 第二周：8 月 24 日—8 月 30 日
 
@@ -1573,8 +1563,8 @@ Tunlite V1 预览版 `v1.0.0-preview.1`。AI Agent 负责并行实现、测试�
 - 完成 systemd 与 launchd 的每 Connection 原生服务。
 - 完成 `add` 时生成禁用服务、`start`、`stop`、`restart`、`enable`、`disable`、
   `status`、`logs`、`manage`、`unmanage` 和异常漂移 `resolve`。
-- 完成五维状态、批量结果、0.x 配置直接导入和 Agent Skill 一致性。
-- 完成签名二进制、checksum、升级文档、支持矩阵和预览版发布验证。
+- 完成五维状态、批量结果和 Agent Skill 一致性。
+- 完成签名二进制、checksum、安装文档、支持矩阵和预览版发布验证。
 
 Windows Task Scheduler Adapter、macOS/Windows Desktop、外部插件、Kubernetes、云
 Driver、`managed` runtime 和托管服务不进入本次发布范围。Windows 不以实验或尽力
@@ -1583,7 +1573,7 @@ Driver、`managed` runtime 和托管服务不进入本次发布范围。Windows 
 
 ### 公开预览发布：不晚于 8 月 31 日
 
-只有 SSH 核心链路、systemd、launchd、0.x 直接导入和人工回退步骤通过自动测试与发布检查，才发布
+只有 SSH 核心链路、systemd、launchd 通过自动测试与发布检查，才发布
 `v1.0.0-preview.1`。若非核心渠道集成尚未完成，可以在预览版后补充，不能扩大范围
 或推迟核心发布。
 

@@ -7,7 +7,7 @@ function Main {
     [string]$InstallDir = $(if ($env:TUNLITE_INSTALL_DIR) { $env:TUNLITE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\Tunlite' })
   )
 
-  throw 'tunlite: v1 首个预览版尚未发布 Windows 版本；请继续使用固定的 0.10.3，等待 Task Scheduler 与迁移完成验收'
+  throw 'tunlite: v1 首个预览版尚未发布 Windows 版本；请等待 Task Scheduler 与真机验证完成'
 
   if ($Version -notmatch '^v1\.0\.0(?:-preview\.[1-9][0-9]*)?$') {
     throw "tunlite: 不支持的版本格式 $Version"

@@ -172,9 +172,7 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var legacyTags stringsFlag
 	flags.StringVar(&selection.group, "group", "", "select connections by group")
-	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	flags.BoolVar(&selection.all, "all", false, "select all connections")
 	if err := flags.Parse(args); err != nil {
 		return selection, usageError(err.Error())
@@ -183,27 +181,15 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 		return selection, usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
 	}
 	groupSet := false
-	legacyTagSet := false
 	flags.Visit(func(item *flag.Flag) {
 		groupSet = groupSet || item.Name == "group"
-		legacyTagSet = legacyTagSet || item.Name == "tag"
 	})
-	if groupSet && legacyTagSet {
-		return selection, usageError("use --group, not --group and legacy --tag together")
-	}
 	if groupSet {
 		var err error
 		selection.group, err = parseGroup(selection.group)
 		if err != nil {
 			return selection, err
 		}
-	} else if legacyTagSet {
-		var err error
-		selection.group, err = parseLegacyGroup(legacyTags)
-		if err != nil {
-			return selection, err
-		}
-		groupSet = true
 	}
 	selectors := 0
 	if selection.target != "" {

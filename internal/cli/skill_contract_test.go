@@ -86,7 +86,7 @@ func TestAgentSkillMatchesRuntimeCapabilities(t *testing.T) {
 	}
 }
 
-func TestAgentSkillContainsNoLegacyRuntimeContract(t *testing.T) {
+func TestAgentSkillContainsNoRemovedRuntimeContract(t *testing.T) {
 	path := filepath.Join("..", "..", "skill", "use-tunlite", "SKILL.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestAgentSkillContainsNoLegacyRuntimeContract(t *testing.T) {
 	}
 	for _, forbidden := range []string{"name: ssh-tunnel", "install skill", "uninstall skill", "daemon", "ipc", "node.js", "npm", "install service", "退出码 | 6", "| 6 |"} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
-			t.Errorf("Skill still contains legacy contract %q", forbidden)
+			t.Errorf("Skill still contains removed contract %q", forbidden)
 		}
 	}
 }

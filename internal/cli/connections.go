@@ -26,9 +26,7 @@ type connectionFlags struct {
 	dynamic      stringsFlag
 	sshOptions   stringsFlag
 	group        string
-	legacyTags   stringsFlag
 	noGroup      bool
-	legacyNoTags bool
 	noSSHOptions bool
 	visited      map[string]bool
 }
@@ -121,9 +119,7 @@ func list(args []string, streams IO, opts options) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var group string
-	var legacyTags stringsFlag
 	flags.StringVar(&group, "group", "", "filter by group")
-	flags.Var(&legacyTags, "tag", "deprecated compatibility alias for --group")
 	if err := flags.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -131,27 +127,15 @@ func list(args []string, streams IO, opts options) error {
 		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
 	}
 	groupSet := false
-	legacyTagSet := false
 	flags.Visit(func(item *flag.Flag) {
 		groupSet = groupSet || item.Name == "group"
-		legacyTagSet = legacyTagSet || item.Name == "tag"
 	})
-	if groupSet && legacyTagSet {
-		return usageError("use --group, not --group and legacy --tag together")
-	}
 	if groupSet {
 		var err error
 		group, err = parseGroup(group)
 		if err != nil {
 			return err
 		}
-	} else if legacyTagSet {
-		var err error
-		group, err = parseLegacyGroup(legacyTags)
-		if err != nil {
-			return err
-		}
-		groupSet = true
 	}
 	store, err := connectionStore(opts)
 	if err != nil {
@@ -207,7 +191,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(values.visited) == 0 {
 		return usageError("nothing to set")
 	}
-	if (values.noGroup || values.legacyNoTags) && (values.visited["group"] || values.visited["tag"]) {
+	if values.noGroup && values.visited["group"] {
 		return usageError("use a group value or clear the group, not both")
 	}
 	if values.noSSHOptions && values.visited["ssh-opt"] {
@@ -482,10 +466,8 @@ func parseConnectionFlags(command string, args []string, allowClear bool) (conne
 	flags.Var(&values.dynamic, "D", "dynamic forward")
 	flags.Var(&values.sshOptions, "ssh-opt", "OpenSSH Key=Value option")
 	flags.StringVar(&values.group, "group", "", "connection group")
-	flags.Var(&values.legacyTags, "tag", "deprecated compatibility alias for --group")
 	if allowClear {
 		flags.BoolVar(&values.noGroup, "no-group", false, "clear group")
-		flags.BoolVar(&values.legacyNoTags, "no-tags", false, "deprecated compatibility alias for --no-group")
 		flags.BoolVar(&values.noSSHOptions, "no-ssh-options", false, "clear SSH options")
 	}
 	if err := flags.Parse(args); err != nil {
@@ -582,13 +564,13 @@ func applyConnectionFlags(connection core.Connection, values connectionFlags) (c
 		}
 		config.Forwards = forwards
 	}
-	if values.visited["group"] || values.visited["tag"] {
+	if values.visited["group"] {
 		group, err := connectionGroup(values)
 		if err != nil {
 			return core.Connection{}, err
 		}
 		updated.Metadata.Group = group
-	} else if values.noGroup || values.legacyNoTags {
+	} else if values.noGroup {
 		updated.Metadata.Group = ""
 	}
 	if err := sshdriver.Validate(config); err != nil {
@@ -632,32 +614,9 @@ func parseGroup(value string) (string, error) {
 	return group, nil
 }
 
-func parseLegacyGroup(values []string) (string, error) {
-	var group string
-	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
-			candidate := strings.TrimSpace(part)
-			if candidate == "" {
-				continue
-			}
-			if group != "" && candidate != group {
-				return "", usageError("legacy --tag contains multiple values; choose one --group")
-			}
-			group = candidate
-		}
-	}
-	return parseGroup(group)
-}
-
 func connectionGroup(values connectionFlags) (string, error) {
-	if values.visited["group"] && values.visited["tag"] {
-		return "", usageError("use --group, not --group and legacy --tag together")
-	}
 	if values.visited["group"] {
 		return parseGroup(values.group)
-	}
-	if values.visited["tag"] {
-		return parseLegacyGroup(values.legacyTags)
 	}
 	return "", nil
 }
