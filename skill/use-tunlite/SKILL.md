@@ -169,17 +169,13 @@ tunlite doctor --offline --json --non-interactive
 Tunlite V1 不生成密钥、不修改远端 `authorized_keys`。需要配置密钥时，应让用户使用
 系统 OpenSSH 工具亲自在终端完成，随后重新执行 `check --json --non-interactive`。
 
-## 声明、迁移与机器契约
+## 声明与机器契约
 
 ```bash
 tunlite export --output tunlite.json --json --non-interactive
 tunlite validate tunlite.json --json --non-interactive
 tunlite import tunlite.json --dry-run --json --non-interactive
 tunlite import tunlite.json --json --non-interactive
-
-# 0.x -> v1：显式导入；不会自动启动旧配置中 enabled 的连接
-tunlite import ~/.config/tunlite/config.json --dry-run --json --non-interactive
-tunlite import ~/.config/tunlite/config.json --json --non-interactive
 
 tunlite schema cli --json --non-interactive
 tunlite schema connection --output connection.schema.json
@@ -191,9 +187,7 @@ tunlite schema ssh --output -
 `--output -` 不能与 `--json` 同用。导出到 stdout 时同理使用
 `tunlite export --output -`，不要把原始配置误当作 CLI 响应。
 
-导入不会安装依赖、执行认证或启动 Connection。对
-`legacy_running_state_ignored`，应把 `start_connection_after_legacy_shutdown` 展示为后续
-建议，不能自动执行。
+导入只接受 V1 `ConnectionList`，不会安装依赖、执行认证或启动 Connection。
 安装、更新和卸载不属于 Tunlite CLI；使用发行页或受支持的第三方包管理器，并在改变
 本机软件前取得用户同意。
 

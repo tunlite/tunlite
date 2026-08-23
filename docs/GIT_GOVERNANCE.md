@@ -148,8 +148,9 @@ Worktree 做物理隔离，但 Worktree 仍属于同一个公开仓库，分支�
 
 1. 推送 `rewrite/v1-go`，通过 Pull Request 和完整 CI 合入当前默认分支。
 2. 将默认分支统一命名为 `main`，同步更新 Ruleset、本地跟踪分支和文档链接。
-3. v1 导入验收稳定后，从 `main` 删除 `src/`、旧 `test/`、旧 `bin/` 等 Node 实现。
-4. 保留 0.10.3 黑盒契约、导入夹具、升级文档、Release notes、Tag 和 legacy 分支。
+3. v1 验收稳定后，从 `main` 删除 `src/`、旧 `test/`、旧 `bin/` 等 Node 实现。
+4. V1 主线不携带 0.x 运行时兼容代码、夹具或迁移文档；历史只由 Release notes、Tag、
+   私有存档和按需保留的 legacy 分支保存。
 5. 删除已合入的 rewrite 分支、临时 Worktree，以及过渡完成后的 `dev/master` 分支。
 
 删除过渡分支不等于删除历史：发布 Tag 和 `legacy/node-0.x` 必须先验证能从空目录取回。

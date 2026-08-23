@@ -1,12 +1,10 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"time"
 
@@ -24,14 +22,12 @@ var (
 )
 
 type Connection struct {
-	// ConfigVersion is inherited from the containing ConnectionList. It remains
-	// in memory for validation and preview compatibility, but is never repeated
-	// inside items on disk.
+	// ConfigVersion is inherited from the containing ConnectionList and is never
+	// repeated inside items on disk.
 	ConfigVersion int            `json:"-"`
 	Kind          string         `json:"kind"`
 	Metadata      Metadata       `json:"metadata"`
 	Spec          ConnectionSpec `json:"spec"`
-	legacyPreview bool
 }
 
 type Metadata struct {
@@ -39,119 +35,9 @@ type Metadata struct {
 	Group string `json:"group,omitempty"`
 }
 
-// UnmarshalJSON keeps a narrow compatibility bridge for configs created by
-// the unreleased tag-based Go preview. A single tag has an unambiguous group
-// meaning; multiple tags must be resolved by the user instead of guessed.
-// Encoding always emits only the public V1 group field.
-func (m *Metadata) UnmarshalJSON(raw []byte) error {
-	var value struct {
-		Name  string   `json:"name"`
-		Group string   `json:"group,omitempty"`
-		Tags  []string `json:"tags,omitempty"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return err
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return err
-	}
-	if value.Group != "" && len(value.Tags) > 0 {
-		return errors.New("metadata.group and legacy metadata.tags cannot be used together")
-	}
-	if len(value.Tags) > 1 {
-		return errors.New("legacy metadata.tags has multiple values; choose one and save it as metadata.group")
-	}
-	m.Name = value.Name
-	m.Group = value.Group
-	if len(value.Tags) == 1 {
-		m.Group = value.Tags[0]
-	}
-	return nil
-}
-
-func ensureJSONEOF(decoder *json.Decoder) error {
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("unexpected trailing JSON value")
-		}
-		return err
-	}
-	return nil
-}
-
 type ConnectionSpec struct {
 	Driver string          `json:"driver"`
 	Config json.RawMessage `json:"config"`
-}
-
-// UnmarshalJSON accepts the unreleased Go preview envelope as a strict,
-// read-only compatibility input. Encoding always emits the current public
-// configVersion envelope. Runtime mode is never persisted in a Connection.
-func (c *Connection) UnmarshalJSON(raw []byte) error {
-	var value struct {
-		ConfigVersion *int     `json:"configVersion"`
-		APIVersion    string   `json:"apiVersion,omitempty"`
-		Kind          string   `json:"kind"`
-		Metadata      Metadata `json:"metadata"`
-		Spec          struct {
-			Driver              string          `json:"driver"`
-			LegacyLifecycle     string          `json:"lifecycle,omitempty"`
-			LegacyConfigVersion *int            `json:"configVersion,omitempty"`
-			Config              json.RawMessage `json:"config"`
-		} `json:"spec"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return err
-	}
-	if value.Spec.LegacyLifecycle != "" && value.Spec.LegacyLifecycle != "foreground" && value.Spec.LegacyLifecycle != "persistent" {
-		return fmt.Errorf("unsupported legacy lifecycle %q", value.Spec.LegacyLifecycle)
-	}
-	version := 0
-	switch {
-	case value.ConfigVersion == nil && value.APIVersion == "" && value.Spec.LegacyConfigVersion == nil:
-		// Current ConnectionList items inherit the document's root version.
-		version = 0
-		c.legacyPreview = false
-	case value.ConfigVersion != nil && value.APIVersion == "" && value.Spec.LegacyConfigVersion == nil:
-		// Read compatibility for early Go preview files that repeated the root
-		// version on every item. MarshalJSON intentionally drops it.
-		version = *value.ConfigVersion
-		c.legacyPreview = false
-	case value.ConfigVersion == nil && value.APIVersion == "tunlite.dev/v1" && value.Spec.LegacyConfigVersion != nil && *value.Spec.LegacyConfigVersion == 1:
-		version = ConfigVersion
-		c.legacyPreview = true
-	default:
-		return errors.New("Connection must use one supported config version envelope")
-	}
-	c.ConfigVersion = version
-	c.Kind = value.Kind
-	c.Metadata = value.Metadata
-	c.Spec = ConnectionSpec{Driver: value.Spec.Driver, Config: value.Spec.Config}
-	return nil
-}
-
-func (c Connection) MarshalJSON() ([]byte, error) {
-	type currentConnection struct {
-		Kind     string         `json:"kind"`
-		Metadata Metadata       `json:"metadata"`
-		Spec     ConnectionSpec `json:"spec"`
-	}
-	return json.Marshal(currentConnection{Kind: c.Kind, Metadata: c.Metadata, Spec: c.Spec})
-}
-
-// LegacyPreviewEnvelope reports whether decoding used the unreleased
-// apiVersion/spec.configVersion envelope. It is only used to reject mixed
-// documents and to create a byte-for-byte backup before the first write.
-func (c Connection) LegacyPreviewEnvelope() bool { return c.legacyPreview }
-
-func (c Connection) CurrentEnvelope() Connection {
-	c.legacyPreview = false
-	return c
 }
 
 type Driver interface {

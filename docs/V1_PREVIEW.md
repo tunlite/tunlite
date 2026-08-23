@@ -1,6 +1,6 @@
 # Tunlite v1 预览版指南
 
-本文说明 `v1.0.0-preview.N` 的安装、支持范围、0.10.3 迁移、回滚和发布验收。
+本文说明 `v1.0.0-preview.N` 的安装、支持范围和发布验收。
 产品与架构决策以 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md) 和
 [ARCHITECTURE.md](ARCHITECTURE.md) 两份并列主文档为准。
 
@@ -20,8 +20,8 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 可用的 systemd 用户会话；容器、精简发行版和没有用户会话总线的环境应使用
 `tunlite run`，或由已有的进程管理器托管它。
 
-首个预览版不发布 Windows 产物，也不向 Windows 0.x 用户自动升级。Task Scheduler、
-迁移和真实 Windows 验证完成后，Windows 按独立验收计划进入支持矩阵。
+首个预览版不发布 Windows 产物。Task Scheduler 和真实 Windows 验证完成后，Windows
+按独立验收计划进入支持矩阵。
 
 V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和前台实时
 `tunlite monitor`。Monitor 使用类似 `top` 的全屏布局，标题显示当前 Tunlite 版本，
@@ -43,8 +43,7 @@ V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和�
 所有可能等待 SSH、服务管理器或批量状态采集的人工终端命令，都会在开始等待前打印当前
 动作，不允许无输出地长时间阻塞；`--json` 仍只输出稳定机器契约，不混入人类进度文本。
 颜色只在交互终端中启用，`NO_COLOR`、管道和 `--json` 输出均不包含 ANSI 控制符。
-Webhook 告警本预览版暂缓，不在能力列表中；0.x 的 Webhook 设置
-不会在 v1 中生效，但仍完整保留在未经修改的 0.x 配置和迁移备份中。
+Webhook 告警本预览版暂缓，不在能力列表中。
 
 ## 配置边界
 
@@ -114,23 +113,6 @@ gh attestation verify tunlite_1.0.0-preview.1_macos.tar.gz \
 Checksum 只证明下载内容和发布清单一致；Attestation 才把产物绑定到仓库身份、提交和
 GitHub Actions 构建。发布工作流尚未得到外部写入授权时，不得虚构已存在的证明。
 
-## 从 0.10.3 迁移
-
-Go v1 不做静默自动升级，也不会自动停止 daemon、卸载 Node runtime 或覆盖旧命令。
-升级只读取 `~/.config/tunlite/config.json`，并在独立的
-`~/.config/tunlite/connections.json` 中生成新配置；旧配置始终保持不变。
-
-必须按照[从 Tunlite 0.x 升级到 Go v1](UPGRADE_FROM_0_X.md)完整执行。核心命令是：
-
-```bash
-./tunlite-v1 import ~/.config/tunlite/config.json --dry-run
-./tunlite-v1 import ~/.config/tunlite/config.json
-```
-
-配置导入本身不会中断旧隧道。真正切换时逐条停止 0.x Connection，再启动对应 V1
-Connection；两套运行时不得同时启动同一条隧道。V1 不建立迁移日志、自动回滚引擎或
-旧版本清理命令；回退按升级文档逐条停止 V1 并重新启动 0.10.3。
-
 ## 预览版发布门禁
 
 发布候选必须全部通过：
@@ -142,7 +124,6 @@ go vet ./...
 TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -count=1 -v
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
 scripts/test-release-e2e.sh v1.0.0-preview.1
-scripts/test-migration-e2e.sh v1.0.0-preview.1
 scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
 
@@ -150,10 +131,6 @@ Release E2E 门禁只在 macOS 上运行：它重新构建并独立校验完整 
 原生二进制驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
 background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
 执行前必须确认该标签未被占用，结束后移除 plist 和进程。
-
-迁移门禁从 Git 的 `v0.10.3` 标签提取冻结旧版，不依赖 V1 工作树中的任何 Node 文件。
-它启动隔离的 0.10.3 daemon 和真实隧道，确认 dry-run/import 不修改旧配置且不中断旧流量，
-然后验证 `0.10.3 disable → V1 start → V1 stop → 0.10.3 enable` 的真实流量切换与回滚。
 
 Linux Docker E2E 使用 Ubuntu 24.04、PID 1 systemd、lingering systemd user manager 和真实
 OpenSSH。它验证 `-L`、`-R`、`-D` 流量，background → persistent 不换 PID，SSH 被

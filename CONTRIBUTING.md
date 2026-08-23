@@ -45,7 +45,7 @@ TUNLITE_REAL_SERVICE=1 go test ./internal/service \
 ## 提交要求
 
 1. 从最新 `main` 创建符合治理规范的短期独立分支。
-2. 修改公共 JSON 行为时同步更新 Schema、Capability、Agent Skill 契约测试和迁移说明。
+2. 修改公共 JSON 行为时同步更新 Schema、Capability、Agent Skill 契约测试和版本说明。
 3. 修改原生服务时覆盖幂等、漂移、并发、失败回滚和声明所有权。
 4. 确认 test、race、vet 和相关真实测试通过。
 5. Pull Request 说明改变了什么、为什么，以及兼容和安全影响。
@@ -59,6 +59,5 @@ Bug 和功能建议可以提交公开 Issue；安全问题请按 [SECURITY.md](S
 ## 历史 Node 实现
 
 V1 主线不再携带 Node runtime、测试或 npm package。冻结的完整 0.10.3 源码由 Git tag
-`v0.10.3` 永久保存；手工 Legacy CI 和迁移 E2E 都直接 checkout/archive 该 tag，不依赖
-当前分支。严重的 0.10.3 修复必须从历史 tag 创建专用维护分支，不能把 Node 实现重新并入
-V1 主线。
+`v0.10.3` 永久保存。历史版本如确需安全修复，必须从该 Tag 创建专用维护分支，不能把
+Node 实现重新并入 V1 主线。

@@ -1,12 +1,12 @@
 {
   "contractVersion": "tunlite.blackbox/v1",
-  "sourceVersion": "0.10.3",
+  "sourceVersion": "1.0.0-preview",
   "workflows": [
     {
       "name": "crud-and-forward-editing",
       "steps": [
-        { "args": ["add", "web", "--to", "me@host:2222", "-L", "8080:localhost:80", "--tag", "work", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"srcPort\":8080"] },
-        { "args": ["list", "--tag", "work", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"web\""] },
+        { "args": ["add", "web", "--to", "me@host:2222", "-L", "8080:localhost:80", "--group", "work", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"srcPort\":8080"] },
+        { "args": ["list", "--group", "work", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"web\""] },
         { "args": ["set", "web", "-D", "1080", "--json"], "exit": 0, "stdoutContains": ["\"type\":\"dynamic\"", "\"srcPort\":1080"] },
         { "args": ["rename", "web", "proxy", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"proxy\""] },
         { "args": ["remove", "proxy", "--json"], "exit": 0, "stdoutContains": ["\"operation\":\"remove\""] },

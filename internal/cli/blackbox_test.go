@@ -25,8 +25,8 @@ type blackboxContract struct {
 	} `json:"workflows"`
 }
 
-func TestSSHCLICompatibilityContract(t *testing.T) {
-	path := filepath.Join("..", "..", "testdata", "contracts", "ssh-cli-v0.10.json")
+func TestSSHCLIPreviewContract(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "contracts", "ssh-cli-v1-preview.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestSSHCLICompatibilityContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		t.Fatal(err)
 	}
-	if contract.ContractVersion != "tunlite.blackbox/v1" || contract.SourceVersion != "0.10.3" {
+	if contract.ContractVersion != "tunlite.blackbox/v1" || contract.SourceVersion != "1.0.0-preview" {
 		t.Fatalf("unexpected contract metadata: %#v", contract)
 	}
 	for _, workflow := range contract.Workflows {

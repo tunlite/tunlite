@@ -8,7 +8,7 @@
 
 - 产品设计定义为什么做、做什么、用户心智模型、公共命令和产品路线。
 - 架构设计定义如何实现、模块边界、依赖方向、数据与事务、安全、性能、测试和代码风格。
-- `docs/UPGRADE_FROM_0_X.md`、README、Agent Skill、命令帮助、Schema 和 Release Note
+- README、Agent Skill、命令帮助、Schema 和 Release Note
   都是派生资料，不能创造第三套产品或架构设计。
 
 产品语义和范围发生冲突时，以产品设计为准；实现边界和工程约束发生冲突时，以本文档
@@ -45,7 +45,6 @@ V1 正式交付：
 - Linux systemd 用户服务和 macOS launchd LaunchAgent。
 - 声明管理、原生服务管理、接管与交还、漂移解决、状态、日志、检查和诊断。
 - 版本化 JSON 配置、机器输出、Schema、退出码、风险提示和 Agent Skill。
-- 从冻结的 0.10.3 配置直接 `import`，新旧配置隔离，逐条切换和回退。
 
 V1 不实现：
 
@@ -234,7 +233,6 @@ Group 选择语义从 V1 起固定：
 - `list`、无参数 `status` 和无参数 `monitor` 默认按 Group 展示全部；未设置 Group 的
   Connection 进入“未分组”。
 - `set <name> --group ...` 修改归属，`set <name> --no-group` 清除归属。
-- 0.x 导入只在恰好一个旧 Tag 时无歧义转换为 Group；多个旧 Tag 必须由用户先选择一个。
 
 ### 6.2 SSH Driver 配置
 
@@ -311,7 +309,6 @@ macOS 当前同样使用以上 XDG 兼容路径；设置 `TUNLITE_HOME` 时使�
 - 原生服务文件由对应 Adapter 生成和更新。
 - Service Record 由 Core 管理，用户不需要手工编辑。
 - 原生服务日志由操作系统或 Adapter 指定的确定性文件拥有。
-- 0.x 配置始终只读，V1 不删除、不覆盖。
 - 发行渠道拥有二进制；Core 不删除或更新自己的程序文件。
 - `unmanage` 后原生服务归还系统，Tunlite 删除自己的 Connection 和 Service Record，
   但不得删除或停止被归还的服务。
@@ -495,8 +492,8 @@ Service Record 直接定位服务，不能每次扫描全系统。
 等待。`run` 读取快照后必须释放配置版本门禁，只保留对应 Connection 的运行锁。
 
 V1 没有第二种正式公共配置格式，不预建通用配置迁移门禁。真正设计
-`configVersion 2` 时，必须根据实际转换规则再设计短期排他协调；它不属于 0.x import，
-也不能覆盖 Provider 生命周期。
+`configVersion 2` 时，必须根据实际转换规则再设计短期排他协调，且不能覆盖 Provider
+生命周期。
 
 ## 14. 状态、日志和性能预算
 
@@ -549,7 +546,7 @@ V1 Preview 的具体毫秒值由真实 macOS、Linux 以及 100 Connection 基�
 - 不能安全、确定地序列化和回读的选项。
 
 SSH 跳板应使用结构化 Jump Host 或安全的 OpenSSH 参数，不以允许任意 ProxyCommand
-替代。0.x import 遇到不安全选项时整体拒绝并指出具体 Connection 和选项。
+替代。`import` 复用同一校验，遇到不安全选项时整体拒绝并指出具体 Connection 和选项。
 
 ### 15.3 高风险提示
 
@@ -596,28 +593,11 @@ V1 公开命令只允许来自产品设计列出的 26 个一级命令。命令�
 - 文案使用稳定的 Connection、接管/交还等产品词汇；不得让内部 Record、digest 或 lock
   成为日常概念。
 
-## 17. 0.x 直接导入
+## 17. 配置版本演进
 
-0.x → V1 是历史输入兼容，不是永久迁移子系统：
-
-```text
-0.x config（只读） -> legacy decoder -> V1 ConnectionList -> 正常 import 事务
-```
-
-约束：
-
-- 入口只有 `tunlite import <旧配置>`，不增加 `migrate`。
-- 旧配置和 V1 配置使用不同路径。
-- 导入不停止旧 daemon、不启停旧隧道、不卸载旧程序、不替换当前命令。
-- 导入后的所有 Connection 都是 stopped，避免新旧进程冲突。
-- 只转换有明确同义语义的 SSH 字段；settings、Webhook、enabled 和 autoSetupKey 给出
-  明确警告，不伪造迁移。
-- 源文件解析有任何不确定性时整体拒绝；目标同名项按 import 规则逐项报告。
-- V1 不建立迁移日志、双向同步、自动回滚引擎或 0.x 自动清理。
-- 完整用户流程以 `docs/UPGRADE_FROM_0_X.md` 为准，并由真实 0.10.3 fixture 和端到端测试
-  保护。
-
-`configVersion` 的未来原子升级与 0.x import 是两件事，代码和文案不得混用“迁移”。
+V1 只接受唯一、严格的 `configVersion: 1` 格式，不携带未发布格式或历史产品格式的
+运行时兼容层。未来引入新版本时，必须根据真实用户数据和明确转换规则单独设计、评审和
+测试；不得提前加入猜测性的 decoder、别名或静默转换。
 
 ## 18. 发行与二进制独立性
 
@@ -677,8 +657,8 @@ Core version、未来 Desktop version、`configVersion`、`protocolVersion` 和 
 4. **CLI 黑盒测试：** argv、stdout、stderr、退出码、最终配置和服务状态。
 5. **机器契约测试：** Schema、capabilities、Skill、示例与运行时一致。
 6. **真实 Provider E2E：** OpenSSH local/remote/dynamic、多 Forward、断线恢复和日志。
-7. **真实平台验收：** Intel/Apple Silicon macOS、systemd Linux 的安装、启停、登录恢复、
-   manage/unmanage/resolve 和 0.x 逐条升级。
+7. **真实平台验收：** Intel/Apple Silicon macOS、systemd Linux 的安装、启停、登录恢复
+   和 manage/unmanage/resolve。
 8. **规模与故障测试：** 100 Connection 状态预算、服务管理器超时、部分失败、进程终止、
    CLI 二进制删除后服务存活。
 
@@ -687,10 +667,9 @@ V1 Preview 发布必须满足：
 - `go test ./...` 全部通过，无已知失败被当作“与发布无关”。
 - 26 个命令在帮助、capabilities、Schema、Skill 和主文档中一致。
 - 真实 OpenSSH 转发与 systemd/launchd 生命周期通过。
-- 0.10.3 fixture 的 dry-run、导入、逐条切换和回退通过。
 - 高风险 endpoint 被明确提示，危险 SSH option 被拒绝。
 - 彩色/无色、人类/JSON、TTY/非 TTY 输出均通过契约。
-- 构建产物、checksum、版本号和升级指南一致。
+- 构建产物、checksum、版本号和安装指南一致。
 
 ## 21. 禁止模式
 
@@ -706,7 +685,6 @@ V1 Preview 发布必须满足：
   资源清理。
 - 用 checksum 冒充发布者身份或插件安全沙箱。
 - CLI、Desktop、Skill 和 README 各自维护业务规则。
-- 为一次 0.x 导入建立永久 migrate、日志、回滚和清理子系统。
 - 在没有真实多 Provider 验证前冻结稳定外部 Driver 协议。
 
 ## 22. 当前实现与目标差距
@@ -723,32 +701,30 @@ V1 Preview 发布必须满足：
 | 接管/交还 | manage 会显式扫描并过滤受管项，unmanage 保留原生服务；Intel Mac 与 Linux systemd 容器已连续证明接管与交还不改变 Provider PID | 补非容器 Linux、Apple Silicon 和以系统为准的 resolve 漂移验收 |
 | 风险提示 | 已删除 V1 approval 状态；公开监听和 Publish 返回结构化 warning | 保持风险提示测试，不引入批准持久态 |
 | 状态性能 | status/monitor 共用 5 秒整体、2 秒单项、最大并发 8 的观察器；100 Connection 自动测试已覆盖并发上限和超时降级 | 在 macOS、Linux 真机记录 100 Connection 数据，再决定是否调整内部预算 |
-| SSH options | 已使用保守允许列表拒绝执行命令、额外 Forward、配置加载和可靠性覆盖；0.x import 复用同一校验 | 用真实用户配置持续验证允许列表，新增选项必须先证明可安全序列化和回读 |
+| SSH options | 已使用保守允许列表拒绝执行命令、额外 Forward、配置加载和可靠性覆盖；import 复用同一校验 | 用真实用户配置持续验证允许列表，新增选项必须先证明可安全序列化和回读 |
 | 配置分层 | 已删除 `--config`，只使用规范 ConnectionList 路径 | 项目声明和本机 override 延期到真实需求出现 |
 | 机器 Schema | 通用 Envelope、错误、Condition、服务结果和 import 结果已使用受约束联合类型；流式日志已纳入 outcome | 继续为仍只有顶层字段约束的稳定响应增加契约 fixture，不能退回 `any[]` |
 | 命令契约 | 已收敛为 26 个一级命令，Skill 接受运行时契约测试 | 持续保证帮助、Schema、文档和 capabilities 同步 |
-| 0.x 导入 | 已实现只读转换、独立路径和 stopped 导入，并固化真实 0.10.3 四 Connection export fixture | 完成真实旧 daemon 逐条切换和回退验收，继续保留旧文件不变 |
-| 配置演进 | V1 没有第二种正式配置格式，也没有运行时 migration gate | 真正设计 configVersion 2 时，按产品设计第 11.1 节实现原子备份、转换和短期排他协调 |
-| 测试现状 | 单元、黑盒、契约、竞态、真实 OpenSSH 三类转发、Intel Mac launchd，以及 Ubuntu 24.04 PID 1 systemd 容器的崩溃恢复、跨重启、CLI 移除/替换、漂移和接管/交还零中断已通过；真实 0.10.3 切换回退已通过 | 补非容器 Linux、Apple Silicon、真实登录会话和长期运行门禁 |
+| 配置演进 | V1 只有唯一正式配置格式，不携带未发布或历史格式兼容层 | 真正设计 configVersion 2 时，按产品设计第 11.1 节实现原子备份、转换和短期排他协调 |
+| 测试现状 | 单元、黑盒、契约、竞态、真实 OpenSSH 三类转发、Intel Mac launchd，以及 Ubuntu 24.04 PID 1 systemd 容器的崩溃恢复、跨重启、CLI 移除/替换、漂移和接管/交还零中断已通过 | 补非容器 Linux、Apple Silicon、真实登录会话和长期运行门禁 |
 
 已经基本符合且应保留：无中心 daemon、逐 Connection 原生服务、direct 服务不依赖
 Tunlite 二进制、通用 ExecutionPlan、内置 SSH Driver 边界、四种运行方式、五维状态、
-日志/monitor/doctor/颜色基础、显式 manage/unmanage/resolve 和新旧配置路径隔离。
+日志/monitor/doctor/颜色基础和显式 manage/unmanage/resolve。
 
 ## 23. 实施顺序
 
 用户确认本文档后，代码按下面顺序推进；每一步都先保持测试可运行，不并行引入新的
 公共能力：
 
-1. **契约收口：** 持续验证 26 个命令、帮助、README、Schema、Skill 和升级文档一致。
-2. **安全收口：** 拒绝危险 SSH options，补充 legacy import 和风险提示测试。
+1. **契约收口：** 持续验证 26 个命令、帮助、README、Schema、Skill 和版本文档一致。
+2. **安全收口：** 拒绝危险 SSH options，补充 import 和风险提示测试。
 3. **边界收口：** 保持 Application Use Case 的逻辑边界；物理提取 `internal/app` 不作为
    Preview 阻塞项，在 Desktop 或第二个 Driver 前渐进完成。
 4. **事务收口：** 覆盖 add/set/import/remove/rename/manage/unmanage/resolve 的失败回滚。
 5. **状态收口：** 有限并发、整体预算、monitor 复用和规模基准。
 6. **平台收口：** macOS 和 systemd 真机生命周期、日志、漂移、接管/交还测试。
-7. **升级收口：** 用真实 0.10.3 fixture 完成 dry-run、导入、逐条切换和回退。
-8. **发布收口：** 多平台构建、checksum、全新安装和 V1 Preview 端到端验收。
+7. **发布收口：** 多平台构建、checksum、全新安装和 V1 Preview 端到端验收。
 
 这个顺序不增加产品范围。任何步骤发现需要新增一级命令、中心进程、公共状态、配置字段
 或远程副作用，必须暂停编码并先回到两份主文档确认。

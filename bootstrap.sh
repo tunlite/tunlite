@@ -60,20 +60,6 @@ main() {
   asset="tunlite_${plain_version}_${asset_suffix}.tar.gz"
   base_url="${TUNLITE_RELEASE_BASE_URL:-${repository}/releases/download/${version}}"
 
-  if [ -n "${TUNLITE_HOME:-}" ]; then
-    legacy_config="${TUNLITE_HOME}/config/config.json"
-    legacy_manifest="${TUNLITE_HOME}/data/install.json"
-  else
-    legacy_config="${XDG_CONFIG_HOME:-${HOME}/.config}/tunlite/config.json"
-    legacy_manifest="${XDG_STATE_HOME:-${HOME}/.local/state}/tunlite/install.json"
-  fi
-  if [ -f "$legacy_config" ] || [ -f "$legacy_manifest" ]; then
-    echo "tunlite: 检测到 0.x 配置或安装记录，安装脚本不会直接覆盖旧版本。" >&2
-    echo "tunlite: 请下载 v1 原生二进制到临时路径，并按照升级说明导入旧配置：" >&2
-    echo "https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md" >&2
-    exit 1
-  fi
-
   temporary="$(mktemp -d)"
   install_temporary=""
   trap 'rm -rf "$temporary"; if [ -n "$install_temporary" ]; then rm -f "$install_temporary"; fi' EXIT HUP INT TERM

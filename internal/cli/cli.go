@@ -385,10 +385,6 @@ func renderError(streams IO, opts options, err error) int {
 	if typed != nil && typed.kind != "" {
 		kind = typed.kind
 	}
-	var legacy *configstore.LegacyConfigError
-	if errors.As(err, &legacy) {
-		kind = "legacy_import_required"
-	}
 	if opts.JSON {
 		riskLevel := "low"
 		actions := []core.Action{}
@@ -445,49 +441,12 @@ func renderedExit(code int) error {
 }
 
 func connectionStore(opts options) (*configstore.Store, error) {
-	store, err := unguardedConnectionStore(opts)
-	if err != nil {
-		return store, err
-	}
-	if err := requireLegacyMigration(store.Path()); err != nil {
-		return nil, err
-	}
-	return store, nil
-}
-
-func unguardedConnectionStore(opts options) (*configstore.Store, error) {
 	_ = opts
 	path, err := appPaths.ConfigFile()
 	if err != nil {
 		return nil, err
 	}
 	return configstore.New(path), nil
-}
-
-func requireLegacyMigration(target string) error {
-	if _, err := os.Stat(target); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	legacy, err := appPaths.LegacyConfigFile()
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(legacy); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return &exitError{
-		code: 1, kind: "legacy_import_required",
-		message:   "检测到 Tunlite 0.x 配置 " + legacy + "；运行 `tunlite import " + legacy + "` 导入 V1。旧配置和正在运行的 0.x 隧道不会被修改。升级说明：https://github.com/yuanyuanzijin/tunlite/blob/master/docs/UPGRADE_FROM_0_X.md",
-		riskLevel: "low",
-		actions: []core.Action{
-			{Type: "import_legacy_config", Parameters: map[string]any{"arguments": []string{"import", legacy}}},
-			{Type: "review_upgrade_guide", Parameters: map[string]any{"document": "docs/UPGRADE_FROM_0_X.md"}},
-		},
-	}
 }
 
 func sanitizeName(host string) string {
