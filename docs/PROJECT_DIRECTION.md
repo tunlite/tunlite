@@ -1080,15 +1080,16 @@ V1 Preview 的公共命令面向 Connection，而不是绑定 SSH。下表是完
 
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
-| `add` | `tunlite add <name> --to user@host[:port] -L/-R/-D ...` | 创建具名 Connection，并同步建立停止状态的原生服务定义。保留；名称是全部生命周期操作的稳定身份。 |
+| `add` | `tunlite add <name> [--driver ssh] <Driver args>` | 创建具名 Connection，并同步建立停止状态的原生服务定义。SSH 永久作为默认 Driver，因此常用写法是 `tunlite add db -L 5432:localhost:5432 user@host`。名称是全部生命周期操作的稳定身份。 |
 | `list` | `tunlite list [--group group]` | 按 Group 分段列出 Tunlite 已管理的 Connection，不扫描未管理的系统服务；未设置归属的进入“未分组”。保留；它回答“我管理了什么”。 |
-| `set` | `tunlite set <name> [--to ...] [-L/-R/-D ...]` | 修改声明，并在同一事务中联动原生服务；不要求再执行 `sync`。保留。 |
+| `set` | `tunlite set <name> <Driver patch args>` | 先从声明确定 Driver，再由该 Driver 解析补丁；修改声明并在同一事务中联动原生服务。禁止用 `set` 更换 Driver。 |
 | `rename` | `tunlite rename <name> <new-name>` | 原子修改 Connection 身份及其服务绑定。保留；不能退化成复制后删除。 |
 | `remove` | `tunlite remove <name>` | 只允许删除已停止且不再持久启用的 Connection，同时删除其原生服务定义。保留完整词，不提供 `rm` 公共别名。 |
 
-`add` 与 `set` 在 V1 使用 SSH 参数，是内置 SSH Driver 的正式入口；通用 Connection
-Envelope 和 Driver 接口不能因此绑定 SSH。未来 Driver 使用自己的命名空间参数或声明
-文件，不把所有 Provider 参数堆到这一组全局参数中。
+Core 只解析名称、`--driver`、Group 与全局机器参数，其余 argv 保序交给选中的 Driver。
+SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `user@host`。未来 Driver 使用
+`--driver <name>` 这一种选择方式和自己的参数解析器；不增加 `--ssh`、`--kubernetes`
+等特殊选择器，也不把 Target 强加为所有 Driver 的 Core 概念。
 
 ### 9.2 运行与原生服务
 
@@ -1127,7 +1128,7 @@ Envelope 和 Driver 接口不能因此绑定 SSH。未来 Driver 使用自己的
 
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
-| `check` | `tunlite check <connection-or-user@host> [-i key] [--jump host] [--timeout seconds]` | 对单个具名 Connection 或临时 SSH 目标执行只读连通性与认证检查。保留；临时目标只允许检查，不能借此运行匿名隧道。 |
+| `check` | `tunlite check <connection-or-user@host> [-p port] [-i key] [-J host] [--timeout seconds]` | 对单个具名 Connection 或临时 SSH 目标执行只读连通性与认证检查。SSH 端口、私钥和跳板继续使用同一套原生短参数；临时目标只允许检查，不能借此运行匿名隧道。 |
 | `doctor` | `tunlite doctor [name] [--offline] [--timeout seconds]` | 综合检查本机环境、配置、原生服务和一个或全部 Connection；给出结构化问题与动作。保留，与只检查单个 SSH 目标的 `check` 分工明确。 |
 
 ### 9.5 声明交换

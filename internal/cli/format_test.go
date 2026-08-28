@@ -122,7 +122,7 @@ func TestDoctorHumanOutputRestoresGlyphsColorsAndSummary(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com", "-D", "15432"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "db", "-D", "15432", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	color := true
@@ -260,7 +260,7 @@ func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com", "-D", "1080"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	if code, out, stderr := invoke(t, "start", "db"); code != 0 {
@@ -376,7 +376,7 @@ func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com", "-D", "1080"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	opts := options{serviceAdapter: func() (service.Adapter, error) { return adapter, nil }}

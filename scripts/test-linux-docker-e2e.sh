@@ -124,11 +124,11 @@ wait_for_user_manager
 
 say "creating one connection with local, remote, and SOCKS forwards"
 run_user tunlite add linux-real \
-    --to tunlite@127.0.0.1:2222 \
+    -p 2222 \
     -i /home/tunlite/.ssh/id_ed25519 \
     -L 127.0.0.1:18080:127.0.0.1:19080 \
     -R 127.0.0.1:18081:127.0.0.1:19080 \
-    -D 127.0.0.1:18082 \
+    -D 127.0.0.1:18082 tunlite@127.0.0.1 \
     --json --non-interactive
 
 say "starting the real systemd user service and checking all traffic"

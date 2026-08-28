@@ -53,13 +53,13 @@ Forward 采用 OpenSSH 形式，可重复使用：
 
 ```bash
 # 本机 5432 -> 远端数据库 5432
-tunlite add db-5432 --to user@host -L 5432:localhost:5432 --group work --json --non-interactive
+tunlite add db-5432 -L 5432:localhost:5432 --group work user@host --json --non-interactive
 
 # 远端 9000 -> 本机 3000
-tunlite add preview-9000 --to user@host -R 9000:localhost:3000 --json --non-interactive
+tunlite add preview-9000 -R 9000:localhost:3000 user@host --json --non-interactive
 
 # 本机 SOCKS5 代理
-tunlite add socks-1080 --to user@host -D 1080 --json --non-interactive
+tunlite add socks-1080 -D 1080 user@host --json --non-interactive
 
 # 在前台运行已有 Connection
 tunlite run db-5432 --json --non-interactive
@@ -69,8 +69,10 @@ tunlite run db-5432 --json --non-interactive
 逐行读取 `starting`、`stopped` 等事件，并持续持有该前台进程；不能等待进程退出后再把
 完整 stdout 当成一个 JSON 对象解析。
 
-通用 SSH 参数：`-i <私钥路径>`、`--jump user@host:port`、
-`--ssh-opt Key=Value`。`--ssh-opt` 只接受严格的 `Key=Value`，不要传 `-o`。
+SSH Driver 接受 `-N`、`-T`、`-p <端口>`、`-i <私钥路径>`、
+`-J user@host:port`、`-L/-R/-D`、`-o Key=Value` 和唯一的 `user@host`。
+`-o` 只接受安全白名单中的严格 `Key=Value`；不要传命令、任意 SSH Config 或远程命令。
+Tunlite 的 SSH 执行与检查不读取 `~/.ssh/config`，SSH alias 必须先解析为显式目标和安全参数。
 
 `-L`、`-R` 的格式是 `[bind:]port:host:hostport`；`-D` 是 `[bind:]port`。
 省略 bind 时仅监听回环地址。IPv6 地址必须使用方括号。
@@ -131,7 +133,7 @@ tunlite list --json --non-interactive
 tunlite list --group work --json --non-interactive
 
 # 只修改目标；未给出的字段保持不变
-tunlite set db-5432 --to deploy@new-host --json --non-interactive
+tunlite set db-5432 deploy@new-host --json --non-interactive
 
 # 一旦出现任意 -L/-R/-D，会替换完整 Forward 集合，必须先 dry-run
 tunlite set db-5432 -L 5432:localhost:5432 -D 1080 --dry-run --json --non-interactive

@@ -23,14 +23,16 @@ import (
 
 func checkSSH(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return usageError("usage: tunlite check <connection-or-user@host> [-i key] [--jump host] [--timeout seconds]")
+		return usageError("usage: tunlite check <connection-or-user@host> [-p port] [-i key] [-J host] [--timeout seconds]")
 	}
 	target := args[0]
 	flags := flag.NewFlagSet("check", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var identity, jump, timeoutValue string
+	var port int
+	flags.IntVar(&port, "p", 0, "SSH port")
 	flags.StringVar(&identity, "i", "", "identity file")
-	flags.StringVar(&jump, "jump", "", "comma-separated jump hosts")
+	flags.StringVar(&jump, "J", "", "comma-separated jump hosts")
 	flags.StringVar(&timeoutValue, "timeout", "12", "timeout in seconds")
 	if err := flags.Parse(args[1:]); err != nil {
 		return usageError(err.Error())
@@ -50,7 +52,10 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 	if err != nil {
 		return err
 	}
-	connection, err := resolveSSHConnection(document, target, identity, jump)
+	if port != 0 && (port < 1 || port > 65535) {
+		return usageError(fmt.Sprintf("invalid SSH port %d", port))
+	}
+	connection, err := resolveSSHConnection(document, target, port, identity, jump)
 	if err != nil {
 		return err
 	}
@@ -83,13 +88,13 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 	return nil
 }
 
-func resolveSSHConnection(document configstore.Document, target, identity, jump string) (core.Connection, error) {
+func resolveSSHConnection(document configstore.Document, target string, port int, identity, jump string) (core.Connection, error) {
 	if _, stored := configstore.Find(&document, target); stored != nil {
 		connection := cloneConnection(*stored)
 		if connection.Spec.Driver != sshdriver.ID {
 			return core.Connection{}, usageError("command requires an SSH connection")
 		}
-		if identity == "" && jump == "" {
+		if port == 0 && identity == "" && jump == "" {
 			return connection, nil
 		}
 		config, err := sshdriver.DecodeConfig(connection.Spec.Config)
@@ -98,6 +103,9 @@ func resolveSSHConnection(document configstore.Document, target, identity, jump 
 		}
 		if identity != "" {
 			config.IdentityFile = identity
+		}
+		if port != 0 {
+			config.Port = port
 		}
 		if jump != "" {
 			config.Jump, err = sshdriver.ParseJump(jump)
@@ -108,9 +116,15 @@ func resolveSSHConnection(document configstore.Document, target, identity, jump 
 		connection.Spec.Config, _ = json.Marshal(config)
 		return connection, nil
 	}
-	host, port, err := sshdriver.ParseTarget(target)
+	host, embeddedPort, err := sshdriver.ParseTarget(target)
 	if err != nil {
 		return core.Connection{}, notFoundError(fmt.Sprintf("no such connection and invalid SSH target: %s", target))
+	}
+	if host != strings.TrimSpace(target) {
+		return core.Connection{}, usageError(fmt.Sprintf("SSH target must not contain a port; use -p %d %s", embeddedPort, host))
+	}
+	if port == 0 {
+		port = 22
 	}
 	jumps, err := sshdriver.ParseJump(jump)
 	if err != nil {

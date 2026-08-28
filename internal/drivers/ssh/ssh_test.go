@@ -44,6 +44,9 @@ func TestDriverBuildsDeterministicArgvPlan(t *testing.T) {
 	if got.Mode != "direct" || got.Exec.Program != "/usr/bin/ssh" || got.Lifecycle.Restart != "on-failure" {
 		t.Fatalf("unexpected execution plan: %#v", got)
 	}
+	if !containsPair(got.Exec.Args, "-F", "none") {
+		t.Fatalf("managed SSH plan can still read ambient config: %#v", got.Exec.Args)
+	}
 	if len(got.HealthChecks) != 2 {
 		t.Fatalf("local and dynamic forwards should have health checks: %#v", got.HealthChecks)
 	}
@@ -207,6 +210,25 @@ func TestConfigFromPlanRoundTripsSupportedSSHArgv(t *testing.T) {
 	}
 	if got.Host != "me@example.com" || got.Port != 2222 || got.IdentityFile != "/tmp/id key" || len(got.Forwards) != 1 || len(got.SSHOptions) != 1 {
 		t.Fatalf("round-trip config=%#v", got)
+	}
+}
+
+func TestConfigFromPlanRejectsAmbientSSHConfig(t *testing.T) {
+	raw, _ := json.Marshal(Config{
+		Host:     "me@example.com",
+		Forwards: []Forward{{Type: "dynamic", Bind: "127.0.0.1", SrcPort: 1080}},
+	})
+	connection := core.Connection{
+		ConfigVersion: core.ConfigVersion, Kind: core.Kind, Metadata: core.Metadata{Name: "ambient"},
+		Spec: core.ConnectionSpec{Driver: ID, Config: raw},
+	}
+	value, err := NewWithLookup(func(string) (string, error) { return "/usr/bin/ssh", nil }).Plan(context.Background(), connection, core.PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Exec.Args = value.Exec.Args[2:]
+	if _, err := ConfigFromPlan(value); err == nil {
+		t.Fatal("an OpenSSH plan that reads ambient config was accepted for management")
 	}
 }
 

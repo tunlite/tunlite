@@ -47,10 +47,10 @@ Agent, ask that Agent to install the official [`use-tunlite` Skill package](skil
 ## Quick start
 
 ```bash
-# Define local, remote, or SOCKS forwards. Flags are repeatable.
-tunlite add db --to deploy@app01 -L 5432:localhost:5432
-tunlite add preview --to deploy@app01 -R 9000:localhost:3000
-tunlite add socks --to deploy@app01 -D 1080
+# Define local, remote, or SOCKS forwards with familiar OpenSSH syntax.
+tunlite add db -L 5432:localhost:5432 deploy@app01
+tunlite add preview -R 9000:localhost:3000 deploy@app01
+tunlite add socks -D 1080 deploy@app01
 
 # Run one connection attached to this terminal.
 tunlite run db
@@ -72,6 +72,15 @@ tunlite resolve db --use tunlite --dry-run
 tunlite resolve db --use system
 ```
 
+SSH is the permanent default driver; `--driver ssh` is optional. Use `-p` for a
+non-default port, `-i` for an identity, `-J` for jump hosts, and allowlisted
+`-o Key=Value` options. The target is one `user@host`; do not append `:port`.
+
+Tunlite SSH execution and checks deliberately use `ssh -F none`: they do not inherit
+`~/.ssh/config` aliases, commands, hidden forwards, or multiplexing. Use an explicit
+host and explicit safe arguments. A future SSH Config importer may snapshot safe
+alias fields, but runtime behavior will remain represented by the Connection.
+
 Persistent services are per connection:
 
 ```text
@@ -89,7 +98,7 @@ of scraping human output:
 ```bash
 tunlite capabilities --json --non-interactive
 tunlite schema cli --json --non-interactive
-tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-interactive
+tunlite add db -L 5432:localhost:5432 deploy@app01 --dry-run --json --non-interactive
 ```
 
 Automation must verify the integer `protocolVersion` returned by `capabilities`

@@ -69,6 +69,10 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 	}
 
 	args := []string{
+		// Managed Connections must not inherit commands, forwards, multiplexing,
+		// or other hidden behavior from user/system SSH config. Explicit safe
+		// fields below are the complete runtime contract.
+		"-F", "none",
 		"-N", "-T",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
@@ -127,6 +131,7 @@ func ConfigFromPlan(value plan.ExecutionPlan) (Config, error) {
 		return Config{}, errors.New("execution plan is not a direct OpenSSH command")
 	}
 	config := Config{}
+	isolatedConfig := false
 	args := value.Exec.Args
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
@@ -140,6 +145,18 @@ func ConfigFromPlan(value plan.ExecutionPlan) (Config, error) {
 		switch argument {
 		case "-N", "-T":
 			continue
+		case "-F":
+			if isolatedConfig {
+				return Config{}, errors.New("OpenSSH plan specifies -F more than once")
+			}
+			configFile, err := next()
+			if err != nil {
+				return Config{}, err
+			}
+			if configFile != "none" {
+				return Config{}, fmt.Errorf("unsupported OpenSSH config file %q", configFile)
+			}
+			isolatedConfig = true
 		case "-o":
 			option, err := next()
 			if err != nil {
@@ -193,6 +210,9 @@ func ConfigFromPlan(value plan.ExecutionPlan) (Config, error) {
 		default:
 			return Config{}, fmt.Errorf("unsupported OpenSSH argument %q", argument)
 		}
+	}
+	if !isolatedConfig {
+		return Config{}, errors.New("OpenSSH plan must disable ambient config with -F none")
 	}
 	if err := Validate(config); err != nil {
 		return Config{}, err

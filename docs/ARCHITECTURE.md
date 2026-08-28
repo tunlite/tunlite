@@ -534,9 +534,47 @@ V1 Preview 的具体毫秒值由真实 macOS、Linux 以及 100 Connection 基�
   `ssh-keygen`、`ssh-copy-id` 或文档给出的系统 OpenSSH 操作。
 - 插件未来就是用户机器上的任意本地代码，不能宣传不存在的沙箱保证。
 
-### 15.2 SSH 额外选项
+### 15.2 Core / Driver 参数边界
 
-`--ssh-opt` 不能仅检查 `Key=Value` 语法。V1 必须拒绝以下类别：
+Core 的长期模型是 `Connection = name + driver + driver config`。`add` 先读取名称及
+Core 保留参数，再由 `--driver` 选择 Driver；未指定时永久默认 `ssh`。剩余 argv
+保持顺序交给 Driver。`set` 先加载 Connection，从已保存的 Driver ID 选择补丁解析器；
+禁止通过 `set` 更换 Driver。
+
+V1 Core 保留 `--driver`（仅 `add`）、`--group`、`--no-group` 以及全局
+`--dry-run`、`--json`、`--non-interactive`、`--lang`。Driver 注册时必须拒绝与这些
+名称冲突。未来 Driver 统一使用 `--driver <name>`，不增加 `--ssh`、`--kubernetes`
+等特殊选择器，也不强迫所有 Driver 拥有 Target 概念。
+
+未来语法由各 Driver 自己定义；以下只说明边界，不代表 V1 已提供这些 Driver：
+
+```bash
+tunlite add postgres --driver kubernetes \
+  --context production --namespace backend service/postgres 5432:5432
+
+tunlite add preview --driver cloudflare \
+  --origin http://127.0.0.1:3000 --hostname preview.example.com
+```
+
+SSH 是默认 Driver，其常用入口直接采用受限 OpenSSH argv：
+
+```bash
+tunlite add db -L 5432:localhost:5432 deploy@app01
+tunlite set db -p 2222 -J deploy@bastion deploy@app02
+```
+
+允许 `-N`、`-T`、`-p`、`-i`、`-J`、`-L`、`-R`、`-D`、`-o Key=Value` 和唯一
+`user@host`。`-N/-T` 是便于从现有 SSH 命令机械迁移的无状态标记。`set` 中出现任意
+Forward 或 `-o` 时，分别替换完整列表，保证重复执行幂等。
+
+### 15.3 SSH 配置隔离与额外选项
+
+托管 SSH 执行与 `check` 必须加入 `-F none`，不读取用户或系统 SSH Config。否则
+`ProxyCommand`、`LocalCommand`、额外 Forward、ControlMaster 等隐藏行为会绕过
+Connection 声明、dry-run 和风险判断。未来若支持导入 SSH Config alias，必须把安全
+字段解析为显式快照，不能在每次启动时重新隐式读取。
+
+`-o` 不能仅检查 `Key=Value` 语法。V1 必须拒绝以下类别：
 
 - 执行本地或远程辅助命令的选项，例如 `ProxyCommand`、`LocalCommand`、
   `PermitLocalCommand`。
@@ -545,10 +583,10 @@ V1 Preview 的具体毫秒值由真实 macOS、Linux 以及 100 Connection 基�
 - 覆盖 BatchMode、ExitOnForwardFailure、Keepalive 等 Tunlite 安全与可靠性基线的选项。
 - 不能安全、确定地序列化和回读的选项。
 
-SSH 跳板应使用结构化 Jump Host 或安全的 OpenSSH 参数，不以允许任意 ProxyCommand
+SSH 跳板应使用 `-J`，不以允许任意 ProxyCommand
 替代。`import` 复用同一校验，遇到不安全选项时整体拒绝并指出具体 Connection 和选项。
 
-### 15.3 高风险提示
+### 15.4 高风险提示
 
 远端转发和公开监听可能扩大网络暴露面。V1 必须在 `add`、`set`、`import`、`manage`
 和 `--dry-run` 结果中返回明确的 endpoint、风险等级和 warning，但不提供 `--approve`，
