@@ -26,7 +26,7 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "staging", "--to", "me@example.com:2222", "-L", "8080:localhost:80", "-D", "1080"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "staging", "-p", "2222", "-L", "8080:localhost:80", "-D", "1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	var out, stderr bytes.Buffer
@@ -68,7 +68,7 @@ func TestRunDoesNotBlockAcceptedPublishDeclaration(t *testing.T) {
 	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/true")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
-	if code, out, stderr := invoke(t, "add", "publish", "--to", "me@example.com", "-R", "19000:localhost:3000"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "publish", "-R", "19000:localhost:3000", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	code, out, stderr := invoke(t,
@@ -88,7 +88,7 @@ func TestRunDryRunReportsPublicListenRisk(t *testing.T) {
 	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
-	if code, out, stderr := invoke(t, "add", "public", "--to", "me@example.com", "-D", "0.0.0.0:1080"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "public", "-D", "0.0.0.0:1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	code, out, stderr := invoke(t,
@@ -209,8 +209,8 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
-	code, out, stderr := invoke(t, "add", "db", "--to", "me@example.com:2222",
-		"-L", "5432:localhost:5432", "--group", "work", "--json")
+	code, out, stderr := invoke(t, "add", "db", "-p", "2222",
+		"-L", "5432:localhost:5432", "--group", "work", "me@example.com", "--json")
 	if code != 0 {
 		t.Fatalf("add exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -241,8 +241,8 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 		t.Fatalf("unexpected list result: %#v", listed)
 	}
 
-	code, out, stderr = invoke(t, "set", "db", "--to", "deploy@db.internal", "-D", "1080",
-		"--no-group", "--ssh-opt", "Compression=yes", "--json")
+	code, out, stderr = invoke(t, "set", "db", "-D", "1080",
+		"--no-group", "-o", "Compression=yes", "deploy@db.internal", "--json")
 	if code != 0 {
 		t.Fatalf("set exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -292,6 +292,29 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	}
 }
 
+func TestConnectionCommandsUseOneDriverSelectionContract(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+
+	if code, out, stderr := invoke(t, "add", "db", "--driver", "ssh", "-D", "1080", "deploy@app01", "--json"); code != 0 {
+		t.Fatalf("explicit default driver failed: exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	if code, out, _ := invoke(t, "add", "future", "--driver", "kubernetes", "service/db", "--json"); code != 2 || !strings.Contains(out, `"code":"invalid_arguments"`) {
+		t.Fatalf("unknown driver was not rejected deterministically: exit=%d stdout=%s", code, out)
+	}
+	if code, out, _ := invoke(t, "add", "internal-id", "--driver", sshdriver.ID, "-D", "1081", "deploy@app01", "--json"); code != 2 || !strings.Contains(out, `"code":"invalid_arguments"`) {
+		t.Fatalf("internal driver ID became a second public spelling: exit=%d stdout=%s", code, out)
+	}
+	if code, out, _ := invoke(t, "set", "db", "--driver", "ssh", "--json"); code != 2 || !strings.Contains(out, "driver_change") && !strings.Contains(out, "cannot change") {
+		t.Fatalf("set accepted a driver change surface: exit=%d stdout=%s", code, out)
+	}
+	if code, out, _ := invoke(t, "add", "legacy", "--to", "deploy@app01", "-D", "1082", "--json"); code != 2 || !strings.Contains(out, "unsupported SSH argument") {
+		t.Fatalf("removed --to syntax was accepted: exit=%d stdout=%s", code, out)
+	}
+}
+
 func TestHumanListAndStatusAreGroupedByBusinessOwnership(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
@@ -299,9 +322,9 @@ func TestHumanListAndStatusAreGroupedByBusinessOwnership(t *testing.T) {
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	for _, args := range [][]string{
-		{"add", "prod-db", "--to", "me@example.com", "-D", "1081", "--group", "prod"},
-		{"add", "prod-api", "--to", "me@example.com", "-D", "1082", "--group", "prod"},
-		{"add", "personal", "--to", "me@example.com", "-D", "1083"},
+		{"add", "prod-db", "-D", "1081", "--group", "prod", "me@example.com"},
+		{"add", "prod-api", "-D", "1082", "--group", "prod", "me@example.com"},
+		{"add", "personal", "-D", "1083", "me@example.com"},
 	} {
 		if code, out, stderr := invoke(t, args...); code != 0 {
 			t.Fatalf("%v exit=%d stdout=%s stderr=%s", args, code, out, stderr)
@@ -330,7 +353,7 @@ func TestHumanListAndStatusAreGroupedByBusinessOwnership(t *testing.T) {
 func TestAddDryRunDoesNotCreateConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	code, out, stderr := invoke(t, "add", "preview", "--to", "me@example.com", "-D", "1080", "--dry-run", "--json")
+	code, out, stderr := invoke(t, "add", "preview", "-D", "1080", "--dry-run", "--json", "me@example.com")
 	if code != 0 || !strings.Contains(out, `"outcome":"planned"`) {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -349,7 +372,7 @@ func TestGlobalConfigFlagIsNotSupported(t *testing.T) {
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	path := filepath.Join(t.TempDir(), "project", "tunlite.json")
-	code, out, stderr := invoke(t, "add", "project-db", "--to", "me@example.com", "-D", "1080", "--config", path, "--json")
+	code, out, stderr := invoke(t, "add", "project-db", "-D", "1080", "--config", path, "--json", "me@example.com")
 	if code != 2 || !strings.Contains(out, `"code":"invalid_arguments"`) {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -364,7 +387,7 @@ func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
-	code, _, stderr := invoke(t, "add", "named-db", "--to", "me@example.com", "-L", "15432:localhost:5432")
+	code, _, stderr := invoke(t, "add", "named-db", "-L", "15432:localhost:5432", "me@example.com")
 	if code != 0 {
 		t.Fatalf("add exit %d, stderr=%s", code, stderr)
 	}
@@ -393,11 +416,11 @@ func TestEndpointConflictIsStructuredWarning(t *testing.T) {
 	t.Setenv("TUNLITE_HOME", home)
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
-	code, _, stderr := invoke(t, "add", "first", "--to", "me@one", "-L", "18080:localhost:80")
+	code, _, stderr := invoke(t, "add", "first", "-L", "18080:localhost:80", "me@one")
 	if code != 0 {
 		t.Fatalf("first add exit %d, stderr=%s", code, stderr)
 	}
-	code, out, stderr := invoke(t, "add", "second", "--to", "me@two", "-D", "18080", "--json")
+	code, out, stderr := invoke(t, "add", "second", "-D", "18080", "--json", "me@two")
 	if code != 0 {
 		t.Fatalf("second add exit %d, stdout=%s stderr=%s", code, out, stderr)
 	}
@@ -424,7 +447,7 @@ func TestExportImportAndValidateDeclarations(t *testing.T) {
 		name string
 		port string
 	}{{"a", "1080"}, {"b", "1081"}} {
-		code, out, stderr := invoke(t, "add", item.name, "--to", "me@example.com", "-D", item.port, "--json")
+		code, out, stderr := invoke(t, "add", item.name, "-D", item.port, "--json", "me@example.com")
 		if code != 0 {
 			t.Fatalf("source add exit=%d stdout=%s stderr=%s", code, out, stderr)
 		}
@@ -469,7 +492,7 @@ func TestExportImportAndValidateDeclarations(t *testing.T) {
 
 	t.Setenv("TUNLITE_HOME", filepath.Join(root, "target-home"))
 	invoke = useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(root, "target-native")))
-	code, _, stderr = invoke(t, "add", "a", "--to", "old@example.com", "-D", "2080")
+	code, _, stderr = invoke(t, "add", "a", "-D", "2080", "old@example.com")
 	if code != 0 {
 		t.Fatalf("target add exit=%d stderr=%s", code, stderr)
 	}
@@ -642,7 +665,7 @@ func TestDoctorOfflineChecksPlanAndEndpoint(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
-	code, _, stderr := invoke(t, "add", "doctor-db", "--to", "me@example.com", "-D", strconv.Itoa(port))
+	code, _, stderr := invoke(t, "add", "doctor-db", "-D", strconv.Itoa(port), "me@example.com")
 	if code != 0 {
 		t.Fatalf("add exit=%d stderr=%s", code, stderr)
 	}
@@ -675,7 +698,7 @@ func TestRunForegroundStartsAndStopsProvider(t *testing.T) {
 	t.Setenv("TUNLITE_HOME", temp)
 	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "foreground", "--to", "me@example.com", "-D", "1080"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "foreground", "-D", "1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 
@@ -727,9 +750,9 @@ func TestRunForegroundStartsAndStopsProvider(t *testing.T) {
 	}
 }
 
-func TestRunRejectsMissingForwardWithUsageExit(t *testing.T) {
+func TestRunRejectsAnonymousSSHArgumentsWithUsageExit(t *testing.T) {
 	var out, stderr bytes.Buffer
-	code := Run([]string{"run", "--to", "me@example.com", "--json"}, IO{Out: &out, Err: &stderr})
+	code := Run([]string{"run", "me@example.com", "-D", "1080", "--json"}, IO{Out: &out, Err: &stderr})
 	if code != 2 {
 		t.Fatalf("got exit %d, want 2", code)
 	}

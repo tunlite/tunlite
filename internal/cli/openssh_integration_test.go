@@ -52,11 +52,11 @@ func TestRealOpenSSHAllForwardTypes(t *testing.T) {
 	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	code, out, addErr := invoke(t,
-		"add", "integration", "--to", fmt.Sprintf("%s@127.0.0.1:%d", server.username, server.port), "-i", server.clientKey,
+		"add", "integration", "-p", strconv.Itoa(server.port), "-i", server.clientKey,
 		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
 		"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
 		"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-		"--ssh-opt", "UserKnownHostsFile=/dev/null",
+		"-o", "UserKnownHostsFile=/dev/null", fmt.Sprintf("%s@127.0.0.1", server.username),
 	)
 	if code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, addErr)
@@ -127,11 +127,11 @@ func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 	assertReleaseServiceNameAvailable(t, name)
 
 	invokeReleaseBinary(t, releaseBinary,
-		"add", name, "--to", fmt.Sprintf("%s@127.0.0.1:%d", server.username, server.port), "-i", server.clientKey,
+		"add", name, "-p", strconv.Itoa(server.port), "-i", server.clientKey,
 		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
 		"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
 		"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-		"--ssh-opt", "UserKnownHostsFile=/dev/null", "--json", "--non-interactive",
+		"-o", "UserKnownHostsFile=/dev/null", fmt.Sprintf("%s@127.0.0.1", server.username), "--json", "--non-interactive",
 	)
 	removed := false
 	t.Cleanup(func() {

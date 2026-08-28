@@ -151,7 +151,7 @@ TL_PORT_2=18081
 printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
 ```
 
-自定义 SSH 端口时，把 `TL_TARGET` 写成 `user@example-host:2222`。测试名称带时间戳，
+自定义 SSH 端口时，在下面的 `add` 命令中把 `-D` 前增加 `-p 2222`。测试名称带时间戳，
 不会覆盖已有 Connection。确认 18080 和 18081 没有被其他程序使用；被占用时换成其他
 大于 1024 的端口。
 
@@ -162,7 +162,7 @@ printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
 ### 第一步：创建，但不启动
 
 ```bash
-"$TL" add "$TL_NAME" --to "$TL_TARGET" -D "$TL_PORT"
+"$TL" add "$TL_NAME" -D "$TL_PORT" "$TL_TARGET"
 "$TL" status "$TL_NAME"
 ```
 

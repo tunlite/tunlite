@@ -3,10 +3,21 @@ package ssh
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 )
+
+func TestCheckArgsDisableAmbientSSHConfig(t *testing.T) {
+	args := buildCheckArgs(Config{Host: "me@host"}, 12)
+	if !containsPair(args, "-F", "none") {
+		t.Fatalf("SSH check can still read ambient config: %#v", args)
+	}
+	if tail := args[len(args)-3:]; !reflect.DeepEqual(tail, []string{"--", "me@host", "true"}) {
+		t.Fatalf("unexpected SSH check target: %#v", tail)
+	}
+}
 
 func TestClassifyCheckFailure(t *testing.T) {
 	tests := []struct {

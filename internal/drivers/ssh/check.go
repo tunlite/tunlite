@@ -54,29 +54,7 @@ func (d *Driver) Check(ctx context.Context, connection core.Connection, options 
 	if seconds < 1 {
 		seconds = 1
 	}
-	args := []string{
-		"-T", "-v",
-		"-o", "BatchMode=yes",
-		"-o", "NumberOfPasswordPrompts=0",
-		"-o", "ConnectionAttempts=1",
-		"-o", "ConnectTimeout=" + strconv.Itoa(seconds),
-		"-o", "StrictHostKeyChecking=yes",
-		"-o", "PermitLocalCommand=no",
-		"-o", "ClearAllForwardings=yes",
-	}
-	if config.IdentityFile != "" {
-		args = append(args, "-i", expandHome(config.IdentityFile), "-o", "IdentitiesOnly=yes")
-	}
-	if config.Port != 0 && config.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(config.Port))
-	}
-	if len(config.Jump) > 0 {
-		args = append(args, "-J", strings.Join(config.Jump, ","))
-	}
-	for _, option := range config.SSHOptions {
-		args = append(args, "-o", option)
-	}
-	args = append(args, "--", config.Host, "true")
+	args := buildCheckArgs(config, seconds)
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -117,6 +95,34 @@ func (d *Driver) Check(ctx context.Context, connection core.Connection, options 
 	}
 	code, message, actions := classifyCheckFailure(config.Host, output, probeCtx.Err())
 	return checkReport(observedAt, connection, false, code, "error", message, actions), nil
+}
+
+func buildCheckArgs(config Config, seconds int) []string {
+	args := []string{
+		"-F", "none",
+		"-T", "-v",
+		"-o", "BatchMode=yes",
+		"-o", "NumberOfPasswordPrompts=0",
+		"-o", "ConnectionAttempts=1",
+		"-o", "ConnectTimeout=" + strconv.Itoa(seconds),
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "PermitLocalCommand=no",
+		"-o", "ClearAllForwardings=yes",
+	}
+	if config.IdentityFile != "" {
+		args = append(args, "-i", expandHome(config.IdentityFile), "-o", "IdentitiesOnly=yes")
+	}
+	if config.Port != 0 && config.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(config.Port))
+	}
+	if len(config.Jump) > 0 {
+		args = append(args, "-J", strings.Join(config.Jump, ","))
+	}
+	for _, option := range config.SSHOptions {
+		args = append(args, "-o", option)
+	}
+	args = append(args, "--", config.Host, "true")
+	return args
 }
 
 func scanProbeOutput(reader io.Reader, authenticated chan<- struct{}, done chan<- string) {

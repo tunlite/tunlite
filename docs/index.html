@@ -36,8 +36,8 @@
 
       <div class="terminal" aria-label="Tunlite command example">
         <div class="terminal-bar"><span></span><span></span><span></span><b>tunlite — zsh</b></div>
-        <pre><span class="prompt">$</span> tunlite add db --to deploy@app01 \
-    -L 5432:localhost:5432
+        <pre><span class="prompt">$</span> tunlite add db \
+    -L 5432:localhost:5432 deploy@app01
 <span class="ok">✓</span> db added · stopped
 
 <span class="prompt">$</span> tunlite enable db

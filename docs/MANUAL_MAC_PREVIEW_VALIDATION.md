@@ -46,14 +46,14 @@ sw_vers
 ssh -o BatchMode=yes user@example-host true
 ```
 
-把后续命令中的 `user@example-host` 换成真实目标。自定义 SSH 端口时写成
-`user@example-host:2222`。固定测试名为 `preview-test`，SOCKS 端口使用 `18080` 和
+把后续命令中的 `user@example-host` 换成真实目标。自定义 SSH 端口时在目标前增加
+`-p 2222`。固定测试名为 `preview-test`，SOCKS 端口使用 `18080` 和
 `18081`；端口冲突时直接修改数字。
 
 ### 1. 声明与认证
 
 ```bash
-tunlite add preview-test --to user@example-host -D 18080
+tunlite add preview-test -D 18080 user@example-host
 tunlite status preview-test
 tunlite check preview-test --timeout 12
 ```

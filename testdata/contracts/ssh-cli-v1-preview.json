@@ -5,7 +5,7 @@
     {
       "name": "crud-and-forward-editing",
       "steps": [
-        { "args": ["add", "web", "--to", "me@host:2222", "-L", "8080:localhost:80", "--group", "work", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"srcPort\":8080"] },
+        { "args": ["add", "web", "-p", "2222", "-L", "8080:localhost:80", "--group", "work", "me@host", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"srcPort\":8080"] },
         { "args": ["list", "--group", "work", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"web\""] },
         { "args": ["set", "web", "-D", "1080", "--json"], "exit": 0, "stdoutContains": ["\"type\":\"dynamic\"", "\"srcPort\":1080"] },
         { "args": ["rename", "web", "proxy", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"proxy\""] },
@@ -16,11 +16,11 @@
     {
       "name": "multi-forward-and-guardrails",
       "steps": [
-        { "args": ["add", "multi", "--to", "me@host", "-L", "15432:localhost:5432", "-R", "19000:localhost:3000", "-D", "11080", "--json"], "exit": 0, "stdoutContains": ["\"type\":\"local\"", "\"type\":\"remote\"", "\"type\":\"dynamic\""] },
-        { "args": ["add", "multi", "--to", "other@host", "-D", "9999", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"already_exists\""] },
-        { "args": ["add", "all", "--to", "me@host", "-D", "1080", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"name\":\"all\""] },
-        { "args": ["add", "missing-forward", "--to", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] },
-        { "args": ["add", "bad-port", "--to", "me@host:70000", "-D", "1080", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] }
+        { "args": ["add", "multi", "-L", "15432:localhost:5432", "-R", "19000:localhost:3000", "-D", "11080", "me@host", "--json"], "exit": 0, "stdoutContains": ["\"type\":\"local\"", "\"type\":\"remote\"", "\"type\":\"dynamic\""] },
+        { "args": ["add", "multi", "-D", "9999", "other@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"already_exists\""] },
+        { "args": ["add", "all", "-D", "1080", "me@host", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"name\":\"all\""] },
+        { "args": ["add", "missing-forward", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] },
+        { "args": ["add", "bad-port", "-p", "70000", "-D", "1080", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] }
       ]
     }
   ]

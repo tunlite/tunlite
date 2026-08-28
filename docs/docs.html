@@ -54,15 +54,16 @@
         <h2>Create your first connection</h2>
         <p>Use the same forward syntax as OpenSSH. Forward flags are repeatable, and <code>add</code> creates a stopped native service—it does not open a connection.</p>
         <pre class="code"><span>#</span> local TCP forward
-<span>$</span> tunlite add db --to deploy@app01 -L 5432:localhost:5432
+<span>$</span> tunlite add db -L 5432:localhost:5432 deploy@app01
 
 <span>#</span> remote publish and SOCKS proxy
-<span>$</span> tunlite add preview --to deploy@app01 -R 9000:localhost:3000
-<span>$</span> tunlite add socks --to deploy@app01 -D 1080</pre>
+<span>$</span> tunlite add preview -R 9000:localhost:3000 deploy@app01
+<span>$</span> tunlite add socks -D 1080 deploy@app01</pre>
         <p>Identity files, jump hosts, groups, and safe OpenSSH <code>Key=Value</code> options are explicit fields:</p>
-        <pre class="code"><span>$</span> tunlite add private-db --to deploy@app01:2222 \
-    -i ~/.ssh/work_ed25519 --jump bastion@example.com \
-    -L 5432:localhost:5432 --group work</pre>
+        <pre class="code"><span>$</span> tunlite add private-db -p 2222 \
+    -i ~/.ssh/work_ed25519 -J bastion@example.com \
+    -L 5432:localhost:5432 --group work deploy@app01</pre>
+        <div class="callout">Tunlite SSH execution and checks use <code>ssh -F none</code>. They do not inherit aliases, commands, hidden forwards, or multiplexing from <code>~/.ssh/config</code>; use an explicit host and explicit safe arguments.</div>
       </section>
 
       <section id="lifecycle">
@@ -105,7 +106,7 @@
         <p>Use <code>--json --non-interactive</code> and verify <code>protocolVersion</code> before mutation. Use <code>--dry-run</code> whenever the command supports it.</p>
         <pre class="code"><span>$</span> tunlite capabilities --json --non-interactive
 <span>$</span> tunlite schema cli --json --non-interactive
-<span>$</span> tunlite add db --to deploy@app01 -L 5432:localhost:5432 \
+<span>$</span> tunlite add db -L 5432:localhost:5432 deploy@app01 \
     --dry-run --json --non-interactive</pre>
         <p>Batch operations return one result per connection. Exit code <code>5</code> means partial failure; inspect every item instead of treating it as total failure or success.</p>
         <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite">Use the official Agent Skill →</a></p>

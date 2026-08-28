@@ -181,9 +181,11 @@ func capabilities(args []string, streams IO, opts options) error {
 				"consistencyState": {"consistent", "drifted", "missing", "blocked"},
 			},
 		},
+		"driverSelection": map[string]any{"option": "--driver", "default": "ssh", "changeViaSet": false},
 		"drivers": []map[string]any{{
-			"id": "io.tunlite.ssh", "builtIn": true,
-			"capabilities": []string{"access", "publish", "socks", "foreground", "persistent", "multiForward", "inspect", "check", "diagnose"},
+			"id": "io.tunlite.ssh", "name": "ssh", "builtIn": true, "default": true,
+			"argumentSyntax": []string{"-N", "-T", "-p", "-i", "-J", "-L", "-R", "-D", "-o", "user@host"},
+			"capabilities":   []string{"access", "publish", "socks", "foreground", "persistent", "multiForward", "inspect", "check", "diagnose"},
 		}},
 		"exitCodes": map[string]int{"success": 0, "error": 1, "invalidArguments": 2, "notFound": 3, "authenticationFailed": 4, "partial": 5},
 		"schemas":   schemas.Names,
@@ -274,8 +276,8 @@ func commandHelp(command string, streams IO, opts options) error {
 
 func commandUsage(command string) string {
 	usage := map[string]string{
-		"add":          "usage: tunlite add <name> --to user@host[:port] -L/-R/-D ...",
-		"set":          "usage: tunlite set <name> [--to ...] [-L/-R/-D ...]",
+		"add":          "usage: tunlite add <name> [--driver ssh] [--group group] [-p port] [-i key] [-J jump] -L/-R/-D ... user@host",
+		"set":          "usage: tunlite set <name> [-p port] [-i key] [-J jump] [-L/-R/-D ...] [-o Key=Value ...] [user@host] [--group group|--no-group]",
 		"remove":       "usage: tunlite remove <name>",
 		"rename":       "usage: tunlite rename <name> <new-name>",
 		"run":          "usage: tunlite run <name>",
@@ -288,7 +290,7 @@ func commandUsage(command string) string {
 		"monitor":      "usage: tunlite monitor [--group group] [--interval seconds]",
 		"logs":         "usage: tunlite logs <name> [--lines N] [--follow]",
 		"doctor":       "usage: tunlite doctor [name] [--offline] [--timeout seconds]",
-		"check":        "usage: tunlite check <connection-or-user@host> [-i key] [--jump host] [--timeout seconds]",
+		"check":        "usage: tunlite check <connection-or-user@host> [-p port] [-i key] [-J host] [--timeout seconds]",
 		"manage":       "usage: tunlite manage [native-service] [--name name]",
 		"unmanage":     "usage: tunlite unmanage <name>",
 		"resolve":      "usage: tunlite resolve <name> --use tunlite|system",

@@ -18,34 +18,36 @@ import (
 )
 
 type connectionFlags struct {
-	to           string
-	identity     string
-	jump         string
-	local        stringsFlag
-	remote       stringsFlag
-	dynamic      stringsFlag
-	sshOptions   stringsFlag
-	group        string
-	noGroup      bool
-	noSSHOptions bool
-	visited      map[string]bool
+	driver    string
+	group     string
+	noGroup   bool
+	visited   map[string]bool
+	driverArg []string
 }
 
 type condition = core.Condition
 
 func add(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return usageError("usage: tunlite add <name> --to user@host[:port] -L/-R/-D ...")
+		return usageError("usage: tunlite add <name> [--driver ssh] [--group group] [-p port] [-i key] [-J jump] -L/-R/-D ... user@host")
 	}
 	name := args[0]
 	values, err := parseConnectionFlags("add", args[1:], false)
 	if err != nil {
 		return err
 	}
-	if values.to == "" {
-		return usageError("add requires --to user@host[:port]")
+	driver := values.driver
+	if driver == "" {
+		driver = "ssh"
 	}
-	connection, err := newSSHConnection(name, values)
+	if driver != "ssh" {
+		return usageError(fmt.Sprintf("unknown driver %q (available: ssh)", driver))
+	}
+	config, err := sshdriver.ParseAddArguments(values.driverArg)
+	if err != nil {
+		return usageError(err.Error())
+	}
+	connection, err := newSSHConnection(name, config, values)
 	if err != nil {
 		return err
 	}
@@ -181,25 +183,37 @@ func list(args []string, streams IO, opts options) error {
 
 func set(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return usageError("usage: tunlite set <name> [--to ...] [-L/-R/-D ...]")
+		return usageError("usage: tunlite set <name> [-p port] [-i key] [-J jump] [-L/-R/-D ...] [-o Key=Value ...] [user@host] [--group group|--no-group]")
 	}
 	name := args[0]
 	values, err := parseConnectionFlags("set", args[1:], true)
 	if err != nil {
 		return err
 	}
-	if len(values.visited) == 0 {
-		return usageError("nothing to set")
-	}
 	if values.noGroup && values.visited["group"] {
 		return usageError("use a group value or clear the group, not both")
-	}
-	if values.noSSHOptions && values.visited["ssh-opt"] {
-		return usageError("use --ssh-opt or --no-ssh-options, not both")
 	}
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
+	}
+	document, err := store.Load()
+	if err != nil {
+		return err
+	}
+	_, initial := configstore.Find(&document, name)
+	if initial == nil {
+		return notFoundError(fmt.Sprintf("no such connection: %s", name))
+	}
+	if initial.Spec.Driver != sshdriver.ID {
+		return usageError(fmt.Sprintf("set arguments are not available for driver %q", initial.Spec.Driver))
+	}
+	patch, err := sshdriver.ParseSetArguments(values.driverArg)
+	if err != nil {
+		return usageError(err.Error())
+	}
+	if patch.Empty() && len(values.visited) == 0 {
+		return usageError("nothing to set")
 	}
 	var conditions []condition
 	apply := func(document *configstore.Document) (core.Connection, core.Connection, error) {
@@ -208,7 +222,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 			return core.Connection{}, core.Connection{}, notFoundError(fmt.Sprintf("no such connection: %s", name))
 		}
 		before := cloneConnection(*connection)
-		updated, err := applyConnectionFlags(*connection, values)
+		updated, err := applyConnectionFlags(*connection, values, patch)
 		if err != nil {
 			return core.Connection{}, core.Connection{}, err
 		}
@@ -217,10 +231,6 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		return before, updated, nil
 	}
 	if opts.DryRun {
-		document, err := store.Load()
-		if err != nil {
-			return err
-		}
 		before, updated, err := apply(&document)
 		if err != nil {
 			return err
@@ -236,10 +246,6 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		conditions = append(conditions, serviceConditions...)
 		conditions = append(conditions, riskConditions...)
 		return renderConnectionMutationWithConditions(streams, opts, "set", "planned", updated, conditions)
-	}
-	document, err := store.Load()
-	if err != nil {
-		return err
 	}
 	before, updated, err := apply(&document)
 	if err != nil {
@@ -455,58 +461,63 @@ func renameInWithBefore(document *configstore.Document, oldName, newName string)
 }
 
 func parseConnectionFlags(command string, args []string, allowClear bool) (connectionFlags, error) {
-	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	var values connectionFlags
-	flags.StringVar(&values.to, "to", "", "SSH target")
-	flags.StringVar(&values.identity, "i", "", "identity file")
-	flags.StringVar(&values.jump, "jump", "", "comma-separated jump hosts")
-	flags.Var(&values.local, "L", "local forward")
-	flags.Var(&values.remote, "R", "remote forward")
-	flags.Var(&values.dynamic, "D", "dynamic forward")
-	flags.Var(&values.sshOptions, "ssh-opt", "OpenSSH Key=Value option")
-	flags.StringVar(&values.group, "group", "", "connection group")
-	if allowClear {
-		flags.BoolVar(&values.noGroup, "no-group", false, "clear group")
-		flags.BoolVar(&values.noSSHOptions, "no-ssh-options", false, "clear SSH options")
+	values := connectionFlags{visited: make(map[string]bool), driverArg: make([]string, 0, len(args))}
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		value := func(name string) (string, error) {
+			if prefix := "--" + name + "="; strings.HasPrefix(argument, prefix) {
+				return strings.TrimPrefix(argument, prefix), nil
+			}
+			if index+1 >= len(args) {
+				return "", usageError(fmt.Sprintf("--%s requires a value", name))
+			}
+			index++
+			return args[index], nil
+		}
+		switch {
+		case argument == "--driver" || strings.HasPrefix(argument, "--driver="):
+			if command != "add" {
+				return connectionFlags{}, usageError("set cannot change a Connection driver; create a new Connection instead")
+			}
+			if values.visited["driver"] {
+				return connectionFlags{}, usageError("--driver may only be specified once")
+			}
+			selected, err := value("driver")
+			if err != nil {
+				return connectionFlags{}, err
+			}
+			if selected == "" {
+				return connectionFlags{}, usageError("--driver requires a value")
+			}
+			values.driver, values.visited["driver"] = selected, true
+		case argument == "--group" || strings.HasPrefix(argument, "--group="):
+			if values.visited["group"] {
+				return connectionFlags{}, usageError("--group may only be specified once")
+			}
+			group, err := value("group")
+			if err != nil {
+				return connectionFlags{}, err
+			}
+			values.group, values.visited["group"] = group, true
+		case argument == "--no-group":
+			if !allowClear {
+				return connectionFlags{}, usageError("--no-group is only available with set")
+			}
+			if values.noGroup {
+				return connectionFlags{}, usageError("--no-group may only be specified once")
+			}
+			values.noGroup, values.visited["no-group"] = true, true
+		default:
+			values.driverArg = append(values.driverArg, argument)
+		}
 	}
-	if err := flags.Parse(args); err != nil {
-		return connectionFlags{}, usageError(err.Error())
-	}
-	if flags.NArg() != 0 {
-		return connectionFlags{}, usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
-	}
-	values.visited = make(map[string]bool)
-	flags.Visit(func(item *flag.Flag) { values.visited[item.Name] = true })
 	return values, nil
 }
 
-func newSSHConnection(name string, values connectionFlags) (core.Connection, error) {
-	host, port, err := sshdriver.ParseTarget(values.to)
-	if err != nil {
-		return core.Connection{}, usageError(err.Error())
-	}
-	forwards, err := parseForwards(values)
-	if err != nil {
-		return core.Connection{}, err
-	}
-	if len(forwards) == 0 {
-		return core.Connection{}, usageError("add needs at least one forward (-L / -R / -D)")
-	}
-	jump, err := sshdriver.ParseJump(values.jump)
-	if err != nil {
-		return core.Connection{}, usageError(err.Error())
-	}
+func newSSHConnection(name string, config sshdriver.Config, values connectionFlags) (core.Connection, error) {
 	group, err := connectionGroup(values)
 	if err != nil {
 		return core.Connection{}, err
-	}
-	config := sshdriver.Config{
-		Host: host, Port: port, IdentityFile: values.identity, Jump: jump,
-		Forwards: forwards, SSHOptions: append([]string(nil), values.sshOptions...),
-	}
-	if err := sshdriver.Validate(config); err != nil {
-		return core.Connection{}, usageError(err.Error())
 	}
 	raw, err := json.Marshal(config)
 	if err != nil {
@@ -526,44 +537,16 @@ func newSSHConnection(name string, values connectionFlags) (core.Connection, err
 	return connection, nil
 }
 
-func applyConnectionFlags(connection core.Connection, values connectionFlags) (core.Connection, error) {
+func applyConnectionFlags(connection core.Connection, values connectionFlags, patch sshdriver.ConfigPatch) (core.Connection, error) {
 	if connection.Spec.Driver != sshdriver.ID {
-		return core.Connection{}, usageError(fmt.Sprintf("set flags are not available for driver %q", connection.Spec.Driver))
+		return core.Connection{}, usageError(fmt.Sprintf("set arguments are not available for driver %q", connection.Spec.Driver))
 	}
 	updated := cloneConnection(connection)
 	config, err := sshdriver.DecodeConfig(updated.Spec.Config)
 	if err != nil {
 		return core.Connection{}, err
 	}
-	if values.visited["to"] {
-		host, port, err := sshdriver.ParseTarget(values.to)
-		if err != nil {
-			return core.Connection{}, usageError(err.Error())
-		}
-		config.Host, config.Port = host, port
-	}
-	if values.visited["i"] {
-		config.IdentityFile = values.identity
-	}
-	if values.visited["jump"] {
-		jump, err := sshdriver.ParseJump(values.jump)
-		if err != nil {
-			return core.Connection{}, usageError(err.Error())
-		}
-		config.Jump = jump
-	}
-	if values.visited["ssh-opt"] {
-		config.SSHOptions = append([]string(nil), values.sshOptions...)
-	} else if values.noSSHOptions {
-		config.SSHOptions = []string{}
-	}
-	if values.visited["L"] || values.visited["R"] || values.visited["D"] {
-		forwards, err := parseForwards(values)
-		if err != nil {
-			return core.Connection{}, err
-		}
-		config.Forwards = forwards
-	}
+	config = sshdriver.ApplyPatch(config, patch)
 	if values.visited["group"] {
 		group, err := connectionGroup(values)
 		if err != nil {
@@ -582,23 +565,6 @@ func applyConnectionFlags(connection core.Connection, values connectionFlags) (c
 	}
 	updated.Spec.Config = raw
 	return updated, nil
-}
-
-func parseForwards(values connectionFlags) ([]sshdriver.Forward, error) {
-	forwards := make([]sshdriver.Forward, 0, len(values.local)+len(values.remote)+len(values.dynamic))
-	for _, item := range []struct {
-		flag   string
-		values []string
-	}{{"-L", values.local}, {"-R", values.remote}, {"-D", values.dynamic}} {
-		for _, value := range item.values {
-			forward, err := sshdriver.ParseForward(item.flag, value)
-			if err != nil {
-				return nil, usageError(err.Error())
-			}
-			forwards = append(forwards, forward)
-		}
-	}
-	return forwards, nil
 }
 
 func parseGroup(value string) (string, error) {

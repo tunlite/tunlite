@@ -45,10 +45,10 @@ Tunlite 时，请让 Agent 安装官方
 ## 快速开始
 
 ```bash
-# 声明本地、远端或 SOCKS 转发；同类参数可以重复。
-tunlite add db --to deploy@app01 -L 5432:localhost:5432
-tunlite add preview --to deploy@app01 -R 9000:localhost:3000
-tunlite add socks --to deploy@app01 -D 1080
+# 使用熟悉的 OpenSSH 语法声明本地、远端或 SOCKS 转发。
+tunlite add db -L 5432:localhost:5432 deploy@app01
+tunlite add preview -R 9000:localhost:3000 deploy@app01
+tunlite add socks -D 1080 deploy@app01
 
 # 在当前终端前台运行。
 tunlite run db
@@ -70,6 +70,14 @@ tunlite resolve db --use tunlite --dry-run
 tunlite resolve db --use system
 ```
 
+SSH 永久作为默认 Driver，通常不必写 `--driver ssh`。非默认端口使用 `-p`，私钥使用
+`-i`，跳板机使用 `-J`，额外安全选项使用白名单内的 `-o Key=Value`。目标只写一个
+`user@host`，端口不要拼到目标后面。
+
+Tunlite 的 SSH 执行与检查固定使用 `ssh -F none`，不会继承 `~/.ssh/config` 中的 alias、命令、隐藏
+Forward 或连接复用。请写明真实主机和安全参数。未来可以提供 SSH Config 安全导入，
+但只会生成显式快照，不会让运行行为脱离 Connection 声明。
+
 每个 Connection 都是独立服务：
 
 ```text
@@ -86,7 +94,7 @@ tunlite CLI -> SSH Driver -> ExecutionPlan -> systemd/launchd -> ssh
 ```bash
 tunlite capabilities --json --non-interactive
 tunlite schema cli --json --non-interactive
-tunlite add db --to deploy@app01 -L 5432:localhost:5432 --dry-run --json --non-interactive
+tunlite add db -L 5432:localhost:5432 deploy@app01 --dry-run --json --non-interactive
 ```
 
 自动化在执行动作前必须检查 `capabilities` 返回的整数 `protocolVersion`。原始 Schema
