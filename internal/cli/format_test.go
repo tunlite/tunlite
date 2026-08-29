@@ -118,7 +118,7 @@ func TestChineseHelpExplainsLifecycleWithoutChangingCommands(t *testing.T) {
 func TestDoctorHumanOutputRestoresGlyphsColorsAndSummary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	t.Setenv("NO_COLOR", "")
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
@@ -257,10 +257,10 @@ func TestMonitorStopAndRestartPlansRequireConfirmationBeforeExecution(t *testing
 func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
-	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
+	if code, out, stderr := invoke(t, "add", "db", "-R", "1080:localhost:1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
 	}
 	if code, out, stderr := invoke(t, "start", "db"); code != 0 {
@@ -277,8 +277,10 @@ func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
+		budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
 		done <- monitor(ctx, []string{"--interval", "60"}, IO{In: input, Out: output, Err: output, Terminal: &terminal}, options{
-			serviceAdapter: func() (service.Adapter, error) { return adapter, nil },
+			serviceAdapter:  func() (service.Adapter, error) { return adapter, nil },
+			lifecycleBudget: &budget,
 		})
 	}()
 	waitForMonitorOutput(t, output, 0, "tunlite monitor")
@@ -373,7 +375,7 @@ func TestInteractiveLongOperationsAnnounceProgressWithoutPollutingJSON(t *testin
 func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {

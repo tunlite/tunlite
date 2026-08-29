@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
@@ -187,6 +188,9 @@ func ConfigFromPlan(value plan.ExecutionPlan) (Config, error) {
 			if err != nil {
 				return Config{}, err
 			}
+			if jump == "" {
+				return Config{}, errors.New("SSH option -J has an empty jump host")
+			}
 			config.Jump, err = ParseJump(jump)
 			if err != nil {
 				return Config{}, err
@@ -260,11 +264,8 @@ func DecodeConfig(raw json.RawMessage) (Config, error) {
 }
 
 func Validate(config Config) error {
-	if config.Host == "" {
-		return errors.New("SSH host is required")
-	}
-	if strings.HasPrefix(config.Host, "-") || strings.ContainsAny(config.Host, "\r\n\x00") {
-		return fmt.Errorf("invalid SSH host %q", config.Host)
+	if err := validateCanonicalTarget(config.Host); err != nil {
+		return err
 	}
 	if config.Port == 0 {
 		config.Port = 22
@@ -340,100 +341,237 @@ func validateSSHOption(option string) error {
 // reliability baseline. OpenSSH options not listed here are rejected instead
 // of being guessed safe.
 var allowedSSHOptions = map[string]struct{}{
-	"addressfamily":                    {},
-	"bindaddress":                      {},
-	"bindinterface":                    {},
-	"canonicaldomains":                 {},
-	"canonicalizefallbacklocal":        {},
-	"canonicalizehostname":             {},
-	"canonicalizemaxdots":              {},
-	"canonicalizepermittedcnames":      {},
-	"casignaturealgorithms":            {},
-	"certificatefile":                  {},
-	"ciphers":                          {},
-	"compression":                      {},
-	"fingerprinthash":                  {},
-	"globalknownhostsfile":             {},
-	"gssapiauthentication":             {},
-	"gssapidelegatecredentials":        {},
-	"hashknownhosts":                   {},
-	"hostbasedauthentication":          {},
-	"hostkeyalgorithms":                {},
-	"hostkeyalias":                     {},
-	"hostname":                         {},
-	"ipqos":                            {},
-	"kbdinteractiveauthentication":     {},
-	"kexalgorithms":                    {},
-	"loglevel":                         {},
-	"logverbose":                       {},
-	"macs":                             {},
-	"nohostauthenticationforlocalhost": {},
-	"numberofpasswordprompts":          {},
-	"passwordauthentication":           {},
-	"preferredauthentications":         {},
-	"pubkeyacceptedalgorithms":         {},
-	"pubkeyauthentication":             {},
-	"rekeylimit":                       {},
-	"requiredrsasize":                  {},
-	"sendenv":                          {},
-	"setenv":                           {},
-	"updatehostkeys":                   {},
-	"user":                             {},
-	"userknownhostsfile":               {},
-	"verifyhostkeydns":                 {},
+	"addressfamily":                {},
+	"bindaddress":                  {},
+	"bindinterface":                {},
+	"casignaturealgorithms":        {},
+	"certificatefile":              {},
+	"ciphers":                      {},
+	"compression":                  {},
+	"fingerprinthash":              {},
+	"gssapiauthentication":         {},
+	"gssapidelegatecredentials":    {},
+	"hashknownhosts":               {},
+	"hostbasedauthentication":      {},
+	"hostkeyalgorithms":            {},
+	"ipqos":                        {},
+	"kbdinteractiveauthentication": {},
+	"kexalgorithms":                {},
+	"loglevel":                     {},
+	"logverbose":                   {},
+	"macs":                         {},
+	"numberofpasswordprompts":      {},
+	"passwordauthentication":       {},
+	"preferredauthentications":     {},
+	"pubkeyacceptedalgorithms":     {},
+	"pubkeyauthentication":         {},
+	"rekeylimit":                   {},
+	"requiredrsasize":              {},
+	"sendenv":                      {},
+	"setenv":                       {},
+	"updatehostkeys":               {},
+	"verifyhostkeydns":             {},
 }
 
 func ParseTarget(value string) (host string, port int, err error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\r\n\x00") {
-		return "", 0, fmt.Errorf("invalid SSH target %q", value)
+	target, err := ParseTargetSpec(value)
+	if err != nil {
+		return "", 0, err
 	}
-	port = 22
+	return target.Host, target.Port, nil
+}
+
+type TargetSpec struct {
+	Host          string
+	Port          int
+	PortSpecified bool
+	IPv6          bool
+	user          string
+	endpoint      string
+}
+
+func ParseTargetSpec(value string) (TargetSpec, error) {
+	if value == "" || value != strings.TrimSpace(value) || containsTargetControlOrSpace(value) {
+		return TargetSpec{}, fmt.Errorf("invalid SSH target %q", value)
+	}
+	result := TargetSpec{Port: 22}
 	userPrefix := ""
 	endpoint := value
-	if at := strings.LastIndex(value, "@"); at >= 0 {
-		userPrefix, endpoint = value[:at+1], value[at+1:]
+	if strings.Count(value, "@") > 1 {
+		return TargetSpec{}, fmt.Errorf("invalid SSH target %q", value)
+	}
+	if at := strings.IndexByte(value, '@'); at >= 0 {
+		user := value[:at]
+		if !validSSHUser(user) {
+			return TargetSpec{}, fmt.Errorf("invalid SSH user in target %q", value)
+		}
+		result.user = user
+		userPrefix, endpoint = user+"@", value[at+1:]
+	}
+	if endpoint == "" || strings.HasPrefix(endpoint, "-") {
+		return TargetSpec{}, fmt.Errorf("invalid SSH target %q", value)
 	}
 	if strings.HasPrefix(endpoint, "[") {
-		if close := strings.LastIndex(endpoint, "]:"); close >= 0 {
-			parsedHost, parsedPort, splitErr := net.SplitHostPort(endpoint)
-			if splitErr != nil {
-				return "", 0, fmt.Errorf("invalid SSH target %q", value)
-			}
-			p, parseErr := parsePort(parsedPort, value)
-			if parseErr != nil {
-				return "", 0, parseErr
-			}
-			return userPrefix + parsedHost, p, nil
+		close := strings.IndexByte(endpoint, ']')
+		if close < 0 {
+			return TargetSpec{}, fmt.Errorf("invalid SSH target %q", value)
 		}
+		literal := endpoint[1:close]
+		if ip := net.ParseIP(literal); ip == nil || !strings.Contains(literal, ":") {
+			return TargetSpec{}, fmt.Errorf("invalid bracketed IPv6 target %q", value)
+		}
+		result.Host, result.endpoint, result.IPv6 = userPrefix+literal, literal, true
+		suffix := endpoint[close+1:]
+		if suffix == "" {
+			return result, nil
+		}
+		if !strings.HasPrefix(suffix, ":") || len(suffix) == 1 {
+			return TargetSpec{}, fmt.Errorf("invalid SSH target %q", value)
+		}
+		p, parseErr := parsePort(suffix[1:], value)
+		if parseErr != nil {
+			return TargetSpec{}, parseErr
+		}
+		result.Port, result.PortSpecified = p, true
+		return result, nil
+	}
+	if strings.ContainsAny(endpoint, "[]") || strings.Count(endpoint, ":") > 1 {
+		return TargetSpec{}, fmt.Errorf("IPv6 SSH targets must use brackets: %q", value)
 	}
 	if strings.Count(endpoint, ":") == 1 {
 		parts := strings.SplitN(endpoint, ":", 2)
+		if !validSSHHostname(parts[0]) {
+			return TargetSpec{}, fmt.Errorf("invalid SSH host in target %q", value)
+		}
 		p, parseErr := parsePort(parts[1], value)
 		if parseErr != nil {
-			return "", 0, parseErr
+			return TargetSpec{}, parseErr
 		}
-		return userPrefix + parts[0], p, nil
+		result.Host, result.endpoint = userPrefix+parts[0], parts[0]
+		result.Port, result.PortSpecified = p, true
+		return result, nil
 	}
-	return value, port, nil
+	if !validSSHHostname(endpoint) {
+		return TargetSpec{}, fmt.Errorf("invalid SSH host in target %q", value)
+	}
+	result.Host, result.endpoint = value, endpoint
+	return result, nil
+}
+
+func validateCanonicalTarget(value string) error {
+	if value == "" || value != strings.TrimSpace(value) || containsTargetControlOrSpace(value) {
+		return fmt.Errorf("invalid SSH target %q", value)
+	}
+	endpoint := value
+	if strings.Count(value, "@") > 1 {
+		return fmt.Errorf("invalid SSH target %q", value)
+	}
+	if at := strings.IndexByte(value, '@'); at >= 0 {
+		if !validSSHUser(value[:at]) {
+			return fmt.Errorf("invalid SSH user in target %q", value)
+		}
+		endpoint = value[at+1:]
+	}
+	if endpoint == "" || strings.HasPrefix(endpoint, "-") || strings.ContainsAny(endpoint, "[]") {
+		return fmt.Errorf("invalid SSH target %q", value)
+	}
+	if strings.Contains(endpoint, ":") {
+		if ip := net.ParseIP(endpoint); ip == nil {
+			return fmt.Errorf("invalid canonical IPv6 target %q", value)
+		}
+		return nil
+	}
+	if !validSSHHostname(endpoint) {
+		return fmt.Errorf("invalid SSH host in target %q", value)
+	}
+	return nil
+}
+
+func containsTargetControlOrSpace(value string) bool {
+	for _, char := range value {
+		if unicode.IsControl(char) || unicode.IsSpace(char) {
+			return true
+		}
+	}
+	return false
+}
+
+func validSSHUser(value string) bool {
+	if value == "" || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, char := range value {
+		if !isASCIIAlphaNumeric(char) && char != '.' && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSSHHostname(value string) bool {
+	if value == "" || len(value) > 253 || strings.HasPrefix(value, "-") {
+		return false
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return !strings.Contains(value, ":")
+	}
+	if onlyDigitsAndDots := strings.Trim(value, "0123456789.") == ""; onlyDigitsAndDots {
+		return false
+	}
+	trimmed := strings.TrimSuffix(value, ".")
+	if trimmed == "" {
+		return false
+	}
+	for _, label := range strings.Split(trimmed, ".") {
+		if label == "" || len(label) > 63 || !isASCIIAlphaNumeric(rune(label[0])) || !isASCIIAlphaNumeric(rune(label[len(label)-1])) {
+			return false
+		}
+		for _, char := range label {
+			if !isASCIIAlphaNumeric(char) && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(char rune) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
 }
 
 func ParseJump(value string) ([]string, error) {
-	if strings.TrimSpace(value) == "" {
+	if value == "" {
 		return []string{}, nil
+	}
+	if value != strings.TrimSpace(value) || containsTargetControlOrSpace(value) {
+		return nil, fmt.Errorf("invalid jump host %q", value)
 	}
 	hops := make([]string, 0)
 	for _, item := range strings.Split(value, ",") {
-		item = strings.TrimSpace(item)
 		if item == "" {
-			continue
+			return nil, fmt.Errorf("invalid empty jump host in %q", value)
 		}
-		if _, _, err := ParseTarget(item); err != nil {
+		target, err := ParseTargetSpec(item)
+		if err != nil {
 			return nil, fmt.Errorf("invalid jump host: %w", err)
 		}
-		hops = append(hops, item)
+		hops = append(hops, formatJumpTarget(target))
 	}
 	return hops, nil
+}
+
+func formatJumpTarget(target TargetSpec) string {
+	endpoint := target.endpoint
+	if target.IPv6 {
+		endpoint = "[" + endpoint + "]"
+	}
+	if target.user != "" {
+		endpoint = target.user + "@" + endpoint
+	}
+	if target.PortSpecified {
+		endpoint += ":" + strconv.Itoa(target.Port)
+	}
+	return endpoint
 }
 
 func ParseForward(flag, spec string) (Forward, error) {

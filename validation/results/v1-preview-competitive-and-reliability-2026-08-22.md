@@ -1,5 +1,11 @@
 # Tunlite V1 Preview 可靠性与竞品实测报告
 
+> **历史快照，不是当前发布证据。** 本报告只记录 2026-08-22 当日的代码与
+> 实测环境。此后 V1 已主动删除 0.x 迁移层、迁移夹具与
+> `scripts/test-migration-e2e.sh`；下方原报告的迁移结论不得用于证明当前
+> `v1.0.0-preview.1` 候选版具有 0.x 导入或并行迁移能力。当前发布判断
+> 必须以 Tag 对应提交的 CI/E2E 新结果和真机验收记录为准。
+
 - 日期：2026-08-22（Asia/Shanghai）
 - 分支：`rewrite/v1-go`
 - 候选版本：`v1.0.0-preview.1`
@@ -22,7 +28,8 @@ systemd 直接运行系统 OpenSSH，不依赖中心 daemon，也不依赖 Tunli
 
 ## Tunlite 真实验证
 
-以下命令全部通过：
+以下是当日仍可对应到当前仓库的原始验证记录；它们不替代当前
+Tag 候选提交的重跑结果：
 
 ```bash
 go test ./...
@@ -34,9 +41,11 @@ TUNLITE_REAL_SERVICE=1 go test ./internal/service ./internal/cli \
   -run '^(TestRealNativeServiceLifecycle|TestRealNativeManageAndUnmanageDoNotInterruptProvider)$' \
   -count=1 -v
 scripts/test-release-e2e.sh v1.0.0-preview.1
-scripts/test-migration-e2e.sh v1.0.0-preview.1
 scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
+
+当日曾运行的 `scripts/test-migration-e2e.sh` 已随“V1 不保留 0.x 运行时兼容层”
+决策删除；该结果现已退役，不在当前 Gate 中。
 
 覆盖结果：
 
@@ -49,7 +58,8 @@ scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
   CLI 不换 SSH PID。
 - 所有权与漂移：`unmanage/manage` 不换 PID；外部修改 unit 后能检测 drift，dry-run 和
   `resolve --use tunlite` 均通过。
-- 0.10.3：导入不修改旧配置和旧流量；逐条切换到 V1、停止 V1、重新启用旧版通过。
+- 已退役的历史结果：当日的 0.10.3 并行迁移夹具曾通过，但当前 V1 不提供
+  0.x 导入或迁移命令，该结果不代表当前能力。
 
 Linux Docker 测试不是非容器 Linux 真机的替代品。仍需在至少一台真实 Linux 主机验证
 登录会话、linger、发行版差异和长期运行；Apple Silicon 的人工验收也仍是发布前人工项。

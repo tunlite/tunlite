@@ -59,7 +59,7 @@ func statusTestConnections(count int) []core.Connection {
 }
 
 func TestStatusObserverUsesBoundedConcurrencyForOneHundredConnections(t *testing.T) {
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	root := t.TempDir()
 	adapter := &delayedInspectAdapter{
 		fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(root, "native")),
@@ -85,7 +85,7 @@ func TestStatusObserverUsesBoundedConcurrencyForOneHundredConnections(t *testing
 }
 
 func TestStatusObserverReturnsBlockedUnknownWhenBudgetExpires(t *testing.T) {
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	root := t.TempDir()
 	adapter := &delayedInspectAdapter{
 		fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(root, "native")),

@@ -88,7 +88,7 @@
       "required": ["connection", "outcome", "changed", "conditions"],
       "properties": {
         "connection": { "type": "string", "minLength": 1 },
-        "outcome": { "enum": ["succeeded", "planned", "applied", "failed"] },
+        "outcome": { "enum": ["succeeded", "planned", "applied", "starting", "failed"] },
         "changed": { "type": "boolean" },
         "state": { "$ref": "service-state-v1.schema.json" },
         "artifact": { "$ref": "#/$defs/artifact" },

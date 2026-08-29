@@ -13,8 +13,8 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 | 平台 | 架构 | 前台与配置 CLI | 持久 Connection | 当前验证等级 |
 |---|---|---:|---:|---|
 | macOS 12+ | x64 | 支持 | launchd，支持 | 自动测试、plist 原生校验，以及 Intel 真机生命周期、日志、崩溃恢复和接管/交还测试 |
-| macOS 12+ | arm64 | 支持 | launchd，支持 | 自动测试与交叉编译；发布前补 Apple Silicon 真机验收 |
-| Linux | x64、arm64 | 支持 | systemd 用户服务，支持 | 自动测试与交叉编译；发布前补真实发行版验收 |
+| macOS 12+ | arm64 | 支持 | launchd，支持 | 自动测试与交叉编译；稳定版前补 Apple Silicon 真机验收 |
+| Linux | x64、arm64 | 支持 | systemd 用户服务，支持 | 自动测试、交叉编译及 Ubuntu 24.04 PID 1 systemd 容器 E2E；稳定版前补非容器发行版真机验收 |
 
 系统 `ssh` 必须位于 PATH，或通过 `TUNLITE_SSH` 指定绝对路径。Linux 持久模式需要
 可用的 systemd 用户会话；容器、精简发行版和没有用户会话总线的环境应使用
@@ -36,9 +36,11 @@ V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和�
 登录自启、PID、已运行、重启次数、SSH 目标、转发”；窄屏先隐藏 SSH 目标和转发，
 `PID`、`UP`/已运行和 `RESTARTS`/重启次数始终优先保留。
 
-人类界面首批支持中文和英文：`--lang zh-CN|en` 优先，其次读取 `TUNLITE_LANG`，再跟随
-系统语言，无法识别时回退英文。CLI 命令、配置字段、错误码和全部 JSON 字段及枚举值仍
-保持英文；`--json` 不因界面语言改变。OpenSSH、launchd、systemd 的原始日志不翻译。
+帮助、生命周期进度、`status` 和 `monitor` 首批支持中文和英文：`--lang zh-CN|en`
+优先，其次读取 `TUNLITE_LANG`，再跟随系统语言，无法识别时回退英文。当前 Preview 的
+部分次要命令结果和底层错误仍为英文，不承诺整套人工输出已经完整本地化。CLI 命令、配置
+字段、错误码和全部 JSON 字段及枚举值保持英文；`--json` 不因界面语言改变。OpenSSH、
+launchd、systemd 的原始日志不翻译。
 
 所有可能等待 SSH、服务管理器或批量状态采集的人工终端命令，都会在开始等待前打印当前
 动作，不允许无输出地长时间阻塞；`--json` 仍只输出稳定机器契约，不混入人类进度文本。
@@ -54,6 +56,16 @@ override 或 GitOps 合并规则。
 需要交换声明时使用 `export`、`validate` 和 `import`。导出文件可能包含绝对私钥路径、
 机器专用端口或其他本机信息，提交 Git 前必须人工检查。导入不会安装插件、执行认证或
 启动 Connection。
+
+`set` 只修改明确给出的 Driver 字段。SSH 的私钥、跳板列表和额外 Option 分别用
+`--clear identity`、`--clear jump`、`--clear options` 删除，`--clear` 可在同一条命令中
+按不同字段重复，也接受 `--clear=<field>`。未知字段、重复清除或同字段设置+
+清除都是参数错误，不做静默兼容，也不提供单字段别名。
+
+SSH Target 可以是明确的 `host` 或 `user@host`，但 Preview 用户名只接受 ASCII 字母、数字、
+`.`、`_`、`-`。UPN/多个 `@`、`+` 和 `DOMAIN\user` 形式均不支持，CLI 也没有独立 `-l`
+参数。由于运行时固定 `ssh -F none`，不能依靠 SSH Config 的 `User` 隐式补偿；需要这些账号
+形式的用户应把它视为 Preview 的已知兼容限制，而不是尝试转义绕过 Parser。
 
 ## 安装与校验
 
@@ -121,14 +133,32 @@ GitHub Actions 构建。发布工作流尚未得到外部写入授权时，不�
 go test ./...
 go test -race ./...
 go vet ./...
+go mod verify
+go mod tidy -diff
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.0 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 TUNLITE_REAL_SSH=1 go test ./internal/cli -run TestRealOpenSSHAllForwardTypes -count=1 -v
 TUNLITE_REAL_SERVICE=1 go test ./internal/service -run TestRealNativeServiceLifecycle -count=1 -v
 scripts/test-release-e2e.sh v1.0.0-preview.1
 scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
 
-Release E2E 门禁只在 macOS 上运行：它重新构建并独立校验完整 Release 目录，再使用归档中的
-原生二进制驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
+Tag 触发的 Release workflow 会在自身运行中执行跨平台 test/vet、race、最低 Go 版本、
+module/staticcheck/govulncheck、真实 OpenSSH，以及归档二进制的 macOS launchd E2E；只有
+这些 Job 全部成功后才 Attest 并允许 `publish`。Workflow 把已经生成的 `dist` 显式传给
+`scripts/test-release-e2e.sh`，E2E 解包并运行的正是随后 Attest、上传和发布的 macOS
+归档，不允许测试后再重建另一份产物。Linux Docker E2E 在推送 Preview Tag 前单独完成并
+记录，因为 GitHub macOS 打包 Runner 不提供 Docker，而 Ubuntu Runner 无法生成需要
+Apple `lipo` 的完整 Release 目录。
+
+`v1.0.0-preview.1` 的门禁是本节命令列表以及已记录的 Intel Mac 验收。Apple Silicon
+真机和非容器 Linux 真机不阻塞 Preview.1，但必须在 Release Notes 和支持矩阵中继续明确
+标为尚未验证；两项都是稳定 `v1.0.0` 前的硬门禁。
+
+Release E2E 门禁只在 macOS 上运行：默认本地调用会构建并校验临时 Release 目录；传入第二个
+参数时则严格校验并使用已有目录。例如 workflow 使用
+`scripts/test-release-e2e.sh v1.0.0-preview.1 dist` 测试最终发布产物。归档中的原生二进制
+驱动本机隔离 sshd 和真实 launchd，验证 `-L`、`-R`、`-D` 流量、
 background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
 执行前必须确认该标签未被占用，结束后移除 plist 和进程。
 
@@ -143,7 +173,8 @@ OpenSSH。它验证 `-L`、`-R`、`-D` 流量，background → persistent 不换
 发布产物统一使用 Go 1.26.x 构建；`go.mod` 中的 1.25 是开发和源码兼容基线。发布只使用
 CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
 
-还必须在非容器 Linux 真机完成 systemd 用户服务的
+稳定 `v1.0.0` 前还必须在非容器 Linux 真机完成 systemd 用户服务的
 `add → start → stop → enable → status → restart → disable → remove`
-验收，逐个平台解压产物并确认嵌入版本正确，核对 `SHA256SUMS`。没有完成的项目必须在
-Release Notes 和支持矩阵中明确写出，不能用“预计支持”替代事实。
+验收，并完成 Apple Silicon 真机验收；逐个平台解压产物并确认嵌入版本正确，核对
+`SHA256SUMS`。这些未完成项不阻塞 `v1.0.0-preview.1`，但必须在 Preview Release Notes
+和支持矩阵中明确写出，不能用“预计支持”替代事实。

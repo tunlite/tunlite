@@ -23,7 +23,7 @@ import (
 func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	sshPath := setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "staging", "-p", "2222", "-L", "8080:localhost:80", "-D", "1080", "me@example.com"); code != 0 {
@@ -54,7 +54,7 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 	if result.ProtocolVersion != ProtocolVersion || result.Outcome != "planned" || !result.DryRun {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if result.Plan.Mode != "direct" || result.Plan.Exec.Program != "/usr/bin/ssh" {
+	if result.Plan.Mode != "direct" || result.Plan.Exec.Program != sshPath {
 		t.Fatalf("unexpected plan: %#v", result.Plan)
 	}
 	last := result.Plan.Exec.Args[len(result.Plan.Exec.Args)-2:]
@@ -66,7 +66,7 @@ func TestRunDryRunProducesVersionedExecutionPlan(t *testing.T) {
 func TestRunDoesNotBlockAcceptedPublishDeclaration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/true")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	if code, out, stderr := invoke(t, "add", "publish", "-R", "19000:localhost:3000", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
@@ -86,7 +86,7 @@ func TestRunDoesNotBlockAcceptedPublishDeclaration(t *testing.T) {
 func TestRunDryRunReportsPublicListenRisk(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	if code, out, stderr := invoke(t, "add", "public", "-D", "0.0.0.0:1080", "me@example.com"); code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
@@ -179,6 +179,18 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	if capabilities["protocolVersion"] != float64(ProtocolVersion) {
 		t.Fatalf("unexpected capabilities: %#v", capabilities)
 	}
+	drivers, ok := capabilities["drivers"].([]any)
+	if !ok || len(drivers) != 1 {
+		t.Fatalf("capabilities omitted SSH driver metadata: %#v", capabilities)
+	}
+	sshCapabilities, ok := drivers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("invalid SSH driver capabilities: %#v", drivers[0])
+	}
+	clearFields, ok := sshCapabilities["setClearFields"].([]any)
+	if !ok || len(clearFields) != 3 || clearFields[0] != "identity" || clearFields[1] != "jump" || clearFields[2] != "options" {
+		t.Fatalf("unexpected SSH set clear contract: %#v", clearFields)
+	}
 }
 
 func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
@@ -203,10 +215,17 @@ func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
 	}
 }
 
+func TestSetHelpDocumentsClearableSSHFields(t *testing.T) {
+	code, out, stderr := invoke(t, "set", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(out, "--clear identity|jump|options") {
+		t.Fatalf("set help omitted clear fields: exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+}
+
 func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	code, out, stderr := invoke(t, "add", "db", "-p", "2222",
@@ -292,10 +311,84 @@ func TestConnectionCRUDUsesVersionedStoreAndJSONContract(t *testing.T) {
 	}
 }
 
+func TestSetClearsOptionalSSHFieldsWithoutChangingRequiredFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+
+	if code, out, stderr := invoke(t, "add", "db", "-i", "~/.ssh/work", "-J", "jump@bastion",
+		"-D", "1080", "-o", "Compression=yes", "deploy@app01", "--json"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	code, out, stderr := invoke(t, "set", "db", "--clear", "identity", "--clear=jump", "--clear", "options", "--json")
+	if code != 0 {
+		t.Fatalf("set --clear exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	var result struct {
+		Connection core.Connection `json:"connection"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	config, err := sshdriver.DecodeConfig(result.Connection.Spec.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.IdentityFile != "" || len(config.Jump) != 0 || len(config.SSHOptions) != 0 {
+		t.Fatalf("optional SSH fields were not cleared: %#v", config)
+	}
+	if config.Host != "deploy@app01" || len(config.Forwards) != 1 || config.Forwards[0].SrcPort != 1080 {
+		t.Fatalf("set --clear changed required or unrelated fields: %#v", config)
+	}
+}
+
+func TestInvalidSetClearDoesNotChangeDeclaration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
+	if code, out, stderr := invoke(t, "add", "db", "-i", "key", "-D", "1080", "deploy@app01", "--json"); code != 0 {
+		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+	store, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRaw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := invoke(t, "set", "db", "--clear", "identity", "--clear", "host", "--json")
+	if code != 2 || !strings.Contains(out, "unknown --clear field") {
+		t.Fatalf("invalid clear returned exit=%d stdout=%s", code, out)
+	}
+	after, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRaw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeRaw, afterRaw) {
+		t.Fatalf("invalid set --clear rewrote the declaration file\nbefore=%s\nafter=%s", beforeRaw, afterRaw)
+	}
+	_, beforeConnection := configstore.Find(&before, "db")
+	_, afterConnection := configstore.Find(&after, "db")
+	if beforeConnection == nil || afterConnection == nil || !connectionsEqual(*beforeConnection, *afterConnection) {
+		t.Fatalf("invalid set --clear changed declaration: before=%#v after=%#v", beforeConnection, afterConnection)
+	}
+}
+
 func TestConnectionCommandsUseOneDriverSelectionContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	if code, out, stderr := invoke(t, "add", "db", "--driver", "ssh", "-D", "1080", "deploy@app01", "--json"); code != 0 {
@@ -318,7 +411,7 @@ func TestConnectionCommandsUseOneDriverSelectionContract(t *testing.T) {
 func TestHumanListAndStatusAreGroupedByBusinessOwnership(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 
 	for _, args := range [][]string{
@@ -369,7 +462,7 @@ func TestAddDryRunDoesNotCreateConfig(t *testing.T) {
 func TestGlobalConfigFlagIsNotSupported(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	path := filepath.Join(t.TempDir(), "project", "tunlite.json")
 	code, out, stderr := invoke(t, "add", "project-db", "-D", "1080", "--config", path, "--json", "me@example.com")
@@ -385,7 +478,7 @@ func TestGlobalConfigFlagIsNotSupported(t *testing.T) {
 func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	code, _, stderr := invoke(t, "add", "named-db", "-L", "15432:localhost:5432", "me@example.com")
 	if code != 0 {
@@ -414,7 +507,7 @@ func TestNamedConnectionRunBuildsForegroundPlan(t *testing.T) {
 func TestEndpointConflictIsStructuredWarning(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(home, "native")))
 	code, _, stderr := invoke(t, "add", "first", "-L", "18080:localhost:80", "me@one")
 	if code != 0 {
@@ -438,7 +531,7 @@ func TestEndpointConflictIsStructuredWarning(t *testing.T) {
 func TestExportImportAndValidateDeclarations(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("TUNLITE_HOME", filepath.Join(root, "source-home"))
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := useFakeServiceAdapter(t, newFakeServiceAdapter(filepath.Join(root, "source-native")))
 	target := filepath.Join(root, "target-home", "config", "connections.json")
 	project := filepath.Join(root, "project.json")
@@ -664,7 +757,7 @@ func TestDoctorOfflineChecksPlanAndEndpoint(t *testing.T) {
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	code, _, stderr := invoke(t, "add", "doctor-db", "-D", strconv.Itoa(port), "me@example.com")
 	if code != 0 {
 		t.Fatalf("add exit=%d stderr=%s", code, stderr)

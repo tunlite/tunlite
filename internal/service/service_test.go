@@ -310,6 +310,40 @@ func TestLaunchdInspectTreatsXPCProxyAsStarting(t *testing.T) {
 	}
 }
 
+func TestLaunchdInspectDistinguishesThrottledActiveJobFromRunningProcess(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "active without pid is waiting to restart", body: "state = active\nruns = 2\n", want: ProcessStarting},
+		{name: "active with pid is running", body: "state = active\nruns = 3\npid = 42\n", want: ProcessRunning},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
+				switch args[0] {
+				case "print-disabled":
+					return []byte(`"dev.tunlite.connection.db" => false`), nil
+				case "print":
+					return []byte(test.body), nil
+				default:
+					return nil, nil
+				}
+			}}
+			adapter := NewLaunchd(t.TempDir(), t.TempDir(), 501, runner)
+			artifact, _ := adapter.Build("db", testPlan())
+			observation, err := adapter.Inspect(context.Background(), artifact.Reference())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observation.ProcessState != test.want {
+				t.Fatalf("state=%q want=%q platform=%#v", observation.ProcessState, test.want, observation.Platform)
+			}
+		})
+	}
+}
+
 func TestLaunchdMissingServiceIsNotReportedAsPersistent(t *testing.T) {
 	runner := &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
 		switch args[0] {

@@ -1082,12 +1082,14 @@ V1 Preview 的公共命令面向 Connection，而不是绑定 SSH。下表是完
 | --- | --- | --- |
 | `add` | `tunlite add <name> [--driver ssh] <Driver args>` | 创建具名 Connection，并同步建立停止状态的原生服务定义。SSH 永久作为默认 Driver，因此常用写法是 `tunlite add db -L 5432:localhost:5432 user@host`。名称是全部生命周期操作的稳定身份。 |
 | `list` | `tunlite list [--group group]` | 按 Group 分段列出 Tunlite 已管理的 Connection，不扫描未管理的系统服务；未设置归属的进入“未分组”。保留；它回答“我管理了什么”。 |
-| `set` | `tunlite set <name> <Driver patch args>` | 先从声明确定 Driver，再由该 Driver 解析补丁；修改声明并在同一事务中联动原生服务。禁止用 `set` 更换 Driver。 |
+| `set` | `tunlite set <name> <Driver patch args>` | 先从声明确定 Driver，再由该 Driver 解析补丁；修改声明并在同一事务中联动原生服务。SSH 字段用可重复的 `--clear <field>` 显式清除，field 只能是 `identity`、`jump` 或 `options`；未知字段、重复清除和同字段设置+清除均拒绝。禁止用 `set` 更换 Driver。 |
 | `rename` | `tunlite rename <name> <new-name>` | 原子修改 Connection 身份及其服务绑定。保留；不能退化成复制后删除。 |
 | `remove` | `tunlite remove <name>` | 只允许删除已停止且不再持久启用的 Connection，同时删除其原生服务定义。保留完整词，不提供 `rm` 公共别名。 |
 
 Core 只解析名称、`--driver`、Group 与全局机器参数，其余 argv 保序交给选中的 Driver。
-SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `user@host`。未来 Driver 使用
+SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `host` 或 `user@host`。Preview 的
+用户名只允许 ASCII 字母、数字、`.`、`_`、`-`；UPN/多个 `@`、`+`、`DOMAIN\user` 以及
+独立 `-l` 均不支持，这是公开兼容限制。未来 Driver 使用
 `--driver <name>` 这一种选择方式和自己的参数解析器；不增加 `--ssh`、`--kubernetes`
 等特殊选择器，也不把 Target 强加为所有 Driver 的 Core 概念。
 
@@ -1181,7 +1183,7 @@ V1 不提供 Shell 补全命令，也不提供 `install`、`update`、`uninstall
 | `--json` | 输出稳定机器 Envelope；交互式 `monitor` 明确不支持。 |
 | `--non-interactive` | 整条调用链不得提示输入；需要选择、认证或人工交互时返回结构化错误和动作。 |
 | `--dry-run` | 对会改变状态的命令只生成计划，不落盘、不注册服务、不启动进程、不修改远端。 |
-| `--lang en\|zh-CN` | 只选择人类可见界面语言；优先于 `TUNLITE_LANG` 和系统语言，不改变命令、配置或 JSON 机器契约。 |
+| `--lang en\|zh-CN` | 选择已本地化的帮助、生命周期进度、状态和 Monitor 界面；优先于 `TUNLITE_LANG` 和系统语言。Preview 中未完成本地化的次要输出仍为英文；该选项不改变命令、配置或 JSON 机器契约。 |
 
 `run`、`start` 和 `enable` 只接受已有 Connection 名称，不提供另一套内联 SSH 配置面。
 

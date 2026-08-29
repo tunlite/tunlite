@@ -71,8 +71,24 @@ tunlite resolve db --use system
 ```
 
 SSH 永久作为默认 Driver，通常不必写 `--driver ssh`。非默认端口使用 `-p`，私钥使用
-`-i`，跳板机使用 `-J`，额外安全选项使用白名单内的 `-o Key=Value`。目标只写一个
-`user@host`，端口不要拼到目标后面。
+`-i`，跳板机使用 `-J`，额外安全选项使用白名单内的 `-o Key=Value`。目标只写一个明确的
+`host` 或 `user@host`，端口不要拼到目标后面。
+
+Preview 的用户名语法有意保持严格：只接受 ASCII 字母、数字、`.`、`_`、`-`。UPN 或多个
+`@`、包含 `+` 的用户名、`DOMAIN\user` 都不支持，也没有独立 `-l` 参数可绕过。必须使用
+这些形式的账号暂时超出本 Preview 的 SSH Target 表达范围。
+
+`set` 只修改本次给出的字段。需要删除可选 SSH 字段时，按需重复同一个
+清除操作：
+
+```bash
+tunlite set db --clear identity --clear jump --clear options
+```
+
+同时支持 `--clear jump` 和 `--clear=jump`。可清除字段只有 `identity`、`jump` 和
+`options`，不提供单字段别名。未知字段、重复清除，或在同一条
+命令中同时设置与清除同一字段，都会被拒绝。任何 `-L`/`-R`/`-D` 或 `-o`
+仍会替换对应的完整列表。
 
 Tunlite 的 SSH 执行与检查固定使用 `ssh -F none`，不会继承 `~/.ssh/config` 中的 alias、命令、隐藏
 Forward 或连接复用。请写明真实主机和安全参数。未来可以提供 SSH Config 安全导入，

@@ -74,7 +74,25 @@ tunlite resolve db --use system
 
 SSH is the permanent default driver; `--driver ssh` is optional. Use `-p` for a
 non-default port, `-i` for an identity, `-J` for jump hosts, and allowlisted
-`-o Key=Value` options. The target is one `user@host`; do not append `:port`.
+`-o Key=Value` options. The target is one explicit `host` or `user@host`; do not
+append `:port`.
+
+Preview usernames are intentionally strict: ASCII letters, digits, `.`, `_`, and
+`-` only. UPN or multi-`@` names, names containing `+`, and `DOMAIN\user` are not
+accepted, and there is no separate `-l` workaround. Accounts that require those
+forms are outside this preview's SSH target grammar.
+
+`set` changes only the supplied fields. To remove optional SSH fields, repeat the
+single clear operation as needed:
+
+```bash
+tunlite set db --clear identity --clear jump --clear options
+```
+
+Both `--clear jump` and `--clear=jump` are accepted. The clearable fields are
+exactly `identity`, `jump`, and `options`; there are no field-specific aliases. An unknown
+field, a duplicate clear, or setting and clearing the same field in one command is
+rejected. Supplying any `-L`/`-R`/`-D` or `-o` still replaces that complete list.
 
 Tunlite SSH execution and checks deliberately use `ssh -F none`: they do not inherit
 `~/.ssh/config` aliases, commands, hidden forwards, or multiplexing. Use an explicit

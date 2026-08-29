@@ -47,7 +47,7 @@ func TestRealOpenSSHAllForwardTypes(t *testing.T) {
 	remotePort := reserveTCPPort(t)
 	socksPort := reserveTCPPort(t)
 
-	t.Setenv("TUNLITE_SSH", sshPath)
+	t.Setenv("TUNLITE_SSH", createPinnedHostSSHWrapper(t, sshPath, server.knownHostsFile))
 	t.Setenv("TUNLITE_HOME", filepath.Join(temp, "tunlite-home"))
 	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
@@ -56,7 +56,7 @@ func TestRealOpenSSHAllForwardTypes(t *testing.T) {
 		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
 		"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
 		"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-		"-o", "UserKnownHostsFile=/dev/null", fmt.Sprintf("%s@127.0.0.1", server.username),
+		fmt.Sprintf("%s@127.0.0.1", server.username),
 	)
 	if code != 0 {
 		t.Fatalf("add exit=%d stdout=%s stderr=%s", code, out, addErr)
@@ -84,6 +84,34 @@ func TestRealOpenSSHAllForwardTypes(t *testing.T) {
 	}
 }
 
+func TestRealOpenSSHParsesCanonicalIPv6Argv(t *testing.T) {
+	if os.Getenv("TUNLITE_REAL_SSH") != "1" {
+		t.Skip("set TUNLITE_REAL_SSH=1 to run the real OpenSSH integration test")
+	}
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Skip("OpenSSH client is not installed")
+	}
+	output, err := exec.Command(sshPath, "-G", "-F", "none", "-p", "2200", "--", "ops@2001:db8::10").CombinedOutput()
+	if err != nil {
+		t.Fatalf("OpenSSH rejected canonical IPv6 argv: %v\n%s", err, output)
+	}
+	config := string(output)
+	for _, expected := range []string{"hostname 2001:db8::10\n", "user ops\n", "port 2200\n"} {
+		if !strings.Contains(config, expected) {
+			t.Fatalf("OpenSSH did not preserve %q in canonical IPv6 argv:\n%s", expected, config)
+		}
+	}
+
+	output, err = exec.Command(sshPath, "-G", "-F", "none", "-J", "jump@[2001:db8::20]:2222", "--", "target.example").CombinedOutput()
+	if err != nil {
+		t.Fatalf("OpenSSH rejected bracketed IPv6 ProxyJump: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "proxyjump jump@[2001:db8::20]:2222\n") {
+		t.Fatalf("OpenSSH changed the IPv6 ProxyJump syntax:\n%s", output)
+	}
+}
+
 func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 	if os.Getenv("TUNLITE_REAL_RELEASE_E2E") != "1" {
 		t.Skip("set TUNLITE_REAL_RELEASE_E2E=1 and TUNLITE_RELEASE_BINARY to run the release/native-service E2E")
@@ -105,7 +133,7 @@ func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 	server := startRealSSHD(t)
 	root := t.TempDir()
 	t.Setenv("TUNLITE_HOME", filepath.Join(root, "tunlite-home"))
-	t.Setenv("TUNLITE_SSH", sshPath)
+	t.Setenv("TUNLITE_SSH", createPinnedHostSSHWrapper(t, sshPath, server.knownHostsFile))
 
 	versionOutput := invokeReleaseBinary(t, releaseBinary, "version", "--json")
 	expectedVersion := os.Getenv("TUNLITE_EXPECTED_RELEASE_VERSION")
@@ -131,30 +159,28 @@ func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 		"-L", fmt.Sprintf("127.0.0.1:%d:%s:%s", localPort, targetHost, targetPortText),
 		"-R", fmt.Sprintf("127.0.0.1:%d:%s:%s", remotePort, targetHost, targetPortText),
 		"-D", fmt.Sprintf("127.0.0.1:%d", socksPort),
-		"-o", "UserKnownHostsFile=/dev/null", fmt.Sprintf("%s@127.0.0.1", server.username), "--json", "--non-interactive",
+		fmt.Sprintf("%s@127.0.0.1", server.username), "--json", "--non-interactive",
 	)
 	removed := false
+	observedPIDs := map[int]struct{}{}
 	t.Cleanup(func() {
-		if removed {
-			return
-		}
-		bestEffortReleaseCommand(releaseBinary, "disable", name, "--json", "--non-interactive")
-		bestEffortReleaseCommand(releaseBinary, "remove", name, "--json", "--non-interactive")
+		cleanupReleaseService(t, releaseBinary, name, removed, observedPIDs)
 	})
 
 	invokeReleaseBinary(t, releaseBinary, "start", name, "--json", "--non-interactive")
-	background := releaseServiceState(t, releaseBinary, name)
+	background := waitForReleaseServiceHealthy(t, releaseBinary, name, 0, 15*time.Second)
 	assertReleaseServiceState(t, background, service.ModeBackground, service.ProcessRunning)
-	verifyReleaseTraffic(t, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
+	verifyReleaseTraffic(t, releaseBinary, name, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
 
 	backgroundPID := releaseServicePID(t, background)
+	observedPIDs[backgroundPID] = struct{}{}
 	invokeReleaseBinary(t, releaseBinary, "enable", name, "--json", "--non-interactive")
 	persistent := releaseServiceState(t, releaseBinary, name)
 	assertReleaseServiceState(t, persistent, service.ModePersistent, service.ProcessRunning)
 	if persistentPID := releaseServicePID(t, persistent); persistentPID != backgroundPID {
 		t.Fatalf("enable restarted provider: background pid=%d persistent pid=%d", backgroundPID, persistentPID)
 	}
-	verifyReleaseTraffic(t, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
+	verifyReleaseTraffic(t, releaseBinary, name, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
 
 	assertReleaseSSHProcess(t, backgroundPID, server.clientKey)
 	process, err := os.FindProcess(backgroundPID)
@@ -164,9 +190,13 @@ func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 	if err := process.Kill(); err != nil {
 		t.Fatalf("kill isolated release E2E provider: %v", err)
 	}
-	restarted := waitForReleaseServiceRestart(t, releaseBinary, name, backgroundPID, 10*time.Second)
+	// The SSH plan intentionally uses a 10-second restart throttle. Leave a
+	// second bounded window for launchd to spawn and SSH to establish every
+	// forward; a timeout equal to the throttle is inherently racy.
+	restarted := waitForReleaseServiceRestart(t, releaseBinary, name, backgroundPID, 20*time.Second)
+	observedPIDs[releaseServicePID(t, restarted)] = struct{}{}
 	assertReleaseServiceState(t, restarted, service.ModePersistent, service.ProcessRunning)
-	verifyReleaseTraffic(t, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
+	verifyReleaseTraffic(t, releaseBinary, name, localPort, remotePort, socksPort, targetHost, targetPortText, marker)
 
 	invokeReleaseBinary(t, releaseBinary, "disable", name, "--json", "--non-interactive")
 	stopped := releaseServiceState(t, releaseBinary, name)
@@ -176,9 +206,10 @@ func TestReleaseBinaryRealOpenSSHNativeServiceTraffic(t *testing.T) {
 }
 
 type realSSHD struct {
-	username  string
-	port      int
-	clientKey string
+	username       string
+	port           int
+	clientKey      string
+	knownHostsFile string
 }
 
 func startRealSSHD(t *testing.T) realSSHD {
@@ -212,6 +243,15 @@ func startRealSSHD(t *testing.T) realSSHD {
 		t.Fatal(err)
 	}
 	sshdPort := reserveTCPPort(t)
+	hostPublicKey, err := os.ReadFile(hostKey + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownHostsFile := filepath.Join(temp, "known_hosts")
+	knownHost := fmt.Sprintf("[127.0.0.1]:%d %s", sshdPort, hostPublicKey)
+	if err := os.WriteFile(knownHostsFile, []byte(knownHost), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(temp, "sshd_config")
 	config := fmt.Sprintf(`Port %d
 ListenAddress 127.0.0.1
@@ -255,7 +295,26 @@ AllowUsers %s
 	if err := waitTCP(fmt.Sprintf("127.0.0.1:%d", sshdPort), 5*time.Second); err != nil {
 		t.Fatalf("sshd did not start: %v\n%s", err, sshdLogs.String())
 	}
-	return realSSHD{username: current.Username, port: sshdPort, clientKey: clientKey}
+	return realSSHD{username: current.Username, port: sshdPort, clientKey: clientKey, knownHostsFile: knownHostsFile}
+}
+
+// The wrapper is test infrastructure, not part of Tunlite's accepted SSH
+// surface. It pins the isolated sshd's generated host key without teaching the
+// product to accept user-controlled known-hosts paths.
+func createPinnedHostSSHWrapper(t *testing.T, sshPath, knownHostsFile string) string {
+	t.Helper()
+	wrapper := filepath.Join(t.TempDir(), "ssh")
+	script := "#!/bin/sh\nexec " + shellSingleQuote(sshPath) + " -o " +
+		shellSingleQuote("UserKnownHostsFile="+knownHostsFile) +
+		" -o StrictHostKeyChecking=yes \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func invokeReleaseBinary(t *testing.T, binary string, args ...string) string {
@@ -293,6 +352,38 @@ func assertReleaseServiceNameAvailable(t *testing.T, name string) {
 	if output, err := exec.CommandContext(ctx, "launchctl", "print", target).CombinedOutput(); err == nil {
 		t.Fatalf("refusing to use occupied release E2E launchd label %s:\n%s", target, output)
 	}
+}
+
+func cleanupReleaseService(t *testing.T, binary, name string, alreadyRemoved bool, observedPIDs map[int]struct{}) {
+	t.Helper()
+	if !alreadyRemoved {
+		// A failed test may stop in either temporary-background or persistent
+		// mode. stop handles the former; disable handles the latter and is
+		// idempotent after a successful stop.
+		bestEffortReleaseCommand(binary, "stop", name, "--json", "--non-interactive")
+		bestEffortReleaseCommand(binary, "disable", name, "--json", "--non-interactive")
+		bestEffortReleaseCommand(binary, "remove", name, "--json", "--non-interactive")
+	}
+	if runtime.GOOS == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Errorf("release cleanup inspect home: %v", err)
+			return
+		}
+		plist := filepath.Join(home, "Library", "LaunchAgents", "dev.tunlite.connection."+name+".plist")
+		if _, err := os.Stat(plist); err == nil {
+			t.Errorf("release cleanup left launchd artifact %s\n%s", plist, releaseServiceDiagnostics(binary, name))
+		} else if !os.IsNotExist(err) {
+			t.Errorf("release cleanup inspect launchd artifact: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		target := fmt.Sprintf("gui/%d/dev.tunlite.connection.%s", os.Getuid(), name)
+		if output, err := exec.CommandContext(ctx, "launchctl", "print", target).CombinedOutput(); err == nil {
+			t.Errorf("release cleanup left launchd label %s loaded:\n%s", target, output)
+		}
+	}
+	assertReleaseProviderProcessesExited(t, observedPIDs)
 }
 
 func bestEffortReleaseCommand(binary string, args ...string) {
@@ -361,27 +452,57 @@ func assertReleaseSSHProcess(t *testing.T, pid int, clientKey string) {
 }
 
 func waitForReleaseServiceRestart(t *testing.T, binary, name string, previousPID int, timeout time.Duration) service.State {
+	return waitForReleaseServiceHealthy(t, binary, name, previousPID, timeout)
+}
+
+func waitForReleaseServiceHealthy(t *testing.T, binary, name string, previousPID int, timeout time.Duration) service.State {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last service.State
 	for time.Now().Before(deadline) {
 		last = releaseServiceState(t, binary, name)
-		if last.ProcessState == service.ProcessRunning {
-			if pid, ok := releaseServicePIDValue(last); ok && pid != previousPID {
+		if last.ProcessState == service.ProcessRunning && last.Health == service.HealthHealthy {
+			if pid, ok := releaseServicePIDValue(last); ok && (previousPID == 0 || pid != previousPID) {
 				return last
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("release service did not restart after pid %d: %#v", previousPID, last)
+	t.Fatalf("release service did not restart after pid %d: %#v\n%s", previousPID, last, releaseServiceDiagnostics(binary, name))
 	return service.State{}
 }
 
-func verifyReleaseTraffic(t *testing.T, localPort, remotePort, socksPort int, targetHost, targetPortText, marker string) {
+func releaseServiceDiagnostics(binary, name string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var output strings.Builder
+	command := exec.CommandContext(ctx, binary, "logs", name, "--lines", "100", "--json", "--non-interactive")
+	if logs, err := command.CombinedOutput(); err != nil {
+		fmt.Fprintf(&output, "tunlite logs failed: %v\n%s\n", err, logs)
+	} else {
+		fmt.Fprintf(&output, "tunlite logs:\n%s\n", logs)
+	}
+	if runtime.GOOS == "darwin" {
+		target := fmt.Sprintf("gui/%d/dev.tunlite.connection.%s", os.Getuid(), name)
+		command = exec.CommandContext(ctx, "launchctl", "print", target)
+		if state, err := command.CombinedOutput(); err != nil {
+			fmt.Fprintf(&output, "launchctl print failed: %v\n%s\n", err, state)
+		} else {
+			fmt.Fprintf(&output, "launchctl print:\n%s\n", state)
+		}
+	}
+	return output.String()
+}
+
+func verifyReleaseTraffic(t *testing.T, binary, name string, localPort, remotePort, socksPort int, targetHost, targetPortText, marker string) {
 	t.Helper()
-	verifyHTTPForward(t, fmt.Sprintf("http://127.0.0.1:%d", localPort), marker, 10*time.Second)
-	verifyHTTPForward(t, fmt.Sprintf("http://127.0.0.1:%d", remotePort), marker, 10*time.Second)
-	verifySOCKSForward(t, fmt.Sprintf("127.0.0.1:%d", socksPort), targetHost, targetPortText, marker, 10*time.Second)
+	if ok := t.Run("traffic", func(t *testing.T) {
+		verifyHTTPForward(t, fmt.Sprintf("http://127.0.0.1:%d", localPort), marker, 10*time.Second)
+		verifyHTTPForward(t, fmt.Sprintf("http://127.0.0.1:%d", remotePort), marker, 10*time.Second)
+		verifySOCKSForward(t, fmt.Sprintf("127.0.0.1:%d", socksPort), targetHost, targetPortText, marker, 10*time.Second)
+	}); !ok {
+		t.Fatalf("release traffic failed\n%s", releaseServiceDiagnostics(binary, name))
+	}
 }
 
 func generateKey(t *testing.T, keygen, path string) {

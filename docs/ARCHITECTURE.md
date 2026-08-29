@@ -561,11 +561,17 @@ SSH 是默认 Driver，其常用入口直接采用受限 OpenSSH argv：
 ```bash
 tunlite add db -L 5432:localhost:5432 deploy@app01
 tunlite set db -p 2222 -J deploy@bastion deploy@app02
+tunlite set db --clear identity --clear jump --clear options
 ```
 
 允许 `-N`、`-T`、`-p`、`-i`、`-J`、`-L`、`-R`、`-D`、`-o Key=Value` 和唯一
-`user@host`。`-N/-T` 是便于从现有 SSH 命令机械迁移的无状态标记。`set` 中出现任意
-Forward 或 `-o` 时，分别替换完整列表，保证重复执行幂等。
+`host` 或 `user@host`。Preview 用户名严格限制为 ASCII 字母、数字、`.`、`_`、`-`；
+不接受 UPN/多个 `@`、`+`、`DOMAIN\user`，也不提供独立 `-l`。`-N/-T` 是便于从现有
+SSH 命令机械迁移的无状态标记。`set` 中出现任意
+Forward 或 `-o` 时，分别替换完整列表，保证重复执行幂等。删除可选 SSH 字段只使用
+可重复的 `--clear identity|jump|options`，同时接受 `--clear=<field>`；每个字段在一条命令中
+最多出现一次，且不能
+同时设置与清除。未知清除字段必须拒绝，不增加空字符串或单字段兼容别名。
 
 ### 15.3 SSH 配置隔离与额外选项
 
@@ -626,8 +632,10 @@ V1 公开命令只允许来自产品设计列出的 26 个一级命令。命令�
 - `monitor` 是唯一实时交互总览；不增加 `watch` 别名。
 - 人类界面用“状态 / 运行位置 / 登录自启”解释生命周期；`foreground`、`background`、
   `persistent` 保留为机器契约值，不要求新手先理解内部模式。
-- 人类文案首批支持中文和英文；语言优先级为 `--lang`、`TUNLITE_LANG`、系统语言、英文
-  回退。命令、配置、JSON 字段与枚举、错误码保持英文，原生工具日志不翻译。
+- 帮助、生命周期进度、状态与 Monitor 首批支持中文和英文；语言优先级为 `--lang`、
+  `TUNLITE_LANG`、系统语言、英文回退。当前 Preview 的部分次要命令结果与底层错误仍为
+  英文，不能宣称整套人工界面已经完整本地化。命令、配置、JSON 字段与枚举、错误码保持
+  英文，原生工具日志不翻译。
 - 文案使用稳定的 Connection、接管/交还等产品词汇；不得让内部 Record、digest 或 lock
   成为日常概念。
 

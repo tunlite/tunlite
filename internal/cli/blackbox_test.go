@@ -18,9 +18,10 @@ type blackboxContract struct {
 	Workflows       []struct {
 		Name  string `json:"name"`
 		Steps []struct {
-			Args           []string `json:"args"`
-			Exit           int      `json:"exit"`
-			StdoutContains []string `json:"stdoutContains"`
+			Args              []string `json:"args"`
+			Exit              int      `json:"exit"`
+			StdoutContains    []string `json:"stdoutContains"`
+			StdoutNotContains []string `json:"stdoutNotContains"`
 		} `json:"steps"`
 	} `json:"workflows"`
 }
@@ -42,7 +43,7 @@ func TestSSHCLIPreviewContract(t *testing.T) {
 		t.Run(workflow.Name, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("TUNLITE_HOME", filepath.Join(root, "home"))
-			t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+			setTestSSH(t)
 			adapter := newFakeServiceAdapter(filepath.Join(root, "native"))
 			for index, step := range workflow.Steps {
 				args := append([]string(nil), step.Args...)
@@ -54,6 +55,11 @@ func TestSSHCLIPreviewContract(t *testing.T) {
 				for _, expected := range step.StdoutContains {
 					if !strings.Contains(stdout.String(), expected) {
 						t.Fatalf("step %d %v: stdout missing %q: %s", index, step.Args, expected, stdout.String())
+					}
+				}
+				for _, forbidden := range step.StdoutNotContains {
+					if strings.Contains(stdout.String(), forbidden) {
+						t.Fatalf("step %d %v: stdout unexpectedly contains %q: %s", index, step.Args, forbidden, stdout.String())
 					}
 				}
 			}
