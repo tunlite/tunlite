@@ -20,7 +20,17 @@
         { "args": ["add", "multi", "-D", "9999", "other@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"already_exists\""] },
         { "args": ["add", "all", "-D", "1080", "me@host", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"name\":\"all\""] },
         { "args": ["add", "missing-forward", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] },
-        { "args": ["add", "bad-port", "-p", "70000", "-D", "1080", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] }
+        { "args": ["add", "bad-port", "-p", "70000", "-D", "1080", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\""] },
+        { "args": ["add", "jump-injection", "-J", "user@-oProxyCommand=id 127.0.0.1", "-D", "1080", "me@host", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\"", "invalid jump host"] }
+      ]
+    },
+    {
+      "name": "set-clear-and-conflicts",
+      "steps": [
+        { "args": ["add", "clearable", "-i", "~/.ssh/work", "-J", "jump@bastion", "-D", "1080", "-o", "Compression=yes", "me@host", "--json"], "exit": 0, "stdoutContains": ["\"identityFile\"", "\"jump\"", "\"sshOptions\""] },
+        { "args": ["set", "clearable", "--clear", "identity", "--clear=jump", "--clear", "options", "--json"], "exit": 0, "stdoutContains": ["\"outcome\":\"applied\"", "\"name\":\"clearable\""], "stdoutNotContains": ["\"identityFile\"", "\"jump\"", "\"sshOptions\""] },
+        { "args": ["set", "clearable", "--clear", "identity", "-i", "replacement", "--json"], "exit": 2, "stdoutContains": ["\"code\":\"invalid_arguments\"", "may only be specified once"] },
+        { "args": ["list", "--json"], "exit": 0, "stdoutContains": ["\"name\":\"clearable\""], "stdoutNotContains": ["\"identityFile\"", "replacement"] }
       ]
     }
   ]

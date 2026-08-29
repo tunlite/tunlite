@@ -39,11 +39,13 @@ type IO struct {
 }
 
 type options struct {
-	JSON           bool
-	NonInteractive bool
-	DryRun         bool
-	Language       language
-	serviceAdapter func() (service.Adapter, error)
+	JSON              bool
+	NonInteractive    bool
+	DryRun            bool
+	Language          language
+	serviceAdapter    func() (service.Adapter, error)
+	lifecycleBudget   *lifecycleObservationBudget
+	lifecycleObserver *lifecycleObserver
 }
 
 type exitError struct {
@@ -68,6 +70,10 @@ func RunContext(ctx context.Context, args []string, streams IO) int {
 }
 
 func runContext(ctx context.Context, args []string, streams IO, serviceAdapter func() (service.Adapter, error)) int {
+	return runContextWithOptions(ctx, args, streams, options{serviceAdapter: serviceAdapter})
+}
+
+func runContextWithOptions(ctx context.Context, args []string, streams IO, overrides options) int {
 	if streams.Out == nil {
 		streams.Out = io.Discard
 	}
@@ -75,7 +81,8 @@ func runContext(ctx context.Context, args []string, streams IO, serviceAdapter f
 		streams.Err = io.Discard
 	}
 	cleaned, opts, err := extractGlobalOptions(args)
-	opts.serviceAdapter = serviceAdapter
+	opts.serviceAdapter = overrides.serviceAdapter
+	opts.lifecycleBudget = overrides.lifecycleBudget
 	if err != nil {
 		return renderError(streams, opts, usageError(err.Error()))
 	}
@@ -474,13 +481,4 @@ func writeResponse(writer io.Writer, value map[string]any) error {
 	}
 	response["protocolVersion"] = ProtocolVersion
 	return writeJSON(writer, response)
-}
-
-type stringsFlag []string
-
-func (values *stringsFlag) String() string { return strings.Join(*values, ",") }
-
-func (values *stringsFlag) Set(value string) error {
-	*values = append(*values, value)
-	return nil
 }

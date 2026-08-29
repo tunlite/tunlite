@@ -393,8 +393,17 @@ func (l *Launchd) Inspect(ctx context.Context, reference Reference) (Observation
 	}
 	state := properties["state"]
 	switch state {
-	case "running", "active":
+	case "running":
 		observation.ProcessState = ProcessRunning
+	case "active":
+		// launchd also reports an enabled KeepAlive job as active while it is
+		// waiting for the rapid-restart throttle and has no child process.
+		// Only treat active as running when launchctl exposes a real PID.
+		if pid, parseErr := strconv.Atoi(properties["pid"]); parseErr == nil && pid > 0 {
+			observation.ProcessState = ProcessRunning
+		} else {
+			observation.ProcessState = ProcessStarting
+		}
 	case "spawn scheduled", "waiting", "xpcproxy":
 		observation.ProcessState = ProcessStarting
 	default:

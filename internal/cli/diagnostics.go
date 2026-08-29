@@ -116,12 +116,18 @@ func resolveSSHConnection(document configstore.Document, target string, port int
 		connection.Spec.Config, _ = json.Marshal(config)
 		return connection, nil
 	}
-	host, embeddedPort, err := sshdriver.ParseTarget(target)
+	targetSpec, err := sshdriver.ParseTargetSpec(target)
 	if err != nil {
 		return core.Connection{}, notFoundError(fmt.Sprintf("no such connection and invalid SSH target: %s", target))
 	}
-	if host != strings.TrimSpace(target) {
-		return core.Connection{}, usageError(fmt.Sprintf("SSH target must not contain a port; use -p %d %s", embeddedPort, host))
+	if targetSpec.PortSpecified && !targetSpec.IPv6 {
+		return core.Connection{}, usageError(fmt.Sprintf("SSH target must not contain a port; use -p %d %s", targetSpec.Port, targetSpec.Host))
+	}
+	if targetSpec.PortSpecified {
+		if port != 0 {
+			return core.Connection{}, usageError("SSH port may not be set by both -p and the IPv6 target")
+		}
+		port = targetSpec.Port
 	}
 	if port == 0 {
 		port = 22
@@ -130,6 +136,7 @@ func resolveSSHConnection(document configstore.Document, target string, port int
 	if err != nil {
 		return core.Connection{}, usageError(err.Error())
 	}
+	host := targetSpec.Host
 	config := sshdriver.Config{Host: host, Port: port, IdentityFile: identity, Jump: jumps, Forwards: []sshdriver.Forward{}}
 	raw, _ := json.Marshal(config)
 	return core.Connection{

@@ -113,6 +113,44 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 		if !positionalOnly && (argument == "-N" || argument == "-T") {
 			continue
 		}
+		if !positionalOnly && (argument == "--clear" || strings.HasPrefix(argument, "--clear=")) {
+			if !patchMode {
+				return ConfigPatch{}, fmt.Errorf("--clear is only available with set")
+			}
+			value := ""
+			if strings.HasPrefix(argument, "--clear=") {
+				value = strings.TrimPrefix(argument, "--clear=")
+			} else {
+				if index+1 >= len(args) {
+					return ConfigPatch{}, fmt.Errorf("--clear requires a field (identity, jump, or options)")
+				}
+				index++
+				value = args[index]
+			}
+			switch value {
+			case "identity":
+				if err := setOnce("identity"); err != nil {
+					return ConfigPatch{}, err
+				}
+				result.IdentitySet, result.IdentityFile = true, ""
+			case "jump":
+				if err := setOnce("jump"); err != nil {
+					return ConfigPatch{}, err
+				}
+				result.JumpSet, result.Jump = true, nil
+			case "options":
+				if seen["options-values"] {
+					return ConfigPatch{}, fmt.Errorf("SSH options may not be both cleared and set")
+				}
+				if err := setOnce("options"); err != nil {
+					return ConfigPatch{}, err
+				}
+				result.SSHOptionsSet, result.SSHOptions = true, nil
+			default:
+				return ConfigPatch{}, fmt.Errorf("unknown --clear field %q (available: identity, jump, options)", value)
+			}
+			continue
+		}
 		if !positionalOnly && strings.HasPrefix(argument, "-") {
 			if len(argument) < 2 {
 				return ConfigPatch{}, fmt.Errorf("invalid SSH argument %q", argument)
@@ -133,7 +171,7 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 				}
 				result.PortSet, result.Port = true, port
 			case "-i":
-				if err := setOnce("-i"); err != nil {
+				if err := setOnce("identity"); err != nil {
 					return ConfigPatch{}, err
 				}
 				value, err := valueFor(&index, argument, short)
@@ -145,12 +183,15 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 				}
 				result.IdentitySet, result.IdentityFile = true, value
 			case "-J":
-				if err := setOnce("-J"); err != nil {
+				if err := setOnce("jump"); err != nil {
 					return ConfigPatch{}, err
 				}
 				value, err := valueFor(&index, argument, short)
 				if err != nil {
 					return ConfigPatch{}, err
+				}
+				if value == "" {
+					return ConfigPatch{}, fmt.Errorf("-J requires a non-empty jump host")
 				}
 				jump, err := ParseJump(value)
 				if err != nil {
@@ -169,6 +210,9 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 				result.ForwardsSet = true
 				result.Forwards = append(result.Forwards, forward)
 			case "-o":
+				if seen["options"] {
+					return ConfigPatch{}, fmt.Errorf("SSH options may not be both cleared and set")
+				}
 				value, err := valueFor(&index, argument, short)
 				if err != nil {
 					return ConfigPatch{}, err
@@ -176,6 +220,7 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 				if err := validateSSHOption(value); err != nil {
 					return ConfigPatch{}, err
 				}
+				seen["options-values"] = true
 				result.SSHOptionsSet = true
 				result.SSHOptions = append(result.SSHOptions, value)
 			default:
@@ -184,14 +229,20 @@ func parseArguments(args []string, patchMode bool) (ConfigPatch, error) {
 			continue
 		}
 
-		host, port, err := ParseTarget(argument)
+		target, err := ParseTargetSpec(argument)
 		if err != nil {
 			return ConfigPatch{}, err
 		}
-		if host != strings.TrimSpace(argument) {
-			return ConfigPatch{}, fmt.Errorf("SSH target must not contain a port; use -p %d %s", port, host)
+		if target.PortSpecified && !target.IPv6 {
+			return ConfigPatch{}, fmt.Errorf("SSH target must not contain a port; use -p %d %s", target.Port, target.Host)
 		}
-		result.HostSet, result.Host = true, host
+		if target.PortSpecified {
+			if result.PortSet {
+				return ConfigPatch{}, fmt.Errorf("SSH port may not be set by both -p and the IPv6 target")
+			}
+			result.PortSet, result.Port = true, target.Port
+		}
+		result.HostSet, result.Host = true, target.Host
 	}
 
 	if !patchMode {

@@ -79,6 +79,9 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 		}
 		return renderServiceResults(streams, opts, command, results)
 	}
+	if command == "start" || command == "enable" || command == "restart" {
+		lifecycleObserverFor(&opts)
+	}
 	results := make([]serviceItemResult, 0, len(targets))
 	for _, connection := range targets {
 		release := func() {}
@@ -349,7 +352,7 @@ func startService(ctx context.Context, adapter service.Adapter, records *service
 		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before starting"), "low", resolveActions(connection.Metadata.Name))
 	}
 	if record.Mode == service.ModeBackground && (before.ProcessState == service.ProcessRunning || before.ProcessState == service.ProcessStarting) {
-		return succeededServiceItem(connection.Metadata.Name, before)
+		return observeLifecycleResult(ctx, adapter, record, artifact, "start", succeededServiceItem(connection.Metadata.Name, before), opts)
 	}
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
 	if opts.DryRun {
@@ -375,9 +378,7 @@ func startService(ctx context.Context, adapter service.Adapter, records *service
 		record.Mode = previous
 		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err, rollbackErr)
 	}
-	state := service.Evaluate(ctx, adapter, record, &artifact)
-	result.State = &state
-	return result
+	return observeLifecycleResult(ctx, adapter, record, artifact, "start", result, opts)
 }
 
 func stopService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
@@ -434,7 +435,7 @@ func enableService(ctx context.Context, adapter service.Adapter, records *servic
 		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before enabling"), "low", resolveActions(connection.Metadata.Name))
 	}
 	if record.Mode == service.ModePersistent && (before.ProcessState == service.ProcessRunning || before.ProcessState == service.ProcessStarting) {
-		return succeededServiceItem(connection.Metadata.Name, before)
+		return observeLifecycleResult(ctx, adapter, record, artifact, "enable", succeededServiceItem(connection.Metadata.Name, before), opts)
 	}
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: conditions, Artifact: artifactResult(artifact)}
 	if opts.DryRun {
@@ -464,9 +465,7 @@ func enableService(ctx context.Context, adapter service.Adapter, records *servic
 		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
 			errors.Join(disableErr, startErr))
 	}
-	state := service.Evaluate(ctx, adapter, record, &artifact)
-	result.State = &state
-	return result
+	return observeLifecycleResult(ctx, adapter, record, artifact, "enable", result, opts)
 }
 
 func disableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
@@ -540,9 +539,7 @@ func restartService(ctx context.Context, adapter service.Adapter, records *servi
 		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_restart_failed", err,
 			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
 	}
-	state := service.Evaluate(ctx, adapter, record, &artifact)
-	result.State = &state
-	return result
+	return observeLifecycleResult(ctx, adapter, record, artifact, "restart", result, opts)
 }
 
 func statusService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string) serviceItemResult {
@@ -713,10 +710,12 @@ func failedServiceItemAfterRecovery(connection, code string, cause, recovery err
 }
 
 func renderServiceResults(streams IO, opts options, operation string, results []serviceItemResult) error {
-	failed, succeeded := 0, 0
+	failed, succeeded, starting := 0, 0, 0
 	for _, result := range results {
 		if result.Outcome == "failed" {
 			failed++
+		} else if result.Outcome == "starting" {
+			starting++
 		} else {
 			succeeded++
 		}
@@ -725,8 +724,11 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 	if opts.DryRun && operation != "status" {
 		outcome = "planned"
 	}
+	if starting > 0 {
+		outcome = "starting"
+	}
 	if failed > 0 {
-		if succeeded > 0 {
+		if succeeded > 0 || starting > 0 {
 			outcome = "partial"
 		} else {
 			outcome = "failed"
@@ -780,7 +782,7 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 			}
 		}
 	}
-	if failed > 0 && succeeded > 0 {
+	if failed > 0 && (succeeded > 0 || starting > 0) {
 		return renderedExit(exitPartial)
 	}
 	if failed > 0 {

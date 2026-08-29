@@ -59,10 +59,14 @@
 <span>#</span> remote publish and SOCKS proxy
 <span>$</span> tunlite add preview -R 9000:localhost:3000 deploy@app01
 <span>$</span> tunlite add socks -D 1080 deploy@app01</pre>
+        <div class="callout"><strong>Preview username limit:</strong> only ASCII letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>. UPN/multi-<code>@</code>, <code>+</code>, and <code>DOMAIN\user</code> forms are unsupported, and there is no separate <code>-l</code> option.</div>
         <p>Identity files, jump hosts, groups, and safe OpenSSH <code>Key=Value</code> options are explicit fields:</p>
         <pre class="code"><span>$</span> tunlite add private-db -p 2222 \
     -i ~/.ssh/work_ed25519 -J bastion@example.com \
     -L 5432:localhost:5432 --group work deploy@app01</pre>
+        <p><code>set</code> patches only supplied fields. Remove optional SSH fields with the repeatable clear operation:</p>
+        <pre class="code"><span>$</span> tunlite set private-db --clear identity --clear jump --clear options</pre>
+        <p>The clearable fields are exactly <code>identity</code>, <code>jump</code>, and <code>options</code>. Unknown or duplicate clears, and setting plus clearing the same field in one command, are rejected.</p>
         <div class="callout">Tunlite SSH execution and checks use <code>ssh -F none</code>. They do not inherit aliases, commands, hidden forwards, or multiplexing from <code>~/.ssh/config</code>; use an explicit host and explicit safe arguments.</div>
       </section>
 

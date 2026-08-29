@@ -10,6 +10,12 @@ Tunlite v1 只使用两类版本名：
 
 不增加 Alpha、Beta、RC 等层级，不移动或复用已经公开的 Tag。
 
+## 当前候选状态
+
+当前仓库准备的是 `v1.0.0-preview.1` 候选，不是稳定 `v1.0.0`。Preview 可以暴露需要
+验证和调整的产品边界；在至少多个公开 Preview 之间没有破坏性契约漂移，并完成本文列出的
+稳定版条件前，不创建 `v1.0.0` Tag，也不在文案中把当前能力称为稳定版。
+
 ## 唯一权威
 
 公开仓库的提交、Tag、GitHub Release 和构建证明是唯一发布事实。npm 中的 0.x 包只代表
@@ -43,7 +49,8 @@ scripts/package-release.sh v1.0.0-preview.1
 
 ## 发布流程
 
-1. 运行全部自动测试、race、vet、真实 OpenSSH 和当前平台原生服务测试。
+1. 运行全部自动测试、race、vet、依赖校验、staticcheck、govulncheck、真实 OpenSSH 和
+   当前平台原生服务测试。
 2. 在支持矩阵要求的平台做真机验收。
 3. 生成本地候选包，逐个校验嵌入版本、归档内容和 `SHA256SUMS`。
 4. 更新 CHANGELOG、预览版指南和支持矩阵，只记录已经验证的事实。
@@ -54,6 +61,10 @@ scripts/package-release.sh v1.0.0-preview.1
 自动发布工作流拥有仓库写权限和 OIDC 身份，已经作为单独的安全开关获得授权并完成审查。
 它只响应 `v1.0.0-preview.*` 和 `v1.0.0` Tag；普通 Push、Pull Request 和手工操作不能
 触发发布。加入工作流不等于获得推送 Tag 的授权，每次实际发布仍需由人明确决定。
+Tag 工作流必须在自身运行中重新执行跨平台 test/vet、race、最低 Go 版本、module tidy/
+verify、staticcheck、govulncheck、真实 OpenSSH，以及 macOS 归档二进制的 launchd E2E；
+`publish` 只能依赖全部 Gate 之后产生并完成 Attestation 的 Artifact，不能把另一个松散的
+Push CI 结果当作发布许可。
 
 ## 稳定版条件
 

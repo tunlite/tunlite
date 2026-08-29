@@ -14,11 +14,23 @@ release process.
 This preview replaces the Node.js runtime with a single Go binary while keeping SSH
 as the product's focused entry point.
 
+This entry describes the current `v1.0.0-preview.1` release candidate. It is not a
+stable `v1.0.0` release; the stable tag remains gated on multiple public previews
+without destructive contract drift and the hardware validation in
+[docs/VERSIONING.md](docs/VERSIONING.md).
+
 ### Added
 
 - Generic Connection, Driver, and deterministic ExecutionPlan boundaries with a
   built-in OpenSSH driver for `-L`, `-R`, `-D`, multiple forwards, jump hosts,
   identity files, and strict `Key=Value` SSH options.
+- Driver-native connection syntax: SSH remains the default Driver, the explicit
+  target is positional (`tunlite add db -L 5432:localhost:5432 deploy@app01`), and
+  `set` parses patches through the Connection's stored Driver instead of a second
+  generic destination grammar.
+- Explicit repeatable `set --clear identity|jump|options` operations remove optional
+  SSH fields without empty-string sentinels or one-off flags; setting and clearing
+  the same field in one command is rejected.
 - Per-Connection systemd user services and launchd jobs with explicit foreground,
   temporary background, and cross-login modes; `add` materializes a stopped native
   service, while `start`/`stop` and `enable`/`disable` select how it runs.
@@ -34,9 +46,11 @@ as the product's focused entry point.
 - Color-aware aligned status output, per-Connection status details, an environment
   and Connection `doctor`, and the foreground `tunlite monitor` dashboard. Human
   output respects TTY detection and `NO_COLOR`; JSON never contains ANSI escapes.
-- Chinese and English human interfaces selected by `--lang`, `TUNLITE_LANG`, or the
-  system locale. Command names, configuration, error codes, and JSON fields and
-  values remain stable English machine contracts.
+- Chinese and English help, lifecycle progress, status, and Monitor surfaces selected
+  by `--lang`, `TUNLITE_LANG`, or the system locale. Several secondary command
+  summaries and underlying tool errors remain English in this preview. Command names,
+  configuration, error codes, and JSON fields and values remain stable English
+  machine contracts.
 - One canonical configuration path, root-only `configVersion`, one optional Group
   per Connection for grouped status and batch selection, and explicit `--all`.
 - A single native binary whose installation, upgrades, and removal are owned by the
@@ -51,6 +65,9 @@ as the product's focused entry point.
 
 - Persistent Connections are owned directly by the operating system and execute the
   Provider command without a central Tunlite controller or IPC socket.
+- SSH execution and checks now always invoke OpenSSH with `-F none`; ambient
+  `~/.ssh/config` aliases, hidden forwards, commands, and multiplexing cannot change
+  the declared target or execution plan.
 - `tunlite monitor` now uses a full-screen, `top`-style dashboard with the running
   version, state totals, terminal-width-aware columns, detail navigation through
   Enter/right and Esc/left, visible `starting`/`stopping`/`restarting` transitions,
@@ -68,12 +85,18 @@ as the product's focused entry point.
   longer v1 runtime prerequisites.
 - The Agent Skill now follows the runtime capability and schema contract and is tested
   against commands, exit codes, and state dimensions.
+- Tag-triggered publication now owns its complete quality gate. The macOS native E2E
+  verifies and runs the exact `dist` archive that is subsequently attested, uploaded,
+  and published; it cannot pass by rebuilding a second unshipped artifact.
 
 ### Deferred
 
 - Webhook connection alerts are intentionally deferred while v1 restores the core
   CLI experience. The preview does not advertise or silently accept inactive webhook
   configuration.
+- SSH usernames outside the preview's strict ASCII `A-Z a-z 0-9 . _ -` grammar are
+  not yet expressible. UPN/multi-`@`, `+`, and `DOMAIN\user` forms remain unsupported;
+  the CLI does not provide a separate `-l` escape hatch.
 
 ### Removed
 

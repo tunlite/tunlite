@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -44,13 +45,17 @@ type monitorConfirmation struct {
 }
 
 type monitorTransition struct {
-	name  string
-	label string
+	name             string
+	label            string
+	accepted         bool
+	completedMessage string
 }
 
 type monitorMutationResult struct {
-	name    string
-	message string
+	name             string
+	message          string
+	pending          bool
+	completedMessage string
 }
 
 func monitor(ctx context.Context, args []string, streams IO, opts options) error {
@@ -129,9 +134,17 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	refresh := func() error {
 		fresh, refreshErr := collectMonitorRows(monitorCtx, group, opts)
 		if refreshErr != nil {
+			if resolved, message := monitorTransitionResolution(transition, nil, refreshErr, opts.Language); resolved {
+				transition = nil
+				flash = message
+			}
 			return refreshErr
 		}
 		rows = fresh
+		if resolved, message := monitorTransitionResolution(transition, rows, nil, opts.Language); resolved {
+			transition = nil
+			flash = message
+		}
 		if len(rows) == 0 {
 			selected = 0
 			detail = false
@@ -169,8 +182,7 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 		transition = &monitorTransition{name: row.connection.Metadata.Name, label: label}
 		render(false)
 		go func() {
-			message := executeMonitorMutation(monitorCtx, command, row, opts)
-			mutations <- monitorMutationResult{name: row.connection.Metadata.Name, message: message}
+			mutations <- executeMonitorMutation(monitorCtx, command, row, opts)
 		}()
 	}
 	for {
@@ -179,17 +191,26 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 			return nil
 		case <-ticker.C:
 			if err := refresh(); err != nil {
-				flash = err.Error()
+				if flash == "" {
+					flash = err.Error()
+				}
 				render(false)
 				flash = ""
 			}
 		case result := <-mutations:
 			if transition != nil && transition.name == result.name {
-				transition = nil
+				if result.pending {
+					transition.accepted = true
+					transition.completedMessage = result.completedMessage
+				} else {
+					transition = nil
+				}
 			}
 			flash = result.message
 			if err := refresh(); err != nil {
-				flash = err.Error()
+				if flash == "" {
+					flash = err.Error()
+				}
 				render(false)
 				flash = ""
 			}
@@ -564,20 +585,6 @@ func monitorCounts(rows []statusRow) (running, changing, problem, stopped int) {
 	return running, changing, problem, stopped
 }
 
-func monitorViewport(count, selected, capacity int) (int, int) {
-	if capacity <= 0 || count <= capacity {
-		return 0, minInt(count, capacity)
-	}
-	start := selected - capacity/2
-	if start < 0 {
-		start = 0
-	}
-	if start+capacity > count {
-		start = count - capacity
-	}
-	return start, start + capacity
-}
-
 func monitorGroupedViewport(rows []statusRow, selected, capacity int) (int, int) {
 	if len(rows) == 0 || capacity <= 0 {
 		return 0, 0
@@ -789,16 +796,28 @@ func monitorMutationPlan(key monitorKey, row statusRow) (command, transition str
 	return "", "", errors.New("unsupported monitor operation")
 }
 
-func executeMonitorMutation(ctx context.Context, command string, row statusRow, opts options) string {
-	var stderr bytes.Buffer
+func executeMonitorMutation(ctx context.Context, command string, row statusRow, opts options) monitorMutationResult {
+	var stdout, stderr bytes.Buffer
 	terminal := false
-	err := serviceCommand(ctx, command, []string{row.connection.Metadata.Name}, IO{Out: io.Discard, Err: &stderr, Terminal: &terminal}, opts)
+	internalOpts := opts
+	internalOpts.JSON = true
+	err := serviceCommand(ctx, command, []string{row.connection.Metadata.Name}, IO{Out: &stdout, Err: &stderr, Terminal: &terminal}, internalOpts)
+	var response struct {
+		Outcome string `json:"outcome"`
+		Results []struct {
+			Error *serviceItemError `json:"error"`
+		} `json:"results"`
+	}
+	decodeErr := json.Unmarshal(stdout.Bytes(), &response)
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
+		if message == "" && decodeErr == nil && len(response.Results) > 0 && response.Results[0].Error != nil {
+			message = response.Results[0].Error.Message
+		}
 		if message == "" {
 			message = err.Error()
 		}
-		return message
+		return monitorMutationResult{name: row.connection.Metadata.Name, message: message}
 	}
 	past := map[string]string{
 		"start":   localized(opts.Language, "started", "已启动"),
@@ -806,7 +825,51 @@ func executeMonitorMutation(ctx context.Context, command string, row statusRow, 
 		"disable": localized(opts.Language, "stopped and disabled on login", "已停止并关闭登录自启"),
 		"restart": localized(opts.Language, "restarted", "已重启"),
 	}
-	return past[command] + " " + row.connection.Metadata.Name
+	completedMessage := past[command] + " " + row.connection.Metadata.Name
+	if decodeErr == nil && response.Outcome == "starting" {
+		pending := map[string][2]string{
+			"start":   {"start accepted; still starting", "启动请求已接受，仍在启动"},
+			"restart": {"restart accepted; still restarting", "重启请求已接受，仍在重启"},
+		}[command]
+		message := localized(opts.Language, pending[0], pending[1]) + " " + row.connection.Metadata.Name
+		return monitorMutationResult{
+			name: row.connection.Metadata.Name, message: message, pending: true, completedMessage: completedMessage,
+		}
+	}
+	return monitorMutationResult{name: row.connection.Metadata.Name, message: completedMessage}
+}
+
+func monitorTransitionConverged(row statusRow) bool {
+	return row.state.ServiceState == service.ServiceRegistered &&
+		row.state.ConsistencyState == service.ConsistencyConsistent &&
+		row.state.ProcessState == service.ProcessRunning &&
+		row.state.Health != service.HealthUnhealthy
+}
+
+func monitorTransitionResolution(transition *monitorTransition, rows []statusRow, refreshErr error, lang language) (bool, string) {
+	if transition == nil || !transition.accepted {
+		return false, ""
+	}
+	if refreshErr != nil {
+		return true, localized(lang, "status refresh failed after the operation was accepted: ", "操作已接受，但状态刷新失败：") + refreshErr.Error()
+	}
+	for _, row := range rows {
+		if row.connection.Metadata.Name != transition.name {
+			continue
+		}
+		if monitorTransitionConverged(row) {
+			return true, transition.completedMessage
+		}
+		if lifecycleStateFailed(row.state) {
+			message := localized(lang, "service did not converge", "服务未能完成状态切换")
+			if len(row.state.Conditions) > 0 && row.state.Conditions[0].Message != "" {
+				message += ": " + row.state.Conditions[0].Message
+			}
+			return true, message
+		}
+		return false, ""
+	}
+	return true, localized(lang, "connection disappeared while observing the operation", "观察操作结果时连接已消失")
 }
 
 func localizedTransition(value string, lang language) string {

@@ -183,7 +183,7 @@ func list(args []string, streams IO, opts options) error {
 
 func set(ctx context.Context, args []string, streams IO, opts options) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return usageError("usage: tunlite set <name> [-p port] [-i key] [-J jump] [-L/-R/-D ...] [-o Key=Value ...] [user@host] [--group group|--no-group]")
+		return usageError("usage: tunlite set <name> [-p port] [-i key] [-J jump] [-L/-R/-D ...] [-o Key=Value ...] [--clear identity|jump|options ...] [user@host] [--group group|--no-group]")
 	}
 	name := args[0]
 	values, err := parseConnectionFlags("set", args[1:], true)

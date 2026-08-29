@@ -241,7 +241,10 @@ func useFakeServiceAdapter(t *testing.T, adapter *fakeServiceAdapter) func(*test
 	return func(t *testing.T, args ...string) (int, string, string) {
 		t.Helper()
 		var out, stderr bytes.Buffer
-		code := runContext(context.Background(), args, IO{Out: &out, Err: &stderr}, func() (service.Adapter, error) { return adapter, nil })
+		budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
+		code := runContextWithOptions(context.Background(), args, IO{Out: &out, Err: &stderr}, options{
+			serviceAdapter: func() (service.Adapter, error) { return adapter, nil }, lifecycleBudget: &budget,
+		})
 		return code, out.String(), stderr.String()
 	}
 }
@@ -291,7 +294,7 @@ func assertFileSnapshot(t *testing.T, want, got map[string]string) {
 func TestAddMaterializesStoppedNativeService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 
@@ -320,7 +323,7 @@ func TestAddRejectsOccupiedNativeServiceIdentityWithoutOverwritingIt(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("TUNLITE_HOME", home)
-			t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+			setTestSSH(t)
 			adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 			adapter.observed["db"] = test.observation
 			invoke := useFakeServiceAdapter(t, adapter)
@@ -347,7 +350,7 @@ func TestAddRejectsOccupiedNativeServiceIdentityWithoutOverwritingIt(t *testing.
 func TestStandardModeTransitionsAreExplicit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, _, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
@@ -399,7 +402,7 @@ func TestLifecycleCommandMatrix(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("TUNLITE_HOME", home)
-			t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+			setTestSSH(t)
 			adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 			invoke := useFakeServiceAdapter(t, adapter)
 			if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -463,7 +466,7 @@ func TestLifecycleCommandMatrix(t *testing.T) {
 func TestAllServiceAndOwnershipDryRunsAreReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -526,7 +529,7 @@ func TestAllServiceAndOwnershipDryRunsAreReadOnly(t *testing.T) {
 func TestRemoveRejectsRunningAndDeletesStoppedService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -546,7 +549,7 @@ func TestRemoveRejectsRunningAndDeletesStoppedService(t *testing.T) {
 func TestSetAutomaticallyUpdatesAndRestartsBackgroundService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -565,7 +568,7 @@ func TestSetAutomaticallyUpdatesAndRestartsBackgroundService(t *testing.T) {
 func TestSetDryRunPreflightsRestartWithoutMutatingServiceOrDeclaration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -605,7 +608,7 @@ func TestSetDryRunPreflightsRestartWithoutMutatingServiceOrDeclaration(t *testin
 func TestRunningPublishChangeWarnsAndApplies(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "edge", "-D", "1080", "me@example.com")
@@ -623,7 +626,7 @@ func TestRunningPublishChangeWarnsAndApplies(t *testing.T) {
 func TestStartPublishNeedsNoApproval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "publish", "-R", "19000:localhost:3000", "me@example.com")
@@ -640,7 +643,7 @@ func TestStartPublishNeedsNoApproval(t *testing.T) {
 func TestForegroundOnlyStatusIsExplicit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	invoke := func(t *testing.T, args ...string) (int, string, string) {
 		t.Helper()
 		var out, stderr bytes.Buffer
@@ -664,7 +667,7 @@ func TestForegroundOnlyStatusIsExplicit(t *testing.T) {
 func TestFollowingLogsStopsCleanly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	adapter.logsStarted = make(chan struct{}, 1)
 	adapter.logsRelease = make(chan struct{})
@@ -695,7 +698,7 @@ func TestFollowingLogsStopsCleanly(t *testing.T) {
 func TestFollowingLogsJSONEmitsNDJSONRecords(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
@@ -723,7 +726,7 @@ func TestFollowingLogsJSONEmitsNDJSONRecords(t *testing.T) {
 func TestRenameKeepsNativeServiceIdentity(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "old", "-D", "1080", "me@example.com")
@@ -744,7 +747,7 @@ func TestRenameKeepsNativeServiceIdentity(t *testing.T) {
 func TestUnmanagePreservesServiceAndManageImportsItAgain(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -763,7 +766,7 @@ func TestUnmanagePreservesServiceAndManageImportsItAgain(t *testing.T) {
 func TestUnmanageRejectsDriftAndKeepsManagementState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -799,7 +802,7 @@ func TestUnmanageRejectsDriftAndKeepsManagementState(t *testing.T) {
 func TestRunRejectsAStoppedRecordWhoseNativeServiceDrifted(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -816,7 +819,7 @@ func TestRunRejectsAStoppedRecordWhoseNativeServiceDrifted(t *testing.T) {
 func TestManageRejectsASecondOwnerForTheSameNativeService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -829,7 +832,7 @@ func TestManageRejectsASecondOwnerForTheSameNativeService(t *testing.T) {
 func TestManagePickerFiltersAlreadyManagedServices(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
@@ -855,7 +858,7 @@ func TestManagePickerFiltersAlreadyManagedServices(t *testing.T) {
 func TestConcurrentManageAllowsOnlyOneOwner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "native", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -907,7 +910,7 @@ func TestConcurrentManageAllowsOnlyOneOwner(t *testing.T) {
 func TestManagedNativeServiceKeepsItsOriginalIdentityWhenUpdated(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "native", "-D", "1080", "me@example.com")
@@ -929,7 +932,7 @@ func TestManagedNativeServiceKeepsItsOriginalIdentityWhenUpdated(t *testing.T) {
 func TestManagedServiceRollbackRestoresOriginalNativeDefinition(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "native", "-D", "1080", "me@example.com")
@@ -987,7 +990,7 @@ func TestManagedServiceRollbackRestoresOriginalNativeDefinition(t *testing.T) {
 func TestSetRestoresServiceDefinitionWhenRestartFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1025,7 +1028,7 @@ func TestSetRestoresServiceDefinitionWhenRestartFails(t *testing.T) {
 func TestAddRollsBackNativeStateWhenConfigWriteFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	adapter.materializeHook = func(service.Artifact) {
 		_ = os.WriteFile(filepath.Join(home, "config"), []byte("blocks the config directory\n"), 0o600)
@@ -1050,7 +1053,7 @@ func TestAddRollsBackNativeStateWhenConfigWriteFails(t *testing.T) {
 func TestSetRollsBackNativeStateWhenConfigWriteFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1092,7 +1095,7 @@ func TestSetRollsBackNativeStateWhenConfigWriteFails(t *testing.T) {
 func TestRemoveRestoresNativeStateWhenConfigWriteFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1133,7 +1136,7 @@ func TestImportRollsBackItemWhenConfigWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	source := filepath.Join(root, "source.json")
 	document := configstore.Empty()
 	document.Items = append(document.Items, core.Connection{
@@ -1167,7 +1170,7 @@ func TestImportRollsBackItemWhenConfigWriteFails(t *testing.T) {
 func TestManageRemovesBindingWhenConfigWriteFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "native", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1208,7 +1211,7 @@ func TestManageRemovesBindingWhenConfigWriteFails(t *testing.T) {
 func TestUnmanageRestoresDeclarationWhenRecordRemovalFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1248,7 +1251,7 @@ func TestUnmanageRestoresDeclarationWhenRecordRemovalFails(t *testing.T) {
 func TestResolveSystemRestoresDeclarationWhenRecordWriteFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1299,7 +1302,7 @@ func TestResolveSystemRestoresDeclarationWhenRecordWriteFails(t *testing.T) {
 func TestResolveSystemReportsBlockedRecoveryAfterConcurrentChange(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1353,7 +1356,7 @@ func TestResolveSystemReportsBlockedRecoveryAfterConcurrentChange(t *testing.T) 
 func TestRenameBindingRollbackRestoresOriginalRecord(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "old", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1391,7 +1394,7 @@ func TestRenameBindingRollbackRestoresOriginalRecord(t *testing.T) {
 func TestLifecycleStateWriteFailureReportsRollbackFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1429,7 +1432,7 @@ func TestLifecycleStateWriteFailureReportsRollbackFailure(t *testing.T) {
 func TestLifecycleStateWriteFailureRestoresPreviousMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1491,7 +1494,7 @@ func TestLifecycleStateWriteFailureRestoresPreviousMode(t *testing.T) {
 func TestLifecycleOperationFailureRestoresPreviousMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1543,7 +1546,7 @@ func TestLifecycleOperationFailureRestoresPreviousMode(t *testing.T) {
 func TestRemoveFailureRestoresNativeDefinitionAndKeepsDeclaration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
@@ -1573,7 +1576,7 @@ func TestRemoveFailureRestoresNativeDefinitionAndKeepsDeclaration(t *testing.T) 
 func TestStatusReportsAnUnboundNativeIdentityInsteadOfCallingItAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
@@ -1607,7 +1610,7 @@ func TestStatusReportsAnUnboundNativeIdentityInsteadOfCallingItAbsent(t *testing
 func TestResolveMissingBindingCanUseSystemDefinition(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
-	t.Setenv("TUNLITE_SSH", "/usr/bin/ssh")
+	setTestSSH(t)
 	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
 	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {

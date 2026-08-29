@@ -70,9 +70,13 @@ tunlite run db-5432 --json --non-interactive
 完整 stdout 当成一个 JSON 对象解析。
 
 SSH Driver 接受 `-N`、`-T`、`-p <端口>`、`-i <私钥路径>`、
-`-J user@host:port`、`-L/-R/-D`、`-o Key=Value` 和唯一的 `user@host`。
+`-J user@host:port`、`-L/-R/-D`、`-o Key=Value` 和唯一的 `host` 或 `user@host`。
 `-o` 只接受安全白名单中的严格 `Key=Value`；不要传命令、任意 SSH Config 或远程命令。
 Tunlite 的 SSH 执行与检查不读取 `~/.ssh/config`，SSH alias 必须先解析为显式目标和安全参数。
+
+用户名只允许 ASCII 字母、数字、`.`、`_`、`-`。UPN/多个 `@`、`+`、`DOMAIN\user` 和
+独立 `-l` 都不支持；遇到这些账号形式时必须停止并向用户说明 Preview 兼容限制，不能尝试
+转义、拆分参数或依赖 SSH Config 绕过。
 
 `-L`、`-R` 的格式是 `[bind:]port:host:hostport`；`-D` 是 `[bind:]port`。
 省略 bind 时仅监听回环地址。IPv6 地址必须使用方括号。
@@ -138,6 +142,9 @@ tunlite set db-5432 deploy@new-host --json --non-interactive
 # 一旦出现任意 -L/-R/-D，会替换完整 Forward 集合，必须先 dry-run
 tunlite set db-5432 -L 5432:localhost:5432 -D 1080 --dry-run --json --non-interactive
 
+# 删除可选 SSH 字段；--clear 可重复，但每个字段只能出现一次
+tunlite set db-5432 --clear identity --clear jump --clear options --dry-run --json --non-interactive
+
 tunlite rename db-5432 staging-db-5432 --json --non-interactive
 tunlite logs staging-db-5432 --lines 100 --json --non-interactive
 
@@ -151,6 +158,10 @@ tunlite manage native-service --name staging-db-5432 --json --non-interactive
 tunlite unmanage staging-db-5432 --dry-run --json --non-interactive
 tunlite unmanage staging-db-5432 --json --non-interactive
 ```
+
+`--clear` 只接受 `identity`、`jump` 和 `options`，等号形式 `--clear=<field>` 也可使用，
+没有其他别名。不得猜测其他字段，也不得在同一条命令中同时设置与清除同一字段；
+CLI 会将这些情况作为 `invalid_arguments` 拒绝。
 
 `logs --follow --json` 输出逐行 NDJSON；每条记录包含 `connection`、`stream`、`line` 和
 `observedAt`。Agent 必须持续逐行读取，不能等待命令结束后再解析整个 stdout。
