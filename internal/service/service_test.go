@@ -861,7 +861,7 @@ func TestLaunchdParsesRecognizableNativeSSHService(t *testing.T) {
 
 func TestServiceStoreRoundTrip(t *testing.T) {
 	store := NewStore(t.TempDir())
-	record := Record{RecordRevision: CurrentRecordRevision, Connection: "db", ServiceKey: "db", Adapter: "systemd", Mode: ModeStopped, UnitName: "tunlite-db.service"}
+	record := Record{RecordRevision: CurrentRecordRevision, Connection: "db", ServiceKey: "db", Adapter: "systemd", Scope: ScopeUser, Mode: ModeStopped, UnitName: "tunlite-db.service"}
 	if err := store.Write(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
