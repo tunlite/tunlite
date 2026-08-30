@@ -12,8 +12,8 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 
 | 平台 | 架构 | 前台与配置 CLI | 持久 Connection / Scope | 当前验证等级 |
 |---|---|---:|---:|---|
-| macOS 12+ | x64 | 支持 | launchd user 支持；system 实现，管理员真机验收待完成 | user Scope 已有自动测试、plist 原生校验及 Intel 真机生命周期验证；system Scope 发布前补隔离真机迁移/回滚验证 |
-| macOS 12+ | arm64 | 支持 | launchd user 支持；system 实现，管理员真机验收待完成 | 自动测试与交叉编译；稳定版前补 Apple Silicon user/system 真机验收 |
+| macOS 12+ | x64 | 支持 | launchd user/system 支持 | Intel 真机已通过 Universal 2 构建校验、LaunchAgent Release E2E，以及隔离 LaunchDaemon 双向迁移、真实流量、配置更新、无 sudo restart、disable/remove 与精确清理 |
+| macOS 12+ | arm64 | 支持 | launchd user/system 支持 | 自动测试、Universal 2 构建与交叉编译通过；Apple Silicon user/system 真机仍未验证 |
 | Linux | x64、arm64 | 支持 | systemd user 支持；system 不支持 | 自动测试、交叉编译及 Ubuntu 24.04 PID 1 systemd 容器 E2E；稳定版前补非容器发行版真机验收 |
 
 系统 `ssh` 必须位于 PATH，或通过 `TUNLITE_SSH` 指定绝对路径。Linux 持久模式需要
@@ -155,11 +155,16 @@ scripts/test-release-e2e.sh v1.0.0-preview.1
 scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
 
-macOS system Scope 还必须通过不触碰开发者现有服务的隔离验收：user→system、system→user、
-成功后进入 persistent、失败后恢复原 Scope/原 Mode、权限缺失、目标冲突、每个迁移步骤
-故障注入与完整回滚。自动测试不得调用
-真实 sudo；真实 `/Library/LaunchDaemons` 和 system launchd domain 只在专用真机门禁中
-执行。完成该门禁前，Release Notes 必须继续标注 system Scope 尚未经过管理员真机验证。
+macOS system Scope 必须同时通过两类互补门禁：自动故障注入覆盖权限缺失、目标冲突、
+每个迁移步骤失败与完整回滚；专用真机覆盖真实 sudo、`/Library/LaunchDaemons`、system
+launchd domain 和成功生命周期。自动测试不得调用真实 sudo，真机测试不得触碰开发者
+已有服务。2026-08-31，Intel 真机已经通过最终候选 Universal 2 产物的
+USER→SYSTEM→USER→SYSTEM 成功路径，核对 root/user plist 的 owner、mode 和 domain，
+验证真实 `-L` 流量、system `set`、清除 sudo timestamp 后的无密码 `restart`、
+`disable`/`remove` 以及测试身份和进程的精确清理。失败迁移与回滚结论仍来自自动故障
+注入，不能把这次成功路径表述成所有真实故障都已在硬件上复现。整段验收在同一 TTY
+执行，共由系统读取两次密码；中间双向迁移与 `set` 复用了有效 sudo timestamp，脚本在
+无密码 restart 门禁前主动清除 timestamp，最终 disable 因而再次授权。
 
 Tag 触发的 Release workflow 会在自身运行中执行跨平台 test/vet、race、最低 Go 版本、
 module/staticcheck/govulncheck、真实 OpenSSH，以及归档二进制的 macOS launchd E2E；只有
@@ -189,11 +194,11 @@ TUNLITE_REAL_SYSTEM_E2E=1 scripts/test-macos-system-e2e.sh v1.0.0-preview.1
 TUNLITE_REAL_SYSTEM_E2E=1 scripts/test-macos-system-e2e.sh v1.0.0-preview.1 dist
 ```
 
-脚本只使用 `it-system-e2e-*` 隔离身份和临时 `TUNLITE_HOME`，明确排除端口 19999；它只
-覆盖成功生命周期：USER→SYSTEM、root-owned plist、system domain、真实 `-L` 流量、
-system `set`、`restart`、`disable` 和 `remove`。SYSTEM→USER、权限缺失、目标冲突和迁移
-回滚仍由自动故障注入测试与另行人工矩阵覆盖，不能把本脚本单独视为完整 system Scope
-验收。
+脚本只使用 `it-system-e2e-*` 隔离身份和临时 `TUNLITE_HOME`，明确排除端口 19999；它
+覆盖成功生命周期：USER→SYSTEM→USER→SYSTEM、root/user-owned plist、对应 launchd
+domain、真实 `-L` 流量、system `set`、无密码 `restart`、`disable` 和 `remove`。权限缺失、
+目标冲突和迁移步骤失败后的回滚仍由自动故障注入测试覆盖，不能把本脚本单独视为每种
+故障都经过真机复现。
 
 为让 LaunchAgent 与 LaunchDaemon 都直接执行真实 `/usr/bin/ssh`，脚本会把本次随机本机
 sshd 的唯一 host key 临时追加到当前用户的 `~/.ssh/known_hosts`。它记录文件 inode 和
@@ -228,6 +233,7 @@ CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
 
 稳定 `v1.0.0` 前还必须在非容器 Linux 真机完成 systemd 用户服务的
 `add → start → stop → enable → status → restart → disable → remove`
-验收，并完成 Apple Silicon 真机验收；逐个平台解压产物并确认嵌入版本正确，核对
-`SHA256SUMS`，并完成 macOS user↔system Scope 的专用管理员真机迁移与回滚验收。这些未完成项不阻塞 `v1.0.0-preview.1`，但必须在 Preview Release Notes
+验收，并完成 Apple Silicon 的 user/system 真机验收；逐个平台解压产物并确认嵌入版本
+正确，核对 `SHA256SUMS`。Intel macOS 的 user↔system 专用管理员真机成功路径已经完成，
+自动故障注入继续作为迁移失败/回滚门禁。这些未完成项不阻塞 `v1.0.0-preview.1`，但必须在 Preview Release Notes
 和支持矩阵中明确写出，不能用“预计支持”替代事实。

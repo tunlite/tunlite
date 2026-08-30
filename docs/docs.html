@@ -128,9 +128,9 @@
           <div><span>macOS 12+ · Intel / Apple Silicon</span><code>macos</code><span>launchd user + system scopes; system requires admin</span></div>
           <div><span>Linux · x64</span><code>linux_x64</code><span>systemd user scope; system unsupported</span></div>
           <div><span>Linux · arm64</span><code>linux_arm64</code><span>systemd user scope; system unsupported</span></div>
-          <div><span>Windows</span><span>not published</span><span>deferred pending real validation</span></div>
+          <div><span>Windows</span><span>not published</span><span>repository compiles; Monitor rejects the platform before TUI; native lifecycle deferred</span></div>
         </div>
-        <p>Cross-compilation is not treated as platform validation. See the <a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">acceptance guide</a> for the exact hardware gates.</p>
+        <p>Cross-compilation is not treated as platform validation. On 2026-08-31, Intel macOS passed the final Universal 2 build check, LaunchAgent release E2E, and an isolated LaunchDaemon USER→SYSTEM→USER→SYSTEM success path with real <code>-L</code> traffic, system <code>set</code>, restart without sudo, disable/remove, and exact cleanup. Ubuntu 24.04 PID 1 systemd Docker E2E passed. Apple Silicon hardware and non-container Linux hosts remain unverified before stable v1.0.0. See the <a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">acceptance guide</a> for the exact hardware gates.</p>
       </section>
     </main>
   </div>

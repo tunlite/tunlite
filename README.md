@@ -190,8 +190,17 @@ V1 `ConnectionList` format; unsupported versions and unknown fields are rejected
   (systemd user scope; Linux system scope is not implemented).
 - Windows is not published in the first preview. It will enter the support matrix
   only after the per-Connection Task Scheduler adapter passes real Windows validation.
+  The repository still compiles for Windows, while Monitor rejects the unsupported
+  platform before attempting to enter its terminal UI.
 - External drivers and plugin installation are deliberately deferred until real user
   demand validates more than SSH.
+
+The current hardware evidence is intentionally narrower than the build matrix. On
+2026-08-31, Intel macOS passed the final Universal 2 build check, LaunchAgent release
+E2E, and an isolated LaunchDaemon USER→SYSTEM→USER→SYSTEM lifecycle with real `-L`
+traffic, system `set`, restart without sudo, disable/remove, and exact cleanup. Ubuntu
+24.04 PID 1 systemd Docker E2E has passed. Apple Silicon hardware and non-container
+Linux hosts remain unverified and are required before stable `v1.0.0`, not Preview.1.
 
 The Chinese [product design](docs/PROJECT_DIRECTION.md) and
 [architecture design](docs/ARCHITECTURE.md) are the two peer source documents for

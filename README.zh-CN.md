@@ -171,8 +171,16 @@ V1 配置写入 `~/.config/tunlite/connections.json`。`import` 只接受文档�
 - macOS 12+ 支持 launchd 用户与系统范围；Linux 使用 systemd 用户服务，尚未实现 Linux
   system Scope。
 - 首个预览版不发布 Windows 产物。每 Connection Task Scheduler Adapter 和 Windows
-  真机验证完整通过后，Windows 才进入正式支持矩阵。
+  真机验证完整通过后，Windows 才进入正式支持矩阵。仓库仍保持 Windows 全仓编译，
+  Monitor 会在尝试进入终端界面前明确返回平台不支持。
 - 外部 Driver 和插件安装延后到真实非 SSH 需求得到验证之后。
+
+当前硬件证据有意窄于构建矩阵。2026-08-31，Intel macOS 已通过最终 Universal 2 构建
+校验、LaunchAgent Release E2E，以及隔离 LaunchDaemon 的
+USER→SYSTEM→USER→SYSTEM、真实 `-L` 流量、system `set`、无 sudo restart、
+disable/remove 与精确清理；Ubuntu 24.04 PID 1 systemd Docker E2E 也已通过。
+Apple Silicon 真机和非容器 Linux 主机仍未验证，它们是稳定 `v1.0.0` 而非 Preview.1
+之前的硬门禁。
 
 [产品设计](docs/PROJECT_DIRECTION.md)和[架构设计](docs/ARCHITECTURE.md)是 v1 以及后续
 工作的两份并列主文档。

@@ -38,6 +38,11 @@ without destructive contract drift and the hardware validation in
   `enable --scope user|system` selection. macOS can migrate atomically between a
   LaunchAgent and privileged LaunchDaemon with rollback; Linux reports system Scope
   unsupported. Portable Connection declarations remain single and Scope-free.
+- A unified macOS system authorization boundary: only LaunchDaemon registration,
+  deregistration, and atomic definition replacement require root. System restart
+  verifies provider ownership, native definition consistency, and KeepAlive before
+  terminating the user-owned provider; it never falls back to sudo or privileged
+  launchctl mutation.
 - Zero-interruption `manage`/`unmanage` for compatible native SSH services, plus
   explicit two-way drift resolution through `resolve --use tunlite|system`.
 - Integer-versioned CLI response envelopes, versioned portable configuration,
@@ -77,6 +82,10 @@ without destructive contract drift and the hardware validation in
   version, state totals, terminal-width-aware columns, detail navigation through
   Enter/right and Esc/left, visible `starting`/`stopping`/`restarting` transitions,
   and `y` confirmation before stop or restart. Esc exits from the outer view.
+- Monitor isolates per-Connection observation failures and restores the terminal
+  before system disable asks `/usr/bin/sudo` to read a password. Windows keeps the
+  full repository compiling but rejects Monitor as unsupported before entering TUI
+  mode; no Windows artifact is published in this preview.
 - Human status views now explain lifecycle through `STATE`, `RUNS AS`, `ON LOGIN`,
   and `SCOPE` instead of exposing the internal `MODE` directly. Monitor keeps PID,
   uptime, and restart count as operational columns, drops the redundant `TYPE`
@@ -93,6 +102,13 @@ without destructive contract drift and the hardware validation in
 - Tag-triggered publication now owns its complete quality gate. The macOS native E2E
   verifies and runs the exact `dist` archive that is subsequently attested, uploaded,
   and published; it cannot pass by rebuilding a second unshipped artifact.
+- The final Universal 2 candidate passed Intel macOS LaunchAgent release E2E and an
+  isolated LaunchDaemon USER→SYSTEM→USER→SYSTEM success path with root/user plist
+  ownership and mode checks, real `-L` traffic, system `set`, restart after clearing
+  sudo credentials, disable/remove, and exact cleanup. Failure injection and rollback
+  remain automated-test evidence rather than claimed hardware reproductions. Ubuntu
+  24.04 PID 1 systemd Docker E2E also passed; Apple Silicon hardware and non-container
+  Linux remain unverified before stable `v1.0.0`.
 
 ### Deferred
 
