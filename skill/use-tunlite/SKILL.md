@@ -9,6 +9,7 @@ description: 当需要使用 Tunlite 创建、持久运行、检查或排查 SSH
 protocolVersion: 1
 commands: add,capabilities,check,disable,doctor,enable,export,help,import,list,logs,manage,monitor,remove,rename,resolve,restart,run,schema,set,start,status,stop,unmanage,validate,version
 exit-codes: 0,1,2,3,4,5
+scope: user,system
 serviceState: registered,absent,unsupported,unknown
 mode: stopped,foreground,background,persistent,unknown
 processState: inactive,starting,running,failed,unknown
@@ -16,7 +17,7 @@ health: unknown,healthy,unhealthy
 consistencyState: consistent,drifted,missing,blocked
 -->
 
-Tunlite v1 是单文件 CLI。每个持久 Connection 由操作系统的用户级服务独立托管，
+Tunlite v1 是单文件 CLI。每个持久 Connection 由操作系统的原生服务独立托管，
 服务直接运行系统 `ssh`。不存在管理全部连接的中心常驻进程。
 
 Agent 调用时始终使用 `--json --non-interactive`，依据退出码和结构化字段决策，
@@ -99,6 +100,10 @@ tunlite stop db-5432 --json --non-interactive
 # 进入后台长期运行，并立即启动
 tunlite enable db-5432 --json --non-interactive
 
+# 仅在 capabilities 明确支持且用户已明确授权时，迁移本机服务范围
+tunlite enable db-5432 --scope system --dry-run --json --non-interactive
+tunlite enable db-5432 --scope system --json --non-interactive
+
 # 查看一条或全部连接
 tunlite status db-5432 --json --non-interactive
 tunlite status --json --non-interactive
@@ -119,6 +124,13 @@ tunlite enable --all --json --non-interactive
 tunlite status --group work --json --non-interactive
 ```
 
+Scope 只属于本机 Service，不进入可导出的 Connection。新服务默认 `user`；不传
+`--scope` 时保留已有 Record 的范围。显式 Scope 只接受小写 `user` 或 `system`，不猜测
+别名，也没有 `migrate` 命令。Agent 请求 system 前必须确认
+`nativeServices.scope.supported` 包含 `system`，展示 dry-run 影响并取得用户明确同意。
+`--non-interactive` 绝不等待密码；只有用户已在 Tunlite 外部准备好非交互授权时才能执行，
+收到 `privilege_required` 后必须停止并请用户处理，不能索取密码或自动降低为 user。
+
 状态必须同时读取五个维度，不能只看进程是否存在：
 
 - `serviceState`: `registered`、`absent`、`unsupported`、`unknown`
@@ -126,9 +138,11 @@ tunlite status --group work --json --non-interactive
 - `processState`: `inactive`、`starting`、`running`、`failed`、`unknown`
 - `health`: `unknown`、`healthy`、`unhealthy`
 - `consistencyState`: `consistent`、`drifted`、`missing`、`blocked`
+- `scope`: `user`、`system`（本机运行归属，不是第六种 Mode）
 
 `processState: running` 不代表端点健康；`health: unknown` 也不等于失败。
-结合 `conditions[]`、`observedAt` 和五维状态判断。
+结合 `conditions[]`、`observedAt`、五维状态和独立 Scope 判断。State 与 lifecycle Artifact
+的 JSON 都必须包含 `scope`。
 
 ## 修改、删除和日志
 
@@ -201,6 +215,7 @@ tunlite schema ssh --output -
 `tunlite export --output -`，不要把原始配置误当作 CLI 响应。
 
 导入只接受 V1 `ConnectionList`，不会安装依赖、执行认证或启动 Connection。
+导入导出不携带 Scope，目标机器首次创建原生服务时仍默认 user。
 安装、更新和卸载不属于 Tunlite CLI；使用发行页或受支持的第三方包管理器，并在改变
 本机软件前取得用户同意。
 

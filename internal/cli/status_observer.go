@@ -108,7 +108,7 @@ func collectStatusResults(
 
 func statusObservationTimeout(connection string) serviceItemResult {
 	state := service.State{
-		Connection: connection, ServiceState: service.ServiceUnknown, Mode: service.ModeUnknown,
+		Connection: connection, Scope: service.ScopeUser, ServiceState: service.ServiceUnknown, Mode: service.ModeUnknown,
 		ProcessState: service.ProcessUnknown, Health: service.HealthUnknown,
 		ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
 		Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{{

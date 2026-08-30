@@ -41,7 +41,7 @@ func TestDriverBuildsDeterministicArgvPlan(t *testing.T) {
 	if !reflect.DeepEqual(got.Exec.Args[len(got.Exec.Args)-len(wantTail):], wantTail) {
 		t.Fatalf("unexpected argv tail:\n got: %#v\nwant: %#v", got.Exec.Args, wantTail)
 	}
-	if got.Mode != "direct" || got.Exec.Program != "ssh" || got.Lifecycle.Restart != "on-failure" {
+	if got.Mode != "direct" || got.Exec.Program != "ssh" || got.Lifecycle.Restart != "always" {
 		t.Fatalf("unexpected execution plan: %#v", got)
 	}
 	if !containsPair(got.Exec.Args, "-F", "none") {

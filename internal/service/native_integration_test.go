@@ -31,7 +31,7 @@ func TestRealNativeServiceLifecycle(t *testing.T) {
 	executionPlan := plan.ExecutionPlan{
 		Mode:      plan.ModeDirect,
 		Exec:      plan.Exec{Program: provider, Args: []string{}, Environment: map[string]string{}},
-		Lifecycle: plan.Lifecycle{Restart: "on-failure", RestartDelaySeconds: 1, StopTimeoutSeconds: 3},
+		Lifecycle: plan.Lifecycle{Restart: "always", RestartDelaySeconds: 1, StopTimeoutSeconds: 3},
 		Endpoints: []plan.Endpoint{}, HealthChecks: []plan.HealthCheck{}, Redactions: []plan.Redaction{},
 	}
 	artifact, err := adapter.Build(connection, executionPlan)
@@ -156,7 +156,7 @@ func waitForDifferentPID(t *testing.T, ctx context.Context, adapter Adapter, ref
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("waiting for provider restart after pid %d: last observation=%#v err=%v", previous, observation, err)
+			t.Fatalf("waiting for provider restart after pid %d: last observation=%#v err=%v\n%s", previous, observation, err, nativeServiceDiagnostics(adapter, reference))
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -187,7 +187,7 @@ func killNativeProvider(ctx context.Context, adapter Adapter, reference Referenc
 	switch current := adapter.(type) {
 	case *Launchd:
 		target := current.resolve(reference)
-		_, err := current.run(ctx, "kill", "SIGKILL", current.domainTarget(target.UnitName))
+		_, err := current.run(ctx, "kill", "SIGKILL", current.domainTarget(target.Scope, target.UnitName))
 		return err
 	case *Systemd:
 		target := current.resolve(reference)
@@ -228,7 +228,7 @@ func nativeServiceDiagnostics(adapter Adapter, reference Reference) string {
 		target := current.resolve(reference)
 		raw, readErr := os.ReadFile(target.Path)
 		fmt.Fprintf(&output, "plist %s: %s (%v)\n", target.Path, raw, readErr)
-		job, jobErr := current.run(ctx, "print", current.domainTarget(target.UnitName))
+		job, jobErr := current.run(ctx, "print", current.domainTarget(target.Scope, target.UnitName))
 		fmt.Fprintf(&output, "launchctl: %s (%v)\n", job, jobErr)
 		for _, path := range target.LogPaths {
 			info, statErr := os.Stat(path)

@@ -6,6 +6,7 @@
   "additionalProperties": true,
   "required": [
     "connection",
+    "scope",
     "serviceState",
     "mode",
     "processState",
@@ -18,6 +19,7 @@
   "properties": {
     "connection": { "type": "string" },
     "adapter": { "type": "string" },
+    "scope": { "enum": ["user", "system"] },
     "serviceState": { "enum": ["registered", "absent", "unsupported", "unknown"] },
     "mode": { "enum": ["stopped", "foreground", "background", "persistent", "unknown"] },
     "processState": { "enum": ["inactive", "starting", "running", "failed", "unknown"] },

@@ -47,7 +47,8 @@
 connection    db
 mode          <span class="accent">persistent</span>
 process       <span class="accent">running</span>
-consistency   <span class="accent">consistent</span></pre>
+consistency   <span class="accent">consistent</span>
+scope         <span class="accent">user</span></pre>
       </div>
     </section>
 
@@ -89,7 +90,7 @@ consistency   <span class="accent">consistent</span></pre>
         <article>
           <span class="card-number">03 / AUTOMATABLE</span>
           <h3>Designed for agents</h3>
-          <p>Automation-facing operations support stable JSON and non-interactive execution, with dry-run where mutation matters and per-item batch failures.</p>
+          <p>Automation-facing operations support stable JSON and non-interactive execution, with dry-run where mutation matters and per-item batch failures. Scope stays local to the machine.</p>
         </article>
       </div>
     </section>
@@ -104,6 +105,7 @@ consistency   <span class="accent">consistent</span></pre>
           <div><code>run</code><span><b>foreground</b> — owned by the current terminal</span></div>
           <div><code>start</code><span><b>background</b> — survives the terminal, not the next login</span></div>
           <div><code>enable</code><span><b>persistent</b> — starts now and returns on future logins</span></div>
+          <div><code>enable --scope system</code><span><b>macOS system</b> — explicit, privileged, and independent of login</span></div>
         </div>
       </div>
     </section>
@@ -128,13 +130,14 @@ consistency   <span class="accent">consistent</span></pre>
   <span class="accent">"protocolVersion"</span>: 1,
   "nativeServices": {
     "available": true,
-    "adapter": "launchd"
+    "adapter": "launchd",
+    "scope": { "default": "user", "supported": ["user", "system"] }
   }
 }</pre>
         <div>
           <ul class="check-list">
             <li>Embedded, versioned JSON Schemas</li>
-            <li>Five explicit state dimensions</li>
+            <li>Five explicit state dimensions plus local service scope</li>
             <li>Structured risks and recovery actions</li>
             <li>Official <code>use-tunlite</code> Agent Skill</li>
           </ul>

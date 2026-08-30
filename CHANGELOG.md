@@ -34,6 +34,10 @@ without destructive contract drift and the hardware validation in
 - Per-Connection systemd user services and launchd jobs with explicit foreground,
   temporary background, and cross-login modes; `add` materializes a stopped native
   service, while `start`/`stop` and `enable`/`disable` select how it runs.
+- Machine-local service Scope with `user` as the default and explicit
+  `enable --scope user|system` selection. macOS can migrate atomically between a
+  LaunchAgent and privileged LaunchDaemon with rollback; Linux reports system Scope
+  unsupported. Portable Connection declarations remain single and Scope-free.
 - Zero-interruption `manage`/`unmanage` for compatible native SSH services, plus
   explicit two-way drift resolution through `resolve --use tunlite|system`.
 - Integer-versioned CLI response envelopes, versioned portable configuration,
@@ -45,7 +49,8 @@ without destructive contract drift and the hardware validation in
   without presenting it as a supported v1 preview artifact.
 - Color-aware aligned status output, per-Connection status details, an environment
   and Connection `doctor`, and the foreground `tunlite monitor` dashboard. Human
-  output respects TTY detection and `NO_COLOR`; JSON never contains ANSI escapes.
+  output uses the scope-neutral `AUTOSTART`/`自动启动` label for both user and system
+  services, respects TTY detection and `NO_COLOR`; JSON never contains ANSI escapes.
 - Chinese and English help, lifecycle progress, status, and Monitor surfaces selected
   by `--lang`, `TUNLITE_LANG`, or the system locale. Several secondary command
   summaries and underlying tool errors remain English in this preview. Command names,
@@ -72,8 +77,8 @@ without destructive contract drift and the hardware validation in
   version, state totals, terminal-width-aware columns, detail navigation through
   Enter/right and Esc/left, visible `starting`/`stopping`/`restarting` transitions,
   and `y` confirmation before stop or restart. Esc exits from the outer view.
-- Human status views now explain lifecycle through `STATE`, `RUNS AS`, and
-  `ON LOGIN` instead of exposing the internal `MODE` directly. Monitor keeps PID,
+- Human status views now explain lifecycle through `STATE`, `RUNS AS`, `ON LOGIN`,
+  and `SCOPE` instead of exposing the internal `MODE` directly. Monitor keeps PID,
   uptime, and restart count as operational columns, drops the redundant `TYPE`
   column, and hides host/route details first on narrow terminals.
 - V1 exposes one optional `group`. `list`, `status`, and `monitor` group human output

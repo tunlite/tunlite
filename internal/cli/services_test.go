@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,171 @@ type fakeServiceAdapter struct {
 	discoverHook     func(int)
 	discoverCalls    int
 	discoverMu       sync.Mutex
+	inspectCalls     []service.Reference
+}
+
+type scopedFakeServiceAdapter struct {
+	*fakeServiceAdapter
+	preflightCalls int
+	stageCalls     int
+	failPreflight  int
+	failStage      int
+	privilegeError bool
+	stageErr       error
+	readOnlyChecks int
+}
+
+type systemOnlyFakeServiceAdapter struct{ *scopedFakeServiceAdapter }
+
+func (f *systemOnlyFakeServiceAdapter) Capabilities() service.Capabilities {
+	capabilities := f.scopedFakeServiceAdapter.Capabilities()
+	capabilities.UserScope = false
+	return capabilities
+}
+
+func (f *scopedFakeServiceAdapter) CheckScopeInstall(_ context.Context, target service.Artifact) error {
+	f.readOnlyChecks++
+	if current, exists := f.artifacts[target.Connection]; exists && service.NormalizeScope(current.Scope) == service.NormalizeScope(target.Scope) {
+		return &service.ScopeConflictError{UnitName: target.UnitName}
+	}
+	return nil
+}
+
+func (f *scopedFakeServiceAdapter) CheckScopeTransition(ctx context.Context, _ service.Reference, target service.Artifact) error {
+	return f.CheckScopeInstall(ctx, target)
+}
+
+type codedTestError struct {
+	code    string
+	message string
+}
+
+func (e codedTestError) Error() string { return e.message }
+func (e codedTestError) Code() string  { return e.code }
+
+type fakeScopeTransaction struct {
+	adapter     *fakeServiceAdapter
+	connection  string
+	artifact    service.Artifact
+	observation service.Observation
+	hadArtifact bool
+	hadObserve  bool
+	committed   bool
+}
+
+func (f *scopedFakeServiceAdapter) Capabilities() service.Capabilities {
+	return service.Capabilities{
+		Registration: true, Background: true, Persistence: true, Logs: true, Discovery: true,
+		UserScope: true, SystemScope: true,
+	}
+}
+
+func (f *scopedFakeServiceAdapter) TargetScoped(scope service.Scope, name string) (service.Artifact, error) {
+	artifact := f.Target(name)
+	artifact.Scope = service.NormalizeScope(scope)
+	if artifact.Scope == service.ScopeSystem {
+		artifact.Path = filepath.Join(f.root, name+".system.service")
+	}
+	return artifact, nil
+}
+
+func (f *scopedFakeServiceAdapter) BuildScoped(scope service.Scope, name string, value plan.ExecutionPlan) (service.Artifact, error) {
+	artifact, err := f.TargetScoped(scope, name)
+	if err != nil {
+		return service.Artifact{}, err
+	}
+	digest, err := service.PlanDigest(value)
+	if err != nil {
+		return service.Artifact{}, err
+	}
+	artifact.Plan, artifact.PlanDigest = value, digest
+	artifact.Content, err = json.Marshal(value)
+	return artifact, err
+}
+
+func (f *scopedFakeServiceAdapter) BuildBound(reference service.Reference, value plan.ExecutionPlan) (service.Artifact, error) {
+	artifact, err := f.BuildScoped(reference.Scope, reference.Connection, value)
+	if err != nil {
+		return service.Artifact{}, err
+	}
+	if reference.UnitName != "" {
+		artifact.UnitName = reference.UnitName
+	}
+	if reference.ArtifactPath != "" {
+		artifact.Path = reference.ArtifactPath
+	}
+	if len(reference.LogPaths) > 0 {
+		artifact.LogPaths = append([]string(nil), reference.LogPaths...)
+	}
+	return artifact, nil
+}
+
+func (f *scopedFakeServiceAdapter) preflight() error {
+	f.preflightCalls++
+	if f.privilegeError {
+		return &service.PrivilegeError{Operation: "test system scope", Cause: errors.New("authorization unavailable")}
+	}
+	if f.failPreflight > 0 && f.preflightCalls == f.failPreflight {
+		return &service.ScopeConflictError{UnitName: "fake-conflict"}
+	}
+	return nil
+}
+
+func (f *scopedFakeServiceAdapter) PreflightScopeInstall(context.Context, service.Artifact) error {
+	return f.preflight()
+}
+
+func (f *scopedFakeServiceAdapter) PreflightScopeTransition(context.Context, service.Reference, service.Artifact) error {
+	return f.preflight()
+}
+
+func (f *scopedFakeServiceAdapter) stage(target service.Artifact) (service.ScopeTransition, error) {
+	f.stageCalls++
+	if f.stageErr != nil {
+		return nil, f.stageErr
+	}
+	if f.failStage > 0 && f.stageCalls == f.failStage {
+		return nil, errors.New("injected scope stage failure")
+	}
+	transaction := &fakeScopeTransaction{adapter: f.fakeServiceAdapter, connection: target.Connection}
+	transaction.artifact, transaction.hadArtifact = f.artifacts[target.Connection]
+	transaction.observation, transaction.hadObserve = f.observed[target.Connection]
+	f.artifacts[target.Connection] = target
+	f.observed[target.Connection] = service.Observation{
+		Scope: target.Scope, Installed: true, AutoStart: true, ProcessState: service.ProcessRunning,
+		Artifact: append([]byte(nil), target.Content...), Platform: map[string]any{"unit": target.UnitName},
+	}
+	return transaction, nil
+}
+
+func (f *scopedFakeServiceAdapter) StageScopeInstall(_ context.Context, target service.Artifact, _ string, _ func(context.Context, service.Reference) error) (service.ScopeTransition, error) {
+	return f.stage(target)
+}
+
+func (f *scopedFakeServiceAdapter) StageScopeTransition(_ context.Context, _ service.Reference, target service.Artifact, _ string, _ func(context.Context, service.Reference) error) (service.ScopeTransition, error) {
+	return f.stage(target)
+}
+
+func (t *fakeScopeTransaction) Commit(context.Context) error {
+	t.committed = true
+	return nil
+}
+
+func (t *fakeScopeTransaction) Rollback(context.Context) error {
+	if t.committed {
+		return errors.New("scope transaction already committed")
+	}
+	if t.hadArtifact {
+		t.adapter.artifacts[t.connection] = t.artifact
+	} else {
+		delete(t.adapter.artifacts, t.connection)
+	}
+	if t.hadObserve {
+		t.adapter.observed[t.connection] = t.observation
+	} else {
+		delete(t.adapter.observed, t.connection)
+	}
+	return nil
 }
 
 func newFakeServiceAdapter(root string) *fakeServiceAdapter {
@@ -60,11 +226,627 @@ func (f *fakeServiceAdapter) fail(operation string) error {
 func (f *fakeServiceAdapter) Name() string { return "fake-native" }
 
 func (f *fakeServiceAdapter) Capabilities() service.Capabilities {
-	return service.Capabilities{Registration: true, Background: true, Persistence: true, Logs: true, Discovery: true}
+	return service.Capabilities{Registration: true, Background: true, Persistence: true, Logs: true, Discovery: true, UserScope: true}
+}
+
+func TestParseEnableScopeIsStrictAndCommandSpecific(t *testing.T) {
+	selection, err := parseServiceSelection("enable", []string{"db", "--scope", "system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.target != "db" || !selection.scopeSet || selection.scope != service.ScopeSystem {
+		t.Fatalf("selection=%+v", selection)
+	}
+	for _, test := range []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{name: "unknown", command: "enable", args: []string{"db", "--scope", "machine"}},
+		{name: "case alias", command: "enable", args: []string{"db", "--scope", "USER"}},
+		{name: "duplicate", command: "enable", args: []string{"db", "--scope", "user", "--scope", "system"}},
+		{name: "wrong command", command: "start", args: []string{"db", "--scope", "user"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseServiceSelection(test.command, test.args); err == nil {
+				t.Fatal("invalid scope usage was accepted")
+			}
+		})
+	}
+}
+
+func TestParseEnableScopeSupportsBatchSelectors(t *testing.T) {
+	for _, args := range [][]string{{"--group", "work", "--scope", "user"}, {"--all", "--scope", "system"}} {
+		selection, err := parseServiceSelection("enable", args)
+		if err != nil {
+			t.Fatalf("args=%v: %v", args, err)
+		}
+		if !selection.scopeSet {
+			t.Fatalf("args=%v selection=%+v", args, selection)
+		}
+	}
+}
+
+func TestUnsupportedBatchScopeFailsBeforeAnyMutation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	materializedBefore := len(adapter.materializeCalls)
+	code, out, _ := invoke(t, "enable", "--all", "--scope", "system", "--json", "--non-interactive")
+	if code == 0 || strings.Count(out, `"code":"scope_unsupported"`) != 2 {
+		t.Fatalf("enable exit=%d out=%s", code, out)
+	}
+	if len(adapter.materializeCalls) != materializedBefore || len(adapter.enableCalls) != 0 {
+		t.Fatalf("unsupported batch scope mutated services: materialize=%v enable=%v", adapter.materializeCalls, adapter.enableCalls)
+	}
+}
+
+func TestEnableDefaultsNewLocalServiceToUserScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	code, out, stderr := invoke(t, "enable", "db", "--json")
+	if code != 0 || stderr != "" || strings.Count(out, `"scope":"user"`) < 2 {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+}
+
+func TestEnableWithoutScopePreservesExistingRecordScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists {
+		t.Fatalf("record exists=%t err=%v", exists, err)
+	}
+	record.Scope = service.ScopeSystem
+	if err := records.Write(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	artifact := adapter.artifacts["db"]
+	artifact.Scope = service.ScopeSystem
+	adapter.artifacts["db"] = artifact
+	observation := adapter.observed["db"]
+	observation.Scope = service.ScopeSystem
+	adapter.observed["db"] = observation
+	code, out, stderr := invoke(t, "enable", "db", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"scope":"system"`) {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	record, _, err = records.Load("db")
+	if err != nil || record.Scope != service.ScopeSystem {
+		t.Fatalf("record=%+v err=%v", record, err)
+	}
+}
+
+func TestEnableMigratesScopeAndPersistsTargetArtifact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	code, out, stderr := invoke(t, "enable", "db", "--scope", "system", "--json", "--non-interactive")
+	if code != 0 || stderr != "" || strings.Count(out, `"scope":"system"`) < 2 {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	validateCLIResponseSchema(t, []byte(out))
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists || record.Scope != service.ScopeSystem || record.Mode != service.ModePersistent {
+		t.Fatalf("record=%+v exists=%t err=%v", record, exists, err)
+	}
+	if !strings.HasSuffix(record.ArtifactPath, ".system.service") || adapter.preflightCalls != 1 || adapter.stageCalls != 1 {
+		t.Fatalf("record=%+v preflight=%d stage=%d", record, adapter.preflightCalls, adapter.stageCalls)
+	}
+}
+
+func TestEnableSystemWithoutRecordInstallsDirectlyInSystemScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Remove("db"); err != nil {
+		t.Fatal(err)
+	}
+	delete(adapter.artifacts, "db")
+	delete(adapter.observed, "db")
+	code, out, stderr := invoke(t, "enable", "db", "--scope", "system", "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"scope":"system"`) {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists || record.Scope != service.ScopeSystem || adapter.stageCalls != 1 {
+		t.Fatalf("record=%+v exists=%t stage=%d err=%v", record, exists, adapter.stageCalls, err)
+	}
+}
+
+func TestScopeBatchPreflightFailurePerformsZeroWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), failPreflight: 2}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	code, out, _ := invoke(t, "enable", "--all", "--scope", "system", "--json", "--non-interactive")
+	if code == 0 || strings.Count(out, `"code":"scope_conflict"`) != 2 || adapter.stageCalls != 0 {
+		t.Fatalf("enable exit=%d out=%s preflight=%d stage=%d", code, out, adapter.preflightCalls, adapter.stageCalls)
+	}
+	records, _ := serviceRecordStore()
+	for _, name := range []string{"one", "two"} {
+		record, _, err := records.Load(name)
+		if err != nil || record.Scope != service.ScopeUser {
+			t.Fatalf("%s record=%+v err=%v", name, record, err)
+		}
+	}
+}
+
+func TestScopeBatchRuntimeFailureIsPartialAndKeepsEarlierSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), failStage: 2}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	code, out, _ := invoke(t, "enable", "--all", "--scope", "system", "--json", "--non-interactive")
+	if code != exitPartial || !strings.Contains(out, `"outcome":"partial"`) || !strings.Contains(out, `"code":"scope_transition_failed"`) {
+		t.Fatalf("enable exit=%d out=%s", code, out)
+	}
+	records, _ := serviceRecordStore()
+	one, _, _ := records.Load("one")
+	two, _, _ := records.Load("two")
+	if one.Scope != service.ScopeSystem || two.Scope != service.ScopeUser {
+		t.Fatalf("one=%+v two=%+v", one, two)
+	}
+}
+
+func TestNonInteractiveScopePrivilegeFailureUsesStableCodeAndDoesNotStage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), privilegeError: true}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	code, out, _ := invoke(t, "enable", "db", "--scope", "system", "--json", "--non-interactive")
+	if code == 0 || !strings.Contains(out, `"code":"privilege_required"`) || adapter.stageCalls != 0 {
+		t.Fatalf("enable exit=%d out=%s stage=%d", code, out, adapter.stageCalls)
+	}
+}
+
+func TestScopeDryRunPlansTargetWithoutPrivilegePreflight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), privilegeError: true}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	code, out, stderr := invoke(t, "enable", "db", "--scope", "system", "--dry-run", "--json", "--non-interactive")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"outcome":"planned"`) || !strings.Contains(out, `"artifact":{"adapter":"fake-native","scope":"system"`) {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	validateCLIResponseSchema(t, []byte(out))
+	if adapter.readOnlyChecks == 0 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 {
+		t.Fatalf("dry-run checks=%d privileged-preflight=%d stage=%d", adapter.readOnlyChecks, adapter.preflightCalls, adapter.stageCalls)
+	}
+}
+
+func TestSystemOnlyAdapterAddRemainsForegroundOnlyAndCapabilitiesHaveNoFalseDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	base := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	adapter := &systemOnlyFakeServiceAdapter{scopedFakeServiceAdapter: base}
+	invoke := useFakeServiceAdapter(t, adapter)
+	code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"code":"foreground_only"`) {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := records.Load("db"); err != nil || exists {
+		t.Fatalf("foreground-only add created native record: exists=%v err=%v", exists, err)
+	}
+	code, out, stderr = invoke(t, "capabilities", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"default":null`) || !strings.Contains(out, `"supported":["system"]`) {
+		t.Fatalf("capabilities exit=%d out=%s err=%s", code, out, stderr)
+	}
+}
+
+func TestSystemOnlyAdapterStatusFindsSystemOrphan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	base := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	adapter := &systemOnlyFakeServiceAdapter{scopedFakeServiceAdapter: base}
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, _ := invoke(t, "add", "db", "-D", "1080", "me@example.com", "--json"); code != 0 {
+		t.Fatalf("add exit=%d out=%s", code, out)
+	}
+	connectionStore, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := connectionStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, connection := configstore.Find(&document, "db")
+	artifact, err := buildServiceArtifactScoped(context.Background(), adapter, *connection, service.ScopeSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.artifacts["db"] = artifact
+	base.observed["db"] = service.Observation{Scope: service.ScopeSystem, Installed: true, AutoStart: true, ProcessState: service.ProcessRunning}
+	code, out, stderr := invoke(t, "status", "db", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"scope":"system"`) || !strings.Contains(out, `"code":"scope_conflict"`) ||
+		!strings.Contains(out, "native service fake-db exists") {
+		t.Fatalf("status exit=%d out=%s err=%s", code, out, stderr)
+	}
+}
+
+func TestStatusPreservesScopeMismatchConditionCode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, _ := invoke(t, "add", "db", "-D", "1080", "me@example.com", "--json"); code != 0 {
+		t.Fatalf("add exit=%d out=%s", code, out)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Remove("db"); err != nil {
+		t.Fatal(err)
+	}
+	delete(adapter.artifacts, "db")
+	delete(adapter.observed, "db")
+	adapter.failures["inspect"] = []error{&service.ScopeMismatchError{
+		UnitName: "fake-db", Expected: service.ScopeUser, Actual: service.ScopeSystem,
+	}}
+	code, out, stderr := invoke(t, "status", "db", "--json")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"code":"scope_mismatch"`) ||
+		!strings.Contains(out, `"scope":"system"`) || !strings.Contains(out, `"serviceState":"registered"`) ||
+		strings.Contains(out, `"code":"service_manager_unavailable"`) {
+		t.Fatalf("status exit=%d out=%s err=%s", code, out, stderr)
+	}
+}
+
+func TestScopeMigrationPreservesRenamedNativeServiceBinding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "old", "-D", "1080", "me@example.com")
+	_, _, _ = invoke(t, "rename", "old", "new")
+	code, out, stderr := invoke(t, "enable", "new", "--scope", "system", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	records, _ := serviceRecordStore()
+	record, exists, err := records.Load("new")
+	if err != nil || !exists || record.Connection != "new" || record.ServiceKey != "old" || record.Scope != service.ScopeSystem {
+		t.Fatalf("record=%+v exists=%t err=%v", record, exists, err)
+	}
+}
+
+func TestInteractiveScopeMigrationShowsImpactAndIntermediateProgress(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	terminal := true
+	var out, stderr bytes.Buffer
+	budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
+	code := runContextWithOptions(context.Background(), []string{"enable", "db", "--scope", "system"}, IO{
+		Out: &out, Err: &stderr, Terminal: &terminal,
+	}, options{
+		serviceAdapter: func() (service.Adapter, error) { return adapter, nil }, lifecycleBudget: &budget,
+	})
+	if code != 0 {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out.String(), stderr.String())
+	}
+	for _, expected := range []string{`Moving "db" from USER scope to SYSTEM scope`, "requires administrator authorization", "Target service is healthy", "scope change complete"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("progress missing %q: %s", expected, stderr.String())
+		}
+	}
+}
+
+func TestResolveTunliteFailureRestoresSystemArtifactModeAndRecord(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	if code, out, stderr := invoke(t, "enable", "db", "--scope", "system", "--json"); code != 0 {
+		t.Fatalf("enable exit=%d out=%s err=%s", code, out, stderr)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRecord, exists, err := records.Load("db")
+	if err != nil || !exists {
+		t.Fatalf("load record exists=%t err=%v", exists, err)
+	}
+	wantRecord.LogPaths = append([]string(nil), wantRecord.LogPaths...)
+	wantArtifact := adapter.artifacts["db"]
+	wantArtifact.Content = append([]byte(nil), wantArtifact.Content...)
+	wantArtifact.LogPaths = append([]string(nil), wantArtifact.LogPaths...)
+	wantObservation := adapter.observed["db"]
+
+	config, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Update(context.Background(), func(document *configstore.Document) error {
+		_, connection := configstore.Find(document, "db")
+		if connection == nil {
+			return errors.New("db declaration disappeared")
+		}
+		connection.Spec.Config = bytes.Replace(connection.Spec.Config, []byte("1080"), []byte("1081"), 1)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.failures["enable"] = []error{errors.New("injected resolve mode failure")}
+	if code, out, _ := invoke(t, "resolve", "db", "--use", "tunlite", "--json"); code == 0 || !strings.Contains(out, "injected resolve mode failure") {
+		t.Fatalf("resolve exit=%d out=%s", code, out)
+	}
+
+	gotRecord, exists, err := records.Load("db")
+	if err != nil || !exists || !reflect.DeepEqual(gotRecord, wantRecord) {
+		t.Fatalf("record was not restored exactly: got=%#v want=%#v exists=%t err=%v", gotRecord, wantRecord, exists, err)
+	}
+	gotArtifact := adapter.artifacts["db"]
+	if gotArtifact.Scope != service.ScopeSystem || gotArtifact.UnitName != wantArtifact.UnitName || gotArtifact.Path != wantArtifact.Path ||
+		gotArtifact.PlanDigest != wantArtifact.PlanDigest || !bytes.Equal(gotArtifact.Content, wantArtifact.Content) ||
+		!reflect.DeepEqual(gotArtifact.LogPaths, wantArtifact.LogPaths) {
+		t.Fatalf("system artifact was not restored: got=%#v want=%#v", gotArtifact, wantArtifact)
+	}
+	gotObservation := adapter.observed["db"]
+	if gotObservation.Scope != service.ScopeSystem || gotObservation.AutoStart != wantObservation.AutoStart || gotObservation.ProcessState != wantObservation.ProcessState ||
+		!bytes.Equal(gotObservation.Artifact, wantObservation.Artifact) {
+		t.Fatalf("system mode was not restored: got=%#v want=%#v", gotObservation, wantObservation)
+	}
+}
+
+func TestBuildBoundRejectsSystemRecordOnSystemdBeforeBuilding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	fake := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, fake)
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	config, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, connection := configstore.Find(&document, "db")
+	if connection == nil {
+		t.Fatal("db declaration is missing")
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := records.Load("db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Scope = service.ScopeSystem
+	_, err = buildBoundServiceArtifact(context.Background(), service.NewSystemd(t.TempDir(), nil), *connection, &record)
+	var unsupported *service.UnsupportedScopeError
+	if !errors.As(err, &unsupported) || unsupported.Code() != "scope_unsupported" {
+		t.Fatalf("systemd system record was not rejected with typed error: %T %v", err, err)
+	}
+}
+
+func TestUnsupportedRecordScopeIsRejectedByEveryCLIPathWithoutMutation(t *testing.T) {
+	commands := []struct {
+		name string
+		args []string
+		mode string
+	}{
+		{name: "start", args: []string{"start", "db", "--json"}, mode: service.ModeStopped},
+		{name: "stop", args: []string{"stop", "db", "--json"}, mode: service.ModeBackground},
+		{name: "enable", args: []string{"enable", "db", "--json"}, mode: service.ModeStopped},
+		{name: "disable", args: []string{"disable", "db", "--json"}, mode: service.ModePersistent},
+		{name: "restart", args: []string{"restart", "db", "--json"}, mode: service.ModePersistent},
+		{name: "status", args: []string{"status", "db", "--json"}, mode: service.ModeStopped},
+		{name: "logs", args: []string{"logs", "db", "--json"}, mode: service.ModeStopped},
+		{name: "run", args: []string{"run", "db", "--dry-run", "--json"}, mode: service.ModeStopped},
+		{name: "resolve", args: []string{"resolve", "db", "--use", "tunlite", "--json"}, mode: service.ModeStopped},
+		{name: "remove", args: []string{"remove", "db", "--json"}, mode: service.ModeStopped},
+		{name: "rename", args: []string{"rename", "db", "renamed", "--json"}, mode: service.ModeStopped},
+	}
+	for _, test := range commands {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("TUNLITE_HOME", home)
+			setTestSSH(t)
+			adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+			invoke := useFakeServiceAdapter(t, adapter)
+			if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+				t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+			}
+			records, err := serviceRecordStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, _, err := records.Load("db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.Scope, record.Mode = service.ScopeSystem, test.mode
+			if err := records.Write(context.Background(), record); err != nil {
+				t.Fatal(err)
+			}
+			artifactBefore := adapter.artifacts["db"]
+			observationBefore := adapter.observed["db"]
+			callsBefore := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls), adapter.inspectCallCount()}
+
+			code, out, stderr := invoke(t, test.args...)
+			if test.name == "status" {
+				if code != 0 || !strings.Contains(out, `"code":"scope_unsupported"`) {
+					t.Fatalf("%s exit=%d out=%s err=%s", test.name, code, out, stderr)
+				}
+			} else if code == 0 || !strings.Contains(out, `"code":"scope_unsupported"`) {
+				t.Fatalf("%s exit=%d out=%s err=%s", test.name, code, out, stderr)
+			}
+			gotRecord, exists, err := records.Load("db")
+			if err != nil || !exists || !reflect.DeepEqual(gotRecord, record) {
+				t.Fatalf("%s changed record: got=%#v want=%#v exists=%t err=%v", test.name, gotRecord, record, exists, err)
+			}
+			if _, exists, _ := records.Load("renamed"); exists {
+				t.Fatalf("%s copied an unsupported record", test.name)
+			}
+			callsAfter := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls), adapter.inspectCallCount()}
+			if !reflect.DeepEqual(callsAfter, callsBefore) || !reflect.DeepEqual(adapter.artifacts["db"], artifactBefore) || !reflect.DeepEqual(adapter.observed["db"], observationBefore) {
+				t.Fatalf("%s mutated native state: calls=%v want=%v", test.name, callsAfter, callsBefore)
+			}
+		})
+	}
+}
+
+func TestTypedScopeFailuresPreserveHighRiskCodes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	adapter.stageErr = codedTestError{code: "recovery_blocked", message: "injected compensation failure"}
+	code, out, _ := invoke(t, "enable", "db", "--scope", "system", "--json")
+	if code == 0 || !strings.Contains(out, `"code":"recovery_blocked"`) || !strings.Contains(out, `"riskLevel":"high"`) ||
+		!strings.Contains(out, `"type":"resolve_connection"`) {
+		t.Fatalf("typed stage recovery was downgraded: exit=%d out=%s", code, out)
+	}
+}
+
+func TestSystemScopeOrphanIsVisibleBlockedAndResolvedInPlace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Remove("db"); err != nil {
+		t.Fatal(err)
+	}
+	artifact := adapter.artifacts["db"]
+	artifact.Scope = service.ScopeSystem
+	artifact.Path = filepath.Join(home, "native", "db.system.service")
+	adapter.artifacts["db"] = artifact
+	observation := adapter.observed["db"]
+	observation.Scope = service.ScopeSystem
+	adapter.observed["db"] = observation
+	materializedBefore := len(adapter.materializeCalls)
+
+	if code, out, stderr := invoke(t, "status", "db", "--json"); code != 0 ||
+		!strings.Contains(out, `"scope":"system"`) || !strings.Contains(out, `"serviceState":"registered"`) ||
+		!strings.Contains(out, `"code":"scope_conflict"`) || strings.Contains(out, `"serviceState":"absent"`) || stderr != "" {
+		t.Fatalf("status hid system orphan: exit=%d out=%s err=%s", code, out, stderr)
+	}
+	if code, out, _ := invoke(t, "remove", "db", "--json"); code == 0 ||
+		!strings.Contains(out, `"code":"scope_conflict"`) || !strings.Contains(out, `"riskLevel":"high"`) {
+		t.Fatalf("remove crossed system orphan: exit=%d out=%s", code, out)
+	}
+	if code, out, _ := invoke(t, "enable", "db", "--scope", "system", "--json"); code == 0 ||
+		!strings.Contains(out, `"code":"scope_conflict"`) || !strings.Contains(out, `"riskLevel":"high"`) || adapter.stageCalls != 0 {
+		t.Fatalf("enable overwrote system orphan: exit=%d out=%s stage=%d", code, out, adapter.stageCalls)
+	}
+	if len(adapter.materializeCalls) != materializedBefore || adapter.artifacts["db"].Scope != service.ScopeSystem {
+		t.Fatal("status/remove mutated the system orphan")
+	}
+	if code, out, stderr := invoke(t, "resolve", "db", "--use", "tunlite", "--json"); code != 0 {
+		t.Fatalf("resolve exit=%d out=%s err=%s", code, out, stderr)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists || record.Scope != service.ScopeSystem || record.ArtifactPath != artifact.Path || adapter.artifacts["db"].Scope != service.ScopeSystem {
+		t.Fatalf("resolve did not adopt system orphan in place: record=%#v exists=%t err=%v artifact=%#v", record, exists, err, adapter.artifacts["db"])
+	}
+}
+
+func TestAddCannotCreateUserTwinOfSystemScopeOrphan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	artifact, err := adapter.TargetScoped(service.ScopeSystem, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.Content = []byte("existing system definition")
+	adapter.artifacts["db"] = artifact
+	adapter.observed["db"] = service.Observation{Scope: service.ScopeSystem, Installed: true, ProcessState: service.ProcessInactive, Artifact: append([]byte(nil), artifact.Content...), Platform: map[string]any{}}
+	invoke := useFakeServiceAdapter(t, adapter)
+	code, out, _ := invoke(t, "add", "db", "-D", "1080", "--json", "me@example.com")
+	if code == 0 || !strings.Contains(out, `"code":"scope_conflict"`) || !strings.Contains(out, `"riskLevel":"high"`) ||
+		!strings.Contains(out, `"type":"manage_native_service"`) {
+		t.Fatalf("add created a user twin: exit=%d out=%s", code, out)
+	}
+	config, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := config.Load()
+	if err != nil || len(document.Items) != 0 || adapter.artifacts["db"].Scope != service.ScopeSystem {
+		t.Fatalf("failed add changed state: items=%v err=%v artifact=%#v", document.Items, err, adapter.artifacts["db"])
+	}
 }
 
 func (f *fakeServiceAdapter) Target(name string) service.Artifact {
-	return service.Artifact{Connection: name, Adapter: f.Name(), UnitName: "fake-" + name, Path: filepath.Join(f.root, name+".service")}
+	return service.Artifact{Connection: name, Adapter: f.Name(), Scope: service.ScopeUser, UnitName: "fake-" + name, Path: filepath.Join(f.root, name+".service")}
 }
 
 func (f *fakeServiceAdapter) Build(name string, value plan.ExecutionPlan) (service.Artifact, error) {
@@ -89,6 +871,7 @@ func (f *fakeServiceAdapter) BuildBound(reference service.Reference, value plan.
 	if reference.ArtifactPath != "" {
 		artifact.Path = reference.ArtifactPath
 	}
+	artifact.Scope = service.NormalizeScope(reference.Scope)
 	if len(reference.LogPaths) > 0 {
 		artifact.LogPaths = append([]string(nil), reference.LogPaths...)
 	}
@@ -102,6 +885,7 @@ func (f *fakeServiceAdapter) Materialize(_ context.Context, artifact service.Art
 	}
 	f.artifacts[artifact.Connection] = artifact
 	observation := f.observed[artifact.Connection]
+	observation.Scope = service.NormalizeScope(artifact.Scope)
 	observation.Installed = true
 	observation.Artifact = append([]byte(nil), artifact.Content...)
 	if observation.ProcessState == "" {
@@ -122,7 +906,7 @@ func (f *fakeServiceAdapter) Remove(_ context.Context, reference service.Referen
 		return err
 	}
 	delete(f.artifacts, reference.Connection)
-	f.observed[reference.Connection] = service.Observation{ProcessState: service.ProcessInactive, Platform: map[string]any{}}
+	f.observed[reference.Connection] = service.Observation{Scope: service.NormalizeScope(reference.Scope), ProcessState: service.ProcessInactive, Platform: map[string]any{}}
 	if hook := f.removeHook; hook != nil {
 		f.removeHook = nil
 		hook(reference)
@@ -180,10 +964,22 @@ func (f *fakeServiceAdapter) Restart(_ context.Context, reference service.Refere
 }
 
 func (f *fakeServiceAdapter) Inspect(_ context.Context, reference service.Reference) (service.Observation, error) {
+	f.discoverMu.Lock()
+	f.inspectCalls = append(f.inspectCalls, reference)
+	f.discoverMu.Unlock()
+	if err := f.fail("inspect"); err != nil {
+		return service.Observation{Scope: service.NormalizeScope(reference.Scope), ProcessState: service.ProcessUnknown}, err
+	}
 	if observation, ok := f.observed[reference.Connection]; ok {
 		return observation, nil
 	}
-	return service.Observation{ProcessState: service.ProcessInactive, Platform: map[string]any{}}, nil
+	return service.Observation{Scope: service.NormalizeScope(reference.Scope), ProcessState: service.ProcessInactive, Platform: map[string]any{}}, nil
+}
+
+func (f *fakeServiceAdapter) inspectCallCount() int {
+	f.discoverMu.Lock()
+	defer f.discoverMu.Unlock()
+	return len(f.inspectCalls)
 }
 
 func (f *fakeServiceAdapter) Logs(ctx context.Context, reference service.Reference, _ int, follow bool, streams service.Streams) error {
@@ -236,7 +1032,7 @@ func replaceDirectoryWithBlocker(path string) (func() error, error) {
 	}, nil
 }
 
-func useFakeServiceAdapter(t *testing.T, adapter *fakeServiceAdapter) func(*testing.T, ...string) (int, string, string) {
+func useFakeServiceAdapter(t *testing.T, adapter service.Adapter) func(*testing.T, ...string) (int, string, string) {
 	t.Helper()
 	return func(t *testing.T, args ...string) (int, string, string) {
 		t.Helper()
@@ -526,6 +1322,68 @@ func TestAllServiceAndOwnershipDryRunsAreReadOnly(t *testing.T) {
 	}
 }
 
+type launchdDryRunRunner struct {
+	mutations int
+	disabled  bool
+}
+
+func (r *launchdDryRunRunner) Run(_ context.Context, _ string, args []string, _ service.Streams) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	switch args[0] {
+	case "print-disabled":
+		if r.disabled {
+			return []byte(`"dev.tunlite.connection.db" => true`), nil
+		}
+		return []byte("disabled services = {}\n"), nil
+	case "print":
+		return []byte("Could not find service"), errors.New("not found")
+	default:
+		r.mutations++
+		if args[0] == "disable" {
+			r.disabled = true
+		}
+		if args[0] == "enable" {
+			r.disabled = false
+		}
+		return nil, nil
+	}
+}
+
+func TestLaunchdStartDryRunDoesNotCreateActiveMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	agentDir := filepath.Join(home, "LaunchAgents")
+	logDir := filepath.Join(home, "logs")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchdDryRunRunner{}
+	adapter := service.NewLaunchd(agentDir, logDir, 501, runner)
+	invoke := func(args ...string) (int, string, string) {
+		var out, stderr bytes.Buffer
+		code := runContext(context.Background(), args, IO{Out: &out, Err: &stderr}, func() (service.Adapter, error) { return adapter, nil })
+		return code, out.String(), stderr.String()
+	}
+	if code, out, stderr := invoke("add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	baseline := snapshotFiles(t, logDir)
+	baselineMutations := runner.mutations
+	if code, out, stderr := invoke("start", "db", "--dry-run", "--json"); code != 0 {
+		t.Fatalf("dry-run start exit=%d out=%s err=%s", code, out, stderr)
+	}
+	assertFileSnapshot(t, baseline, snapshotFiles(t, logDir))
+	if runner.mutations != baselineMutations {
+		t.Fatalf("dry-run invoked %d launchctl mutations", runner.mutations-baselineMutations)
+	}
+}
+
 func TestRemoveRejectsRunningAndDeletesStoppedService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
@@ -760,6 +1618,36 @@ func TestUnmanagePreservesServiceAndManageImportsItAgain(t *testing.T) {
 	}
 	if code, out, stderr := invoke(t, "manage", "fake-db", "--name", "db", "--json", "--non-interactive"); code != 0 {
 		t.Fatalf("manage exit=%d out=%s err=%s", code, out, stderr)
+	}
+}
+
+func TestManagePreservesDiscoveredServiceScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	_, _, _ = invoke(t, "start", "db")
+	if code, out, stderr := invoke(t, "unmanage", "db", "--json"); code != 0 {
+		t.Fatalf("unmanage exit=%d out=%s err=%s", code, out, stderr)
+	}
+	artifact := adapter.artifacts["db"]
+	artifact.Scope = service.ScopeSystem
+	adapter.artifacts["db"] = artifact
+	observation := adapter.observed["db"]
+	observation.Scope = service.ScopeSystem
+	adapter.observed["db"] = observation
+	if code, out, stderr := invoke(t, "manage", "fake-db", "--name", "db", "--json", "--non-interactive"); code != 0 {
+		t.Fatalf("manage exit=%d out=%s err=%s", code, out, stderr)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists || record.Scope != service.ScopeSystem {
+		t.Fatalf("record=%+v exists=%t err=%v", record, exists, err)
 	}
 }
 
@@ -1456,7 +2344,7 @@ func TestLifecycleStateWriteFailureRestoresPreviousMode(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	result := enableService(canceled, adapter, records, *connection, store.Path(), options{})
+	result := enableService(canceled, adapter, records, *connection, store.Path(), "", false, IO{}, options{})
 	if result.Error == nil || result.Error.Code != "service_state_write_failed" {
 		t.Fatalf("enable unexpectedly succeeded: %#v", result)
 	}
@@ -1589,11 +2477,11 @@ func TestStatusReportsAnUnboundNativeIdentityInsteadOfCallingItAbsent(t *testing
 	}
 	code, out, stderr := invoke(t, "status", "db", "--json")
 	if code != 0 || stderr != "" || !strings.Contains(out, `"serviceState":"registered"`) ||
-		!strings.Contains(out, `"consistencyState":"blocked"`) || !strings.Contains(out, `"code":"service_binding_missing"`) ||
+		!strings.Contains(out, `"consistencyState":"blocked"`) || !strings.Contains(out, `"code":"scope_conflict"`) ||
 		!strings.Contains(out, `"type":"resolve_connection"`) {
 		t.Fatalf("status exit=%d out=%s err=%s", code, out, stderr)
 	}
-	if code, out, _ := invoke(t, "remove", "db", "--json"); code == 0 || !strings.Contains(out, "management binding is missing") {
+	if code, out, _ := invoke(t, "remove", "db", "--json"); code == 0 || !strings.Contains(out, `"code":"scope_conflict"`) {
 		t.Fatalf("remove bypassed the missing binding: exit=%d out=%s", code, out)
 	}
 	if code, out, stderr := invoke(t, "resolve", "db", "--use", "tunlite", "--json"); code != 0 {

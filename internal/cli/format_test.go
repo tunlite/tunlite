@@ -32,7 +32,7 @@ func fixtureStatusRow(t *testing.T) statusRow {
 			Spec: core.ConnectionSpec{Driver: sshdriver.ID, Config: raw},
 		},
 		state: service.State{
-			Connection: "db", ServiceState: service.ServiceRegistered, Mode: service.ModeBackground,
+			Connection: "db", Scope: service.ScopeUser, ServiceState: service.ServiceRegistered, Mode: service.ModeBackground,
 			ProcessState: service.ProcessRunning, Health: service.HealthHealthy,
 			ConsistencyState: service.ConsistencyConsistent, Platform: map[string]any{"pid": "42"},
 			Conditions: []core.Condition{},
@@ -43,7 +43,7 @@ func fixtureStatusRow(t *testing.T) statusRow {
 func TestStatusTableRestoresAlignedHumanOutputAndColor(t *testing.T) {
 	lines := renderStatusTable([]statusRow{fixtureStatusRow(t)}, true, languageEnglish)
 	text := strings.Join(lines, "\n")
-	for _, column := range []string{"NAME", "STATE", "RUNS AS", "ON LOGIN", "PID", "UP", "RESTARTS", "HOST", "ROUTE"} {
+	for _, column := range []string{"NAME", "STATE", "RUNS AS", "AUTOSTART", "SCOPE", "PID", "UP", "RESTARTS", "HOST", "ROUTE"} {
 		if !strings.Contains(text, column) {
 			t.Fatalf("missing %s column:\n%s", column, text)
 		}
@@ -68,7 +68,7 @@ func TestStatusTableHasNoANSIWhenColorDisabled(t *testing.T) {
 
 func TestStatusDetailIncludesConnectionAndRuntimeDimensions(t *testing.T) {
 	text := strings.Join(renderStatusDetail(fixtureStatusRow(t), false, languageEnglish), "\n")
-	for _, expected := range []string{"db", "state", "running", "runs as", "background", "on login", "listen", "target", "restarts"} {
+	for _, expected := range []string{"db", "state", "running", "runs as", "background", "autostart", "scope", "USER", "listen", "target", "restarts"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("detail missing %q:\n%s", expected, text)
 		}
@@ -77,13 +77,27 @@ func TestStatusDetailIncludesConnectionAndRuntimeDimensions(t *testing.T) {
 
 func TestChineseStatusUsesPlainLanguageAndKeepsOperationalColumns(t *testing.T) {
 	text := strings.Join(renderStatusTable([]statusRow{fixtureStatusRow(t)}, false, languageChinese), "\n")
-	for _, expected := range []string{"名称", "状态", "正常运行", "运行位置", "系统后台", "登录自启", "PID", "已运行", "重启次数", "SSH 目标", "转发"} {
+	for _, expected := range []string{"名称", "状态", "正常运行", "运行位置", "系统后台", "自动启动", "范围", "用户", "PID", "已运行", "重启次数", "SSH 目标", "转发"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("Chinese status missing %q:\n%s", expected, text)
 		}
 	}
 	if strings.Contains(text, "MODE") || strings.Contains(text, "TYPE") {
 		t.Fatalf("Chinese status exposed internal columns:\n%s", text)
+	}
+}
+
+func TestStatusAndMonitorRenderSystemScopeInBothLanguages(t *testing.T) {
+	row := fixtureStatusRow(t)
+	row.state.Scope = service.ScopeSystem
+	english := strings.Join(renderStatusTable([]statusRow{row}, false, languageEnglish), "\n") + "\n" +
+		strings.Join(renderMonitorTable([]statusRow{row}, 0, 0, 1, 120, false, languageEnglish), "\n")
+	if !strings.Contains(english, "SCOPE") || !strings.Contains(english, "SYSTEM") {
+		t.Fatalf("English system scope missing:\n%s", english)
+	}
+	chinese := strings.Join(renderStatusDetail(row, false, languageChinese), "\n")
+	if !strings.Contains(chinese, "范围") || !strings.Contains(chinese, "系统") {
+		t.Fatalf("Chinese system scope missing:\n%s", chinese)
 	}
 }
 
@@ -108,7 +122,7 @@ func TestChineseHelpExplainsLifecycleWithoutChangingCommands(t *testing.T) {
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("help exit=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
 	}
-	for _, expected := range []string{"运行方式", "start", "系统后台", "enable", "登录自启", "disable", "关闭登录自启"} {
+	for _, expected := range []string{"运行方式", "start", "系统后台", "enable", "自动启动", "disable", "关闭自动启动"} {
 		if !strings.Contains(out.String(), expected) {
 			t.Fatalf("Chinese help missing %q:\n%s", expected, out.String())
 		}
@@ -185,11 +199,11 @@ func TestMonitorRendersTransitionsAndDestructiveConfirmation(t *testing.T) {
 
 func TestMonitorPersistentStopAndRestartExplainTheirDifferentEffects(t *testing.T) {
 	persistentStop := monitorConfirmationText(monitorConfirmation{key: monitorStop, name: "db", persistent: true}, languageChinese)
-	if !strings.Contains(persistentStop, "关闭登录自启") || !strings.Contains(persistentStop, "重新登录后不会自动恢复") {
+	if !strings.Contains(persistentStop, "关闭自动启动") || !strings.Contains(persistentStop, "原生服务管理器自动恢复") {
 		t.Fatalf("persistent stop warning is incomplete: %q", persistentStop)
 	}
 	restart := monitorConfirmationText(monitorConfirmation{key: monitorRestart, name: "db"}, languageChinese)
-	if !strings.Contains(restart, "连接会短暂中断") || !strings.Contains(restart, "登录自启设置不变") {
+	if !strings.Contains(restart, "连接会短暂中断") || !strings.Contains(restart, "自动启动设置不变") {
 		t.Fatalf("restart warning is incomplete: %q", restart)
 	}
 }
@@ -201,7 +215,7 @@ func TestNarrowMonitorKeepsPIDUptimeAndRestartCount(t *testing.T) {
 			t.Fatalf("narrow monitor dropped %s:\n%s", expected, text)
 		}
 	}
-	for _, hidden := range []string{"HOST", "ROUTE", "RUNS AS", "ON LOGIN"} {
+	for _, hidden := range []string{"HOST", "ROUTE", "RUNS AS", "AUTOSTART", "SCOPE"} {
 		if strings.Contains(text, hidden) {
 			t.Fatalf("narrow monitor kept lower-priority %s:\n%s", hidden, text)
 		}
@@ -369,6 +383,22 @@ func TestInteractiveLongOperationsAnnounceProgressWithoutPollutingJSON(t *testin
 	renderCommandProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, []string{"start", "db"})
 	if stderr.Len() != 0 {
 		t.Fatalf("JSON progress leaked to stderr: %q", stderr.String())
+	}
+}
+
+func TestScopeMigrationProgressIsLocalizedAndJSONSafe(t *testing.T) {
+	terminal := true
+	var stderr bytes.Buffer
+	renderScopeChangeProgress(IO{Err: &stderr, Terminal: &terminal}, options{Language: languageChinese}, "db", "user", service.ScopeSystem, "start")
+	for _, expected := range []string{"正在把“db”从 USER 范围迁移到 SYSTEM 范围", "需要管理员授权", "不会等待或读取密码"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("Chinese progress missing %q: %s", expected, stderr.String())
+		}
+	}
+	stderr.Reset()
+	renderScopeChangeProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, "db", "user", service.ScopeSystem, "start")
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON scope progress leaked: %q", stderr.String())
 	}
 }
 

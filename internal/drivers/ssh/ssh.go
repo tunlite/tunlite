@@ -119,7 +119,7 @@ func (d *Driver) Plan(_ context.Context, connection core.Connection, options cor
 	return plan.ExecutionPlan{
 		Mode:      "direct",
 		Exec:      plan.Exec{Program: program, Args: args, Environment: map[string]string{}},
-		Lifecycle: plan.Lifecycle{Restart: "on-failure", RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
+		Lifecycle: plan.Lifecycle{Restart: "always", RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
 		Endpoints: endpoints, HealthChecks: healthChecks, Redactions: []plan.Redaction{},
 	}, nil
 }

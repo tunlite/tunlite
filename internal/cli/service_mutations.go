@@ -39,6 +39,16 @@ func previewNewConnectionService(ctx context.Context, connection core.Connection
 			Actions: []core.Action{},
 		}}, nil
 	}
+	if !service.SupportsScope(adapter, service.ScopeUser) {
+		if err := unboundNativeIdentityConflict(ctx, adapter, adapter.Target(connection.Metadata.Name)); err != nil {
+			return nil, err
+		}
+		return []condition{{
+			Code: "foreground_only", Severity: "warning", Connection: connection.Metadata.Name,
+			Message: "the user service domain is unavailable; this connection can only use `tunlite run` in the current session",
+			Actions: []core.Action{},
+		}}, nil
+	}
 	records, err := serviceRecordStore()
 	if err != nil {
 		return nil, err
@@ -53,6 +63,9 @@ func previewNewConnectionService(ctx context.Context, connection core.Connection
 	}
 	artifact, err := buildServiceArtifact(ctx, adapter, connection)
 	if err != nil {
+		return nil, err
+	}
+	if err := unboundNativeIdentityConflict(ctx, adapter, artifact); err != nil {
 		return nil, err
 	}
 	observation, err := adapter.Inspect(ctx, artifact.Reference())
@@ -114,7 +127,7 @@ func previewUpdatedConnectionService(ctx context.Context, before, after core.Con
 	return conditions, nil
 }
 
-func previewRenamedConnectionService(oldName, newName, declarationPath string) error {
+func previewRenamedConnectionService(oldName, newName, declarationPath string, opts options) error {
 	if oldName == newName {
 		return nil
 	}
@@ -132,6 +145,13 @@ func previewRenamedConnectionService(oldName, newName, declarationPath string) e
 	if err := ensureDeclarationOwner(record, declarationPath); err != nil {
 		return err
 	}
+	adapter, err := opts.newServiceAdapter()
+	if err != nil {
+		return err
+	}
+	if err := ensureRecordScopeSupported(adapter, record); err != nil {
+		return err
+	}
 	if _, exists, err := records.Load(newName); err != nil {
 		return err
 	} else if exists {
@@ -147,6 +167,18 @@ func stageNewConnectionService(ctx context.Context, connection core.Connection, 
 		mutation.conditions = []condition{{
 			Code: "foreground_only", Severity: "warning", Connection: connection.Metadata.Name,
 			Message: "no supported native service manager is available; this connection can only use `tunlite run`",
+			Actions: []core.Action{},
+		}}
+		return mutation, nil
+	}
+	if !service.SupportsScope(adapter, service.ScopeUser) {
+		if err := unboundNativeIdentityConflict(ctx, adapter, adapter.Target(connection.Metadata.Name)); err != nil {
+			return stagedServiceMutation{}, err
+		}
+		mutation := noServiceMutation()
+		mutation.conditions = []condition{{
+			Code: "foreground_only", Severity: "warning", Connection: connection.Metadata.Name,
+			Message: "the user service domain is unavailable; this connection can only use `tunlite run` in the current session",
 			Actions: []core.Action{},
 		}}
 		return mutation, nil
@@ -173,6 +205,9 @@ func stageNewConnectionService(ctx context.Context, connection core.Connection, 
 	}
 	artifact, err := buildServiceArtifact(ctx, adapter, connection)
 	if err != nil {
+		return fail(err)
+	}
+	if err := unboundNativeIdentityConflict(ctx, adapter, artifact); err != nil {
 		return fail(err)
 	}
 	observation, err := adapter.Inspect(ctx, artifact.Reference())
@@ -339,6 +374,9 @@ func stageRemovedConnectionService(ctx context.Context, connection core.Connecti
 		if buildErr != nil {
 			return fail(buildErr)
 		}
+		if conflictErr := unboundNativeIdentityConflict(ctx, adapter, artifact); conflictErr != nil {
+			return fail(conflictErr)
+		}
 		observation, inspectErr := adapter.Inspect(ctx, artifact.Reference())
 		if inspectErr != nil {
 			return fail(inspectErr)
@@ -420,6 +458,9 @@ func checkConnectionRemovable(ctx context.Context, connection core.Connection, d
 		if buildErr != nil {
 			return buildErr
 		}
+		if conflictErr := unboundNativeIdentityConflict(ctx, adapter, artifact); conflictErr != nil {
+			return conflictErr
+		}
 		observation, inspectErr := adapter.Inspect(ctx, artifact.Reference())
 		if inspectErr != nil {
 			return inspectErr
@@ -499,6 +540,13 @@ func stageRenamedConnectionService(ctx context.Context, oldName, newName, declar
 		}, nil
 	}
 	if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+		return fail(err)
+	}
+	adapter, err := opts.newServiceAdapter()
+	if err != nil {
+		return fail(err)
+	}
+	if err := ensureRecordScopeSupported(adapter, record); err != nil {
 		return fail(err)
 	}
 	if _, exists, err := records.Load(newName); err != nil {

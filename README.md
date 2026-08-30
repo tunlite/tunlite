@@ -64,6 +64,10 @@ tunlite enable db
 tunlite status db
 tunlite logs db --lines 100
 
+# On macOS, explicitly move the native service to system scope.
+# This requires administrator authorization and starts it independently of login.
+tunlite enable db --scope system
+
 # Use system OpenSSH tools for key setup, then check authentication.
 tunlite check db
 
@@ -108,6 +112,28 @@ tunlite CLI -> SSH Driver -> ExecutionPlan -> systemd/launchd -> ssh
 The generated service executes `ssh` directly. Once installed, a running connection
 does not depend on the Tunlite binary remaining present.
 
+### Service scope
+
+Each Connection declaration exists exactly once. Service scope is machine-local
+runtime ownership stored in the Service Record and native artifact; it is never
+exported as part of the portable Connection.
+
+- `tunlite enable <name>` defaults new services to `user` scope and preserves an
+  existing service's scope.
+- `tunlite enable <name> --scope user|system` explicitly selects or migrates scope;
+  there is no separate `migrate` command.
+- `user` needs no administrator access. On macOS, `system` maps to a launchd
+  LaunchDaemon and requires administrator authorization. Linux currently supports
+  systemd user services only and reports system scope as unsupported.
+- Tunlite never reads or prompts for an administrator password, including in an
+  interactive terminal. Establish authorization outside Tunlite, then retry.
+  `--non-interactive` additionally guarantees it never waits for input. System-scope automation must
+  arrange authorization outside Tunlite so its non-interactive privilege check can
+  succeed; otherwise the command fails with `privilege_required`.
+
+An interactive migration shows its source, destination, privileged impact, and
+progress. `--json` keeps stdout machine-only and reports stable per-item outcomes.
+
 ## Agent contract
 
 Use `--json --non-interactive` for automation and inspect runtime capabilities instead
@@ -124,8 +150,9 @@ before taking action. Raw Schemas and exported Connection documents are separate
 documents: they use `$schema` and `configVersion`, not the CLI response envelope.
 Use `schema --output -` or `export --output -` when raw JSON is required on stdout.
 
-State is intentionally five-dimensional: `serviceState`, `mode`, `processState`,
-`health`, and `consistencyState`. Batch operations return per-item results and use
+State has five independent observation dimensions: `serviceState`, `mode`,
+`processState`, `health`, and `consistencyState`. The separate `scope` field is
+`user` or `system` and identifies local service ownership. Batch operations return per-item results and use
 exit code `5` for partial failure. Public listeners and publish plans produce
 structured risk warnings; v1 does not maintain a separate approval state.
 
@@ -155,7 +182,8 @@ V1 `ConnectionList` format; unsupported versions and unknown fields are rejected
   logs, and drift repair.
 - A native single binary; installation, upgrades, and removal belong to its
   distribution channel.
-- Native persistent services on macOS 12+ (launchd) and Linux (systemd user services).
+- Native persistent services on macOS 12+ (launchd user and system scopes) and Linux
+  (systemd user scope; Linux system scope is not implemented).
 - Windows is not published in the first preview. It will enter the support matrix
   only after the per-Connection Task Scheduler adapter passes real Windows validation.
 - External drivers and plugin installation are deliberately deferred until real user

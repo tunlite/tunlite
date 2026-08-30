@@ -11,6 +11,20 @@ import (
 
 const CurrentRecordRevision = 1
 
+type Scope string
+
+const (
+	ScopeUser   Scope = "user"
+	ScopeSystem Scope = "system"
+)
+
+func NormalizeScope(scope Scope) Scope {
+	if scope == "" {
+		return ScopeUser
+	}
+	return scope
+}
+
 const (
 	ModeStopped    = "stopped"
 	ModeForeground = "foreground"
@@ -47,6 +61,7 @@ type Record struct {
 	Connection      string   `json:"connection"`
 	ServiceKey      string   `json:"serviceKey,omitempty"`
 	Adapter         string   `json:"adapter"`
+	Scope           Scope    `json:"scope"`
 	Mode            string   `json:"mode"`
 	ArtifactPath    string   `json:"artifactPath,omitempty"`
 	UnitName        string   `json:"unitName,omitempty"`
@@ -60,6 +75,7 @@ type Record struct {
 type Reference struct {
 	Connection   string
 	Adapter      string
+	Scope        Scope
 	UnitName     string
 	ArtifactPath string
 	LogPaths     []string
@@ -71,7 +87,7 @@ func (r Record) Reference() Reference {
 		serviceKey = r.Connection
 	}
 	return Reference{
-		Connection: serviceKey, Adapter: r.Adapter, UnitName: r.UnitName,
+		Connection: serviceKey, Adapter: r.Adapter, Scope: NormalizeScope(r.Scope), UnitName: r.UnitName,
 		ArtifactPath: r.ArtifactPath, LogPaths: append([]string(nil), r.LogPaths...),
 	}
 }
@@ -79,6 +95,7 @@ func (r Record) Reference() Reference {
 type Artifact struct {
 	Connection string
 	Adapter    string
+	Scope      Scope
 	UnitName   string
 	Path       string
 	Content    []byte
@@ -89,12 +106,13 @@ type Artifact struct {
 
 func (a Artifact) Reference() Reference {
 	return Reference{
-		Connection: a.Connection, Adapter: a.Adapter, UnitName: a.UnitName,
+		Connection: a.Connection, Adapter: a.Adapter, Scope: NormalizeScope(a.Scope), UnitName: a.UnitName,
 		ArtifactPath: a.Path, LogPaths: append([]string(nil), a.LogPaths...),
 	}
 }
 
 type Observation struct {
+	Scope        Scope
 	Installed    bool
 	AutoStart    bool
 	ProcessState string
@@ -111,6 +129,7 @@ type Candidate struct {
 type State struct {
 	Connection       string           `json:"connection"`
 	Adapter          string           `json:"adapter,omitempty"`
+	Scope            Scope            `json:"scope"`
 	ServiceState     string           `json:"serviceState"`
 	Mode             string           `json:"mode"`
 	ProcessState     string           `json:"processState"`
@@ -133,6 +152,8 @@ type Capabilities struct {
 	Persistence  bool `json:"persistence"`
 	Logs         bool `json:"logs"`
 	Discovery    bool `json:"discovery"`
+	UserScope    bool `json:"userScope"`
+	SystemScope  bool `json:"systemScope"`
 }
 
 // Adapter owns operating-system service mechanics only. It never parses a

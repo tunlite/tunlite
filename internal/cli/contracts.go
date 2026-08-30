@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 	"github.com/yuanyuanzijin/tunlite/schemas"
 )
 
@@ -155,13 +156,33 @@ func capabilities(args []string, streams IO, opts options) error {
 	nativeAdapter := ""
 	nativeCapabilities := map[string]bool{
 		"registration": false, "background": false, "persistence": false, "logs": false, "discovery": false,
+		"userScope": false, "systemScope": false,
 	}
+	supportedScopes := []string{}
+	var defaultScope any
+	nonInteractiveElevation := "unsupported"
 	if adapterErr == nil {
 		capabilities := adapter.Capabilities()
+		userScope := service.SupportsScope(adapter, service.ScopeUser)
+		systemScope := service.SupportsScope(adapter, service.ScopeSystem)
 		nativeAdapter = adapter.Name()
 		nativeCapabilities = map[string]bool{
 			"registration": capabilities.Registration, "background": capabilities.Background,
 			"persistence": capabilities.Persistence, "logs": capabilities.Logs, "discovery": capabilities.Discovery,
+			"userScope": userScope, "systemScope": systemScope,
+		}
+		if userScope {
+			supportedScopes = append(supportedScopes, string(service.ScopeUser))
+			defaultScope = string(service.ScopeUser)
+		}
+		if systemScope {
+			supportedScopes = append(supportedScopes, string(service.ScopeSystem))
+			if defaultScope == nil {
+				// Native service creation still requires an explicit --scope when
+				// the login domain is unavailable; advertise no implicit default.
+				defaultScope = nil
+			}
+			nonInteractiveElevation = "external"
 		}
 	}
 	result := map[string]any{
@@ -172,8 +193,15 @@ func capabilities(args []string, streams IO, opts options) error {
 		"executionModes": []string{"direct"},
 		"nativeServices": map[string]any{
 			"available": nativeAvailable, "adapter": nativeAdapter, "capabilities": nativeCapabilities,
+			"scope": map[string]any{
+				"default": defaultScope, "supported": supportedScopes,
+				"migration":               nativeCapabilities["userScope"] && nativeCapabilities["systemScope"],
+				"systemRequiresElevation": nativeCapabilities["systemScope"],
+				"nonInteractiveElevation": nonInteractiveElevation,
+			},
 			"adapters": map[string]string{"linux": "systemd", "darwin": "launchd"},
 			"stateDimensions": map[string][]string{
+				"scope":            {"user", "system"},
 				"serviceState":     {"registered", "absent", "unsupported", "unknown"},
 				"mode":             {"stopped", "foreground", "background", "persistent", "unknown"},
 				"processState":     {"inactive", "starting", "running", "failed", "unknown"},
@@ -227,11 +255,11 @@ func help(args []string, streams IO, opts options) error {
 		fmt.Fprintln(streams.Out, "机器接口：schema, capabilities, version")
 		fmt.Fprintln(streams.Out, "\n运行方式：")
 		fmt.Fprintln(streams.Out, "  run      在当前终端运行，退出终端即停止")
-		fmt.Fprintln(streams.Out, "  start    在系统后台运行，但下次登录不自动启动")
-		fmt.Fprintln(streams.Out, "  stop     停止临时后台连接，不修改登录自启设置")
-		fmt.Fprintln(streams.Out, "  enable   在系统后台运行，并开启登录自启")
-		fmt.Fprintln(streams.Out, "  disable  停止连接，并关闭登录自启")
-		fmt.Fprintln(streams.Out, "  restart  重启连接，不修改登录自启设置")
+		fmt.Fprintln(streams.Out, "  start    在系统后台运行，但不设置自动启动")
+		fmt.Fprintln(streams.Out, "  stop     停止临时后台连接，不修改自动启动设置")
+		fmt.Fprintln(streams.Out, "  enable   在系统后台运行，并开启自动启动")
+		fmt.Fprintln(streams.Out, "  disable  停止连接，并关闭自动启动")
+		fmt.Fprintln(streams.Out, "  restart  重启连接，不修改自动启动设置")
 		fmt.Fprintln(streams.Out, "\n语言：--lang en|zh-CN；也可设置 TUNLITE_LANG，默认跟随系统语言。")
 		return nil
 	}
@@ -247,11 +275,11 @@ func help(args []string, streams IO, opts options) error {
 	fmt.Fprintln(streams.Out, "machine contract: schema, capabilities, version")
 	fmt.Fprintln(streams.Out, "\nruntime model:")
 	fmt.Fprintln(streams.Out, "  run      current terminal; stops when the terminal exits")
-	fmt.Fprintln(streams.Out, "  start    system background; does not start on the next login")
+	fmt.Fprintln(streams.Out, "  start    system background; does not enable autostart")
 	fmt.Fprintln(streams.Out, "  stop     stops a temporary background connection")
-	fmt.Fprintln(streams.Out, "  enable   system background and starts on future logins")
-	fmt.Fprintln(streams.Out, "  disable  stops the connection and turns off on-login")
-	fmt.Fprintln(streams.Out, "  restart  restarts without changing on-login")
+	fmt.Fprintln(streams.Out, "  enable   system background with autostart enabled")
+	fmt.Fprintln(streams.Out, "  disable  stops the connection and turns off autostart")
+	fmt.Fprintln(streams.Out, "  restart  restarts without changing autostart")
 	fmt.Fprintln(streams.Out, "\nlanguage: --lang en|zh-CN, or TUNLITE_LANG; defaults to the system locale")
 	return nil
 }
@@ -272,6 +300,13 @@ func commandHelp(command string, streams IO, opts options) error {
 		usage = "用法：" + strings.TrimPrefix(usage, "usage: ")
 	}
 	fmt.Fprintln(streams.Out, usage)
+	if command == "enable" {
+		if isChinese(opts.Language) {
+			fmt.Fprintln(streams.Out, "范围：新服务默认 user；已有服务不传 --scope 时保留原范围。system 是否可用以 capabilities 为准，并可能需要管理员授权。")
+		} else {
+			fmt.Fprintln(streams.Out, "Scope: new services default to user; existing services keep their scope unless --scope is set. Check capabilities for system support; administrator authorization may be required.")
+		}
+	}
 	return nil
 }
 
@@ -284,7 +319,7 @@ func commandUsage(command string) string {
 		"run":          "usage: tunlite run <name>",
 		"start":        "usage: tunlite start <name> | --group <group> | --all",
 		"stop":         "usage: tunlite stop <name> | --group <group> | --all",
-		"enable":       "usage: tunlite enable <name> | --group <group> | --all",
+		"enable":       "usage: tunlite enable (<name> | --group <group> | --all) [--scope user|system]",
 		"disable":      "usage: tunlite disable <name> | --group <group> | --all",
 		"restart":      "usage: tunlite restart <name> | --group <group> | --all",
 		"status":       "usage: tunlite status [<name> | --group <group> | --all]",

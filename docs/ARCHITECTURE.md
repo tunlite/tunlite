@@ -42,7 +42,8 @@ V1 正式交付：
 - 单文件 Go Core/CLI。
 - 内置 SSH Driver，支持 `-L`、`-R`、`-D`、多 Forward、Jump Host、Identity File。
 - 前台、临时后台和长期后台三种运行行为，以及停止状态。
-- Linux systemd 用户服务和 macOS launchd LaunchAgent。
+- Linux systemd 用户服务，以及 macOS launchd LaunchAgent/LaunchDaemon；Linux system
+  Scope 尚未实现，不能由通用 Scope 模型推导为已支持。
 - 声明管理、原生服务管理、接管与交还、漂移解决、状态、日志、检查和诊断。
 - 版本化 JSON 配置、机器输出、Schema、退出码、风险提示和 Agent Skill。
 
@@ -219,7 +220,7 @@ core + plan -X-> cli / app / ssh / systemd / launchd
 
 - `configVersion` 只在文档根节点出现一次，不能在每个 Connection 中重复。
 - Core 校验公共 Envelope，Driver 校验 `spec.config`。
-- Connection 声明不保存 foreground、background、persistent、PID 或平台服务名。
+- Connection 声明不保存 foreground、background、persistent、Scope、PID 或平台服务名。
 - `metadata.group` 是可选的单值业务归属，同时用于状态分组、过滤和批量操作。它不是
   独立资源，不拥有生命周期、嵌套、共享配置或独立管理命令。
 - 配置读取必须拒绝未知字段、混合版本和不支持的更高版本。
@@ -278,6 +279,7 @@ recordRevision
 connection
 serviceKey
 adapter
+scope
 mode
 artifactPath / unitName / logPaths
 planDigest / baselineDigest
@@ -345,7 +347,7 @@ Adapter 最小能力：
 
 | 能力 | 责任 |
 | --- | --- |
-| `Capabilities` | 如实报告注册、后台、长期运行、日志和发现能力 |
+| `Capabilities` | 如实报告注册、后台、长期运行、日志、发现，以及 user/system Scope 能力 |
 | `Build` | 把 ExecutionPlan 编译成平台原生产物 |
 | `Materialize` | 原子写入默认停止的服务定义 |
 | `Remove` | 停止并删除 Tunlite 受管服务定义 |
@@ -354,14 +356,20 @@ Adapter 最小能力：
 | `Inspect` | 返回安装、自动启动、进程、产物和平台观测 |
 | `Logs` | 读取确定的原生日志源 |
 | `Discover` | 显式枚举可接管候选 |
+| `Plan/PreflightScopeTransition` | 无副作用规划并预检 Scope 迁移、提权和双域冲突 |
+| `StageScopeTransition` | 停旧、装新、启新并观测，返回显式 Commit/Rollback 事务 |
+| `Preflight/StageScopeInstall` | 无 Record 时直接在显式目标 Scope 预检并事务安装，不隐式落 user |
 
 所有 Adapter 必须通过同一套契约测试：原子生成、幂等操作、状态转换、失败回滚、日志、
 候选发现、不中断接管和交还后独立运行。
 
 平台约束：
 
-- systemd 使用用户级 unit，不假设所有 Linux 都有可用的 `systemctl --user`。
-- launchd 使用用户 LaunchAgent，不静默创建需要管理员权限的 LaunchDaemon。
+- systemd 当前只使用用户级 unit，不假设所有 Linux 都有可用的 `systemctl --user`，也不
+  宣称 Linux system Scope 已实现。
+- launchd 默认使用用户 LaunchAgent；只有显式 `enable --scope system` 才能迁移为
+  LaunchDaemon。写入 `/Library/LaunchDaemons` 和 system domain 操作必须走单次 `sudo -n`
+  非交互提权，不能等待或读取密码。
 - 没有合格 Adapter 的平台只支持 `run`，后台命令返回结构化“不支持”。
 - Windows 支持只能在 Task Scheduler Adapter 完成真实 Windows 验证后宣布。
 
@@ -374,7 +382,7 @@ Adapter 最小能力：
 | `stopped` | 当前未运行 | 否 | 否 |
 | `foreground` | `run` 前台运行 | 是 | 否 |
 | `background` | 原生服务临时后台运行 | 否 | 否 |
-| `persistent` | 原生服务后台运行并在用户会话恢复 | 否 | 是 |
+| `persistent` | 原生服务后台长期运行；user 随用户会话恢复，system 随系统恢复 | 否 | 是 |
 
 命令状态转换：
 
@@ -392,6 +400,27 @@ Adapter 最小能力：
 对已处于目标状态的操作必须幂等成功，不能把重复命令当作异常。无法证明当前状态时，
 修改命令应拒绝并引导 `status`/`resolve`，不能猜测。
 
+### 10.1 Service Scope
+
+Scope 与 Mode 正交：Mode 回答“当前怎样运行”，Scope 回答“原生服务归当前用户还是系统
+管理”。公共枚举只有 `user` 与 `system`，不接受大小写别名或平台术语别名。
+
+- 新建本机 Service Record 默认 `user`；已有 Record 未显式指定 Scope 时必须保留原值。
+- 只有 `enable <name>|--group|--all --scope user|system` 接受显式 Scope；不增加 `migrate`
+  一级命令，也不让 `start/disable/restart` 改变 Scope。
+- 显式 Scope 与 Record 不同时执行迁移。批量命令必须先完成全部规划与权限预检，任一项
+  不支持或无法授权时不得先迁移其他项。进入执行后每个 Connection 是独立事务并负责
+  自身回滚；第 N 项运行时失败沿用批量 partial/退出码 5，不逆向迁回已经成功的前 N-1
+  项，因为跨连接二次迁移会制造额外中断与新的补偿失败面。
+- 迁移事务顺序是预检、停止源服务、安装目标服务、按 `enable` 语义把目标进入
+  `persistent`、稳定观测目标、原子更新 Record、删除源服务。成功后 Mode 必须是
+  `persistent`；任一步失败才补偿回原 Scope 和原 Mode。无法完整补偿时返回高风险
+  `recovery_blocked`，不能把两个可能活跃的定义伪装成普通迁移失败。
+- 进入或离开 `system` 可能需要管理员权限。`--non-interactive` 强保证不等待密码，只允许
+  外部预置的非交互授权；缺少授权稳定返回 `privilege_required`。
+- Connection 声明只有一份且不含 Scope。Scope 只存在于本机 Record、Artifact、State 和
+  Capability，export/import 不复制系统归属。
+
 `foreground` 由仍存活的运行锁观测，不写入 Service Record。系统原生进程状态始终来自
 Adapter，而不是 Tunlite 保存的 PID。
 
@@ -405,6 +434,7 @@ mode              stopped | foreground | background | persistent | unknown
 processState      inactive | starting | running | failed | unknown
 health            unknown | healthy | unhealthy
 consistencyState  consistent | drifted | missing | blocked
+scope             user | system
 ```
 
 这些维度不能合并成一个枚举。例如：
@@ -415,7 +445,8 @@ consistencyState  consistent | drifted | missing | blocked
 - absent + missing：声明存在，但原生服务定义丢失。
 - unknown + blocked：当前平台或权限无法可靠观察，不能伪造结果。
 
-每个状态结果还必须包含 `observedAt`、endpoints、结构化 conditions 和可选 platform
+前五项是相互独立的观测维度；`scope` 是正交的本机运行归属。每个状态结果还必须包含
+`observedAt`、endpoints、结构化 conditions 和可选 platform
 信息。平台原始字段只能作为附加诊断，不能替代公共维度。
 
 ## 12. 核心数据流
@@ -620,6 +651,8 @@ V1 公开命令只允许来自产品设计列出的 26 个一级命令。命令�
 - 修改命令支持确定性的 `--dry-run` 和幂等执行。
 - 错误包含稳定 code、message、riskLevel 和结构化 actions。
 - 批量操作逐项报告 succeeded/failed/skipped，并以明确退出码表达部分失败。
+- `enable --scope` 的迁移在人工终端显示来源、目标、权限影响和中间进度；JSON stdout
+  不得混入进度文本。
 - JSON 字段兼容扩展；删除、改名或改变语义必须提升对应契约版本。
 - 每种稳定响应不能只依赖一个 `results: any[]` 的宽泛 Envelope；应有可验证的命令结果
   Schema 或受约束的联合类型。
@@ -630,7 +663,7 @@ V1 公开命令只允许来自产品设计列出的 26 个一级命令。命令�
 - 默认使用清楚的颜色、对齐表格和可操作提示。
 - 非 TTY、`--json` 或 `NO_COLOR` 时不输出 ANSI。
 - `monitor` 是唯一实时交互总览；不增加 `watch` 别名。
-- 人类界面用“状态 / 运行位置 / 登录自启”解释生命周期；`foreground`、`background`、
+- 人类界面用“状态 / 运行位置 / 自动启动 / 范围”解释生命周期；`foreground`、`background`、
   `persistent` 保留为机器契约值，不要求新手先理解内部模式。
 - 帮助、生命周期进度、状态与 Monitor 首批支持中文和英文；语言优先级为 `--lang`、
   `TUNLITE_LANG`、系统语言、英文回退。当前 Preview 的部分次要命令结果与底层错误仍为
@@ -755,7 +788,7 @@ V1 Preview 发布必须满足：
 | 测试现状 | 单元、黑盒、契约、竞态、真实 OpenSSH 三类转发、Intel Mac launchd，以及 Ubuntu 24.04 PID 1 systemd 容器的崩溃恢复、跨重启、CLI 移除/替换、漂移和接管/交还零中断已通过 | 补非容器 Linux、Apple Silicon、真实登录会话和长期运行门禁 |
 
 已经基本符合且应保留：无中心 daemon、逐 Connection 原生服务、direct 服务不依赖
-Tunlite 二进制、通用 ExecutionPlan、内置 SSH Driver 边界、四种运行方式、五维状态、
+Tunlite 二进制、通用 ExecutionPlan、内置 SSH Driver 边界、四种运行方式、五维状态与独立 Scope、
 日志/monitor/doctor/颜色基础和显式 manage/unmanage/resolve。
 
 ## 23. 实施顺序

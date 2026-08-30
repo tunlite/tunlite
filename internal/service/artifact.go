@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
@@ -48,6 +49,22 @@ func decodeEmbeddedPlan(value string) (plan.ExecutionPlan, error) {
 		return plan.ExecutionPlan{}, err
 	}
 	return result, nil
+}
+
+// mergeEmbeddedPlan keeps the native service body authoritative for fields it
+// can express. The embedded comment only restores provider-neutral metadata
+// that launchd/systemd cannot encode, and cannot override what will execute.
+func mergeEmbeddedPlan(native, embedded plan.ExecutionPlan) (plan.ExecutionPlan, error) {
+	if native.Mode != embedded.Mode || !reflect.DeepEqual(native.Exec, embedded.Exec) || native.Lifecycle != embedded.Lifecycle {
+		return plan.ExecutionPlan{}, errors.New("embedded execution plan conflicts with native service body")
+	}
+	native.Endpoints = append([]plan.Endpoint(nil), embedded.Endpoints...)
+	native.HealthChecks = append([]plan.HealthCheck(nil), embedded.HealthChecks...)
+	native.Redactions = append([]plan.Redaction(nil), embedded.Redactions...)
+	if err := plan.Validate(native); err != nil {
+		return plan.ExecutionPlan{}, err
+	}
+	return native, nil
 }
 
 func installArtifact(path string, content []byte) ([]byte, bool, error) {
