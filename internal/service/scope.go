@@ -7,6 +7,10 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
 
+// MacOSSudoProgram is the trusted system sudo used for every macOS privilege
+// boundary. Callers must not resolve sudo through PATH.
+const MacOSSudoProgram = "/usr/bin/sudo"
+
 type UnsupportedScopeError struct {
 	Adapter string
 	Scope   Scope

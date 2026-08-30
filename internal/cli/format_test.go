@@ -390,10 +390,13 @@ func TestScopeMigrationProgressIsLocalizedAndJSONSafe(t *testing.T) {
 	terminal := true
 	var stderr bytes.Buffer
 	renderScopeChangeProgress(IO{Err: &stderr, Terminal: &terminal}, options{Language: languageChinese}, "db", "user", service.ScopeSystem, "start")
-	for _, expected := range []string{"正在把“db”从 USER 范围迁移到 SYSTEM 范围", "需要管理员授权", "不会等待或读取密码"} {
+	for _, expected := range []string{"正在把“db”从 USER 范围迁移到 SYSTEM 范围"} {
 		if !strings.Contains(stderr.String(), expected) {
 			t.Fatalf("Chinese progress missing %q: %s", expected, stderr.String())
 		}
+	}
+	if strings.Contains(stderr.String(), "不会等待或读取密码") {
+		t.Fatalf("scope progress retained obsolete password guidance: %s", stderr.String())
 	}
 	stderr.Reset()
 	renderScopeChangeProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, "db", "user", service.ScopeSystem, "start")

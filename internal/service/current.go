@@ -47,11 +47,11 @@ func newCurrent(
 		}
 		return NewSystemd(filepath.Join(base, "systemd", "user"), runner), nil
 	case "darwin":
-		if _, err := lookPath("launchctl"); err != nil {
+		if _, err := lookPath(launchctlProgram); err != nil {
 			return nil, errors.New("launchd services are unavailable; use `tunlite run` on this platform")
 		}
-		systemErr := probeServiceManager(runner, "launchctl", []string{"print", "system"})
-		userErr := probeServiceManager(runner, "launchctl", []string{"print", "gui/" + strconv.Itoa(uid)})
+		systemErr := probeServiceManager(runner, launchctlProgram, []string{"print", "system"})
+		userErr := probeServiceManager(runner, launchctlProgram, []string{"print", "gui/" + strconv.Itoa(uid)})
 		if systemErr != nil && userErr != nil {
 			return nil, fmt.Errorf("launchd services are unavailable (system: %v; user: %v); use `tunlite run` on this platform", systemErr, userErr)
 		}

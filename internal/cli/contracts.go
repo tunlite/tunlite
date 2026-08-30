@@ -160,6 +160,7 @@ func capabilities(args []string, streams IO, opts options) error {
 	}
 	supportedScopes := []string{}
 	var defaultScope any
+	interactiveElevation := "unsupported"
 	nonInteractiveElevation := "unsupported"
 	if adapterErr == nil {
 		capabilities := adapter.Capabilities()
@@ -183,6 +184,7 @@ func capabilities(args []string, streams IO, opts options) error {
 				defaultScope = nil
 			}
 			nonInteractiveElevation = "external"
+			interactiveElevation = "sudo-v"
 		}
 	}
 	result := map[string]any{
@@ -197,6 +199,7 @@ func capabilities(args []string, streams IO, opts options) error {
 				"default": defaultScope, "supported": supportedScopes,
 				"migration":               nativeCapabilities["userScope"] && nativeCapabilities["systemScope"],
 				"systemRequiresElevation": nativeCapabilities["systemScope"],
+				"interactiveElevation":    interactiveElevation,
 				"nonInteractiveElevation": nonInteractiveElevation,
 			},
 			"adapters": map[string]string{"linux": "systemd", "darwin": "launchd"},
@@ -302,9 +305,9 @@ func commandHelp(command string, streams IO, opts options) error {
 	fmt.Fprintln(streams.Out, usage)
 	if command == "enable" {
 		if isChinese(opts.Language) {
-			fmt.Fprintln(streams.Out, "范围：新服务默认 user；已有服务不传 --scope 时保留原范围。system 是否可用以 capabilities 为准，并可能需要管理员授权。")
+			fmt.Fprintln(streams.Out, "范围：新服务默认 user；已有服务不传 --scope 时保留原范围。system 是否可用以 capabilities 为准。交互终端会在写入前通过 sudo 请求一次管理员授权；--non-interactive 只使用已预置授权。")
 		} else {
-			fmt.Fprintln(streams.Out, "Scope: new services default to user; existing services keep their scope unless --scope is set. Check capabilities for system support; administrator authorization may be required.")
+			fmt.Fprintln(streams.Out, "Scope: new services default to user; existing services keep their scope unless --scope is set. Check capabilities for system support. Before a change enters or leaves system scope, an interactive terminal requests administrator authorization once through sudo; --non-interactive only uses pre-authorized access.")
 		}
 	}
 	return nil

@@ -39,13 +39,14 @@ type IO struct {
 }
 
 type options struct {
-	JSON              bool
-	NonInteractive    bool
-	DryRun            bool
-	Language          language
-	serviceAdapter    func() (service.Adapter, error)
-	lifecycleBudget   *lifecycleObservationBudget
-	lifecycleObserver *lifecycleObserver
+	JSON                bool
+	NonInteractive      bool
+	DryRun              bool
+	Language            language
+	serviceAdapter      func() (service.Adapter, error)
+	lifecycleBudget     *lifecycleObservationBudget
+	lifecycleObserver   *lifecycleObserver
+	privilegeAuthorizer privilegeAuthorizer
 }
 
 type exitError struct {
@@ -83,6 +84,10 @@ func runContextWithOptions(ctx context.Context, args []string, streams IO, overr
 	cleaned, opts, err := extractGlobalOptions(args)
 	opts.serviceAdapter = overrides.serviceAdapter
 	opts.lifecycleBudget = overrides.lifecycleBudget
+	opts.privilegeAuthorizer = overrides.privilegeAuthorizer
+	if opts.privilegeAuthorizer == nil {
+		opts.privilegeAuthorizer = newSudoPrivilegeAuthorizer()
+	}
 	if err != nil {
 		return renderError(streams, opts, usageError(err.Error()))
 	}

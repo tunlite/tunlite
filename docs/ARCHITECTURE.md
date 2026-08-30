@@ -368,8 +368,9 @@ Adapter 最小能力：
 - systemd 当前只使用用户级 unit，不假设所有 Linux 都有可用的 `systemctl --user`，也不
   宣称 Linux system Scope 已实现。
 - launchd 默认使用用户 LaunchAgent；只有显式 `enable --scope system` 才能迁移为
-  LaunchDaemon。写入 `/Library/LaunchDaemons` 和 system domain 操作必须走单次 `sudo -n`
-  非交互提权，不能等待或读取密码。
+  LaunchDaemon。CLI 在全部只读批量预检通过后、首次写入前，可在人工交互终端执行一次
+  非 shell 的 `sudo -v`；密码交互完全归 `sudo`，Tunlite 不读取或保存密码。Adapter 写入
+  `/Library/LaunchDaemons` 和操作 system domain 时仍必须逐次使用精确的 `sudo -n -- ...`。
 - 没有合格 Adapter 的平台只支持 `run`，后台命令返回结构化“不支持”。
 - Windows 支持只能在 Task Scheduler Adapter 完成真实 Windows 验证后宣布。
 
@@ -416,8 +417,9 @@ Scope 与 Mode 正交：Mode 回答“当前怎样运行”，Scope 回答“原
   `persistent`、稳定观测目标、原子更新 Record、删除源服务。成功后 Mode 必须是
   `persistent`；任一步失败才补偿回原 Scope 和原 Mode。无法完整补偿时返回高风险
   `recovery_blocked`，不能把两个可能活跃的定义伪装成普通迁移失败。
-- 进入或离开 `system` 可能需要管理员权限。`--non-interactive` 强保证不等待密码，只允许
-  外部预置的非交互授权；缺少授权稳定返回 `privilege_required`。
+- 进入或离开 `system` 需要管理员权限。交互终端在整批只读检查成功后、首次写入前只验证
+  一次授权；无 TTY 时快速失败。`--non-interactive` 不调用交互授权，只允许外部预置、
+  可由 `sudo -n` 验证的授权；缺少授权稳定返回 `privilege_required`。`--dry-run` 不授权。
 - Connection 声明只有一份且不含 Scope。Scope 只存在于本机 Record、Artifact、State 和
   Capability，export/import 不复制系统归属。
 

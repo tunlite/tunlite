@@ -346,6 +346,37 @@ Intel Mac 当前已完成自动化真机生命周期、日志、崩溃恢复和�
 自己的 SSH 目标、真实业务流量和重新登录恢复仍需按本文人工验收。M 系列 Mac 还需在
 Apple Silicon 真机完成安装、真实流量、生命周期和重新登录恢复，才能标记为平台通过。
 
+macOS 还应在不承担唯一远程登录通道的测试 Connection 上验收 system Scope。先从 user
+迁移到 system：
+
+```bash
+"$TL" enable "$TL_NAME" --scope system
+"$TL" status "$TL_NAME"
+curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+```
+
+Tunlite 应先显示“正在请求管理员授权”；随后由 `sudo` 显示自己的 `Password:` 提示。
+整批操作只应授权一次。成功后状态中的范围为 `SYSTEM`，服务在 LaunchDaemon 域运行。
+再迁回 user：
+
+```bash
+"$TL" enable "$TL_NAME" --scope user
+"$TL" status "$TL_NAME"
+```
+
+离开 system 同样需要删除系统定义，因此也会请求一次管理员授权；成功后范围恢复为
+`USER`。Tunlite 不读取或保存密码，密码输入完全属于 `sudo`。
+
+脚本不得依赖交互提示。以下命令在没有预置 sudo 授权时必须快速返回
+`privilege_required`，不能挂住；已经由运维预置授权时，平台层仍只执行精确的
+`sudo -n -- ...`：
+
+```bash
+"$TL" enable "$TL_NAME" --scope system --json --non-interactive
+```
+
+`--dry-run` 只检查和展示计划，不应显示密码提示、请求授权或修改 user/system 服务。
+
 ### Linux：systemd 用户服务
 
 先确认用户级 systemd 可用：

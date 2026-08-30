@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,10 +49,24 @@ type scopedFakeServiceAdapter struct {
 	preflightCalls int
 	stageCalls     int
 	failPreflight  int
+	preflightErr   error
 	failStage      int
 	privilegeError bool
 	stageErr       error
 	readOnlyChecks int
+	failReadOnly   int
+}
+
+type fakePrivilegeAuthorizer struct {
+	calls   int
+	err     error
+	request privilegeRequest
+}
+
+func (authorizer *fakePrivilegeAuthorizer) Validate(_ context.Context, _ IO, _ language, request privilegeRequest) error {
+	authorizer.calls++
+	authorizer.request = request
+	return authorizer.err
 }
 
 type systemOnlyFakeServiceAdapter struct{ *scopedFakeServiceAdapter }
@@ -64,6 +79,9 @@ func (f *systemOnlyFakeServiceAdapter) Capabilities() service.Capabilities {
 
 func (f *scopedFakeServiceAdapter) CheckScopeInstall(_ context.Context, target service.Artifact) error {
 	f.readOnlyChecks++
+	if f.failReadOnly > 0 && f.readOnlyChecks == f.failReadOnly {
+		return errors.New("injected read-only scope check failure")
+	}
 	if current, exists := f.artifacts[target.Connection]; exists && service.NormalizeScope(current.Scope) == service.NormalizeScope(target.Scope) {
 		return &service.ScopeConflictError{UnitName: target.UnitName}
 	}
@@ -145,6 +163,9 @@ func (f *scopedFakeServiceAdapter) preflight() error {
 		return &service.PrivilegeError{Operation: "test system scope", Cause: errors.New("authorization unavailable")}
 	}
 	if f.failPreflight > 0 && f.preflightCalls == f.failPreflight {
+		if f.preflightErr != nil {
+			return f.preflightErr
+		}
 		return &service.ScopeConflictError{UnitName: "fake-conflict"}
 	}
 	return nil
@@ -438,6 +459,302 @@ func TestNonInteractiveScopePrivilegeFailureUsesStableCodeAndDoesNotStage(t *tes
 	}
 }
 
+func TestInteractiveScopeBatchAuthorizesOnceAfterAllReadOnlyChecks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	authorizer := &fakePrivilegeAuthorizer{}
+	terminal := true
+	var out, stderr bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "--all", "--scope", "system", "--json"}, IO{
+		Out: &out, Err: &stderr, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: authorizer,
+	})
+	if code != 0 || authorizer.calls != 1 || authorizer.request.connections != 2 || authorizer.request.userToSystem != 2 ||
+		adapter.readOnlyChecks != 2 || adapter.preflightCalls != 2 || adapter.stageCalls != 2 {
+		t.Fatalf("exit=%d auth=%d checks=%d preflight=%d stage=%d out=%s err=%s", code, authorizer.calls,
+			adapter.readOnlyChecks, adapter.preflightCalls, adapter.stageCalls, out.String(), stderr.String())
+	}
+}
+
+func TestInteractiveScopeBatchNthPrivilegedPreflightFailurePerformsZeroWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{
+		fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), failPreflight: 2,
+		preflightErr: &service.PrivilegeError{Operation: "second sudo -n preflight", Cause: errors.New("authorization cache unavailable")},
+	}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]service.Record{}
+	for _, name := range []string{"one", "two"} {
+		record, exists, loadErr := records.Load(name)
+		if loadErr != nil || !exists {
+			t.Fatalf("load %s before preflight: exists=%t err=%v", name, exists, loadErr)
+		}
+		before[name] = record
+	}
+	authorizer := &fakePrivilegeAuthorizer{}
+	terminal := true
+	var out bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "--all", "--scope", "system", "--json"}, IO{
+		Out: &out, Err: io.Discard, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: authorizer,
+	})
+	if code == 0 || authorizer.calls != 1 || adapter.preflightCalls != 2 || adapter.stageCalls != 0 ||
+		strings.Count(out.String(), `"code":"privilege_required"`) != 2 {
+		t.Fatalf("exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls,
+			adapter.preflightCalls, adapter.stageCalls, out.String())
+	}
+	for _, name := range []string{"one", "two"} {
+		record, exists, loadErr := records.Load(name)
+		if loadErr != nil || !exists || !reflect.DeepEqual(record, before[name]) {
+			t.Fatalf("%s record=%+v exists=%t err=%v", name, record, exists, loadErr)
+		}
+	}
+}
+
+func TestScopeReadOnlyFailurePreventsAuthorizationAndAllWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{
+		fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native")), failReadOnly: 2,
+	}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	authorizer := &fakePrivilegeAuthorizer{}
+	terminal := true
+	var out bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "--all", "--scope", "system", "--json"}, IO{
+		Out: &out, Err: io.Discard, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: authorizer,
+	})
+	if code == 0 || authorizer.calls != 0 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 {
+		t.Fatalf("exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls, adapter.preflightCalls, adapter.stageCalls, out.String())
+	}
+}
+
+func TestScopeAuthorizationFailureIsTypedAndStartsNoMigration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "one", "-D", "1081", "me@example.com")
+	_, _, _ = invoke(t, "add", "two", "-D", "1082", "me@example.com")
+	authorizer := &fakePrivilegeAuthorizer{err: &privilegeRequiredError{message: "authorization cancelled"}}
+	terminal := true
+	var out bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "--all", "--scope", "system", "--json"}, IO{
+		Out: &out, Err: io.Discard, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: authorizer,
+	})
+	if code == 0 || authorizer.calls != 1 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 ||
+		strings.Count(out.String(), `"code":"privilege_required"`) != 2 {
+		t.Fatalf("exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls, adapter.preflightCalls, adapter.stageCalls, out.String())
+	}
+}
+
+func TestScopeAuthorizationCoversBothMigrationDirectionsButNotSameScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	authorizer := &fakePrivilegeAuthorizer{}
+	terminal := true
+	run := func(scope string) int {
+		var out bytes.Buffer
+		return runContextWithOptions(context.Background(), []string{"enable", "db", "--scope", scope, "--json"}, IO{
+			Out: &out, Err: io.Discard, Terminal: &terminal,
+		}, options{
+			serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+			privilegeAuthorizer: authorizer,
+		})
+	}
+	if code := run("system"); code != 0 || authorizer.calls != 1 {
+		t.Fatalf("user->system exit=%d auth=%d", code, authorizer.calls)
+	}
+	if code := run("system"); code != 0 || authorizer.calls != 1 {
+		t.Fatalf("same system scope exit=%d auth=%d", code, authorizer.calls)
+	}
+	if code := run("user"); code != 0 || authorizer.calls != 2 {
+		t.Fatalf("system->user exit=%d auth=%d", code, authorizer.calls)
+	}
+	if code := run("user"); code != 0 || authorizer.calls != 2 {
+		t.Fatalf("same user scope exit=%d auth=%d", code, authorizer.calls)
+	}
+}
+
+func TestScopeAuthorizationNoTTYFailsFastWithTypedJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	runner := &fakePrivilegeCommandRunner{}
+	terminal := false
+	var out, stderr bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "db", "--scope", "system", "--json"}, IO{
+		In: strings.NewReader(""), Out: &out, Err: &stderr, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: sudoPrivilegeAuthorizer{runner: runner},
+	})
+	if code == 0 || runner.calls != 0 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 || stderr.Len() != 0 ||
+		!strings.Contains(out.String(), `"code":"privilege_required"`) || !strings.Contains(out.String(), "interactive terminal") {
+		t.Fatalf("exit=%d runner=%d preflight=%d stage=%d out=%s err=%s", code, runner.calls,
+			adapter.preflightCalls, adapter.stageCalls, out.String(), stderr.String())
+	}
+	validateCLIResponseSchema(t, out.Bytes())
+}
+
+func TestInteractiveScopeAuthorizationKeepsJSONStdoutPureAndPromptsOnStderr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	invoke := useFakeServiceAdapter(t, adapter)
+	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+	runner := &fakePrivilegeCommandRunner{}
+	terminal := true
+	var out, stderr bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"enable", "db", "--scope", "system", "--json"}, IO{
+		In: strings.NewReader(""), Out: &out, Err: &stderr, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: sudoPrivilegeAuthorizer{runner: runner},
+	})
+	if code != 0 || runner.calls != 1 || adapter.stageCalls != 1 || !strings.Contains(stderr.String(), "Requesting it now") ||
+		!strings.Contains(stderr.String(), "1 connection(s)") || !strings.Contains(stderr.String(), "1 USER→SYSTEM") {
+		t.Fatalf("exit=%d runner=%d stage=%d out=%s err=%s", code, runner.calls, adapter.stageCalls, out.String(), stderr.String())
+	}
+	validateCLIResponseSchema(t, out.Bytes())
+	if strings.Contains(out.String(), "Administrator authorization") || strings.Contains(out.String(), "Password:") {
+		t.Fatalf("authorization text leaked to JSON stdout: %s", out.String())
+	}
+}
+
+func TestInteractiveNewToSystemBatchAuthorizationSummaryIsLocalizedAndJSONSafe(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		language  string
+		expected  []string
+		forbidden string
+	}{
+		{
+			name: "english", language: "en",
+			expected:  []string{"2 connection(s)", "2 NEW→SYSTEM", "Requesting it now"},
+			forbidden: "个新服务",
+		},
+		{
+			name: "chinese", language: "zh-CN",
+			expected:  []string{"本批有 2 个连接", "2 个新服务→SYSTEM", "正在请求授权"},
+			forbidden: "connection(s)",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("TUNLITE_HOME", home)
+			setTestSSH(t)
+			adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+			invoke := useFakeServiceAdapter(t, adapter)
+			for index, name := range []string{"one", "two"} {
+				_, _, _ = invoke(t, "add", name, "-D", strconv.Itoa(1081+index), "me@example.com")
+			}
+			records, err := serviceRecordStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"one", "two"} {
+				if err := records.Remove(name); err != nil {
+					t.Fatal(err)
+				}
+				delete(adapter.artifacts, name)
+				delete(adapter.observed, name)
+			}
+			runner := &fakePrivilegeCommandRunner{}
+			terminal := true
+			var out, stderr bytes.Buffer
+			code := runContextWithOptions(context.Background(), []string{
+				"enable", "--all", "--scope", "system", "--json", "--lang", testCase.language,
+			}, IO{In: strings.NewReader(""), Out: &out, Err: &stderr, Terminal: &terminal}, options{
+				serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+				privilegeAuthorizer: sudoPrivilegeAuthorizer{runner: runner},
+			})
+			if code != 0 || runner.calls != 1 || adapter.stageCalls != 2 {
+				t.Fatalf("exit=%d runner=%d stage=%d out=%s err=%s", code, runner.calls, adapter.stageCalls, out.String(), stderr.String())
+			}
+			for _, expected := range testCase.expected {
+				if !strings.Contains(stderr.String(), expected) {
+					t.Fatalf("stderr missing %q: %s", expected, stderr.String())
+				}
+			}
+			if strings.Contains(stderr.String(), testCase.forbidden) {
+				t.Fatalf("stderr mixed languages: %s", stderr.String())
+			}
+			validateCLIResponseSchema(t, out.Bytes())
+			if strings.Contains(out.String(), "NEW→SYSTEM") || strings.Contains(out.String(), "正在请求授权") ||
+				strings.Contains(out.String(), "Requesting it now") {
+				t.Fatalf("authorization prompt leaked to JSON stdout: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestNonInteractiveAndDryRunNeverCallInteractiveAuthorizer(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		args []string
+	}{
+		{name: "non-interactive", args: []string{"enable", "db", "--scope", "system", "--json", "--non-interactive"}},
+		{name: "dry-run", args: []string{"enable", "db", "--scope", "system", "--json", "--dry-run"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("TUNLITE_HOME", home)
+			setTestSSH(t)
+			adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+			invoke := useFakeServiceAdapter(t, adapter)
+			_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
+			authorizer := &fakePrivilegeAuthorizer{err: errors.New("must not be called")}
+			var out bytes.Buffer
+			code := runContextWithOptions(context.Background(), testCase.args, IO{Out: &out, Err: io.Discard}, options{
+				serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+				privilegeAuthorizer: authorizer,
+			})
+			if code != 0 || authorizer.calls != 0 {
+				t.Fatalf("exit=%d authorizer calls=%d out=%s", code, authorizer.calls, out.String())
+			}
+			if testCase.name == "dry-run" && adapter.stageCalls != 0 {
+				t.Fatalf("dry-run staged %d changes", adapter.stageCalls)
+			}
+		})
+	}
+}
+
 func TestScopeDryRunPlansTargetWithoutPrivilegePreflight(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
@@ -573,11 +890,12 @@ func TestInteractiveScopeMigrationShowsImpactAndIntermediateProgress(t *testing.
 		Out: &out, Err: &stderr, Terminal: &terminal,
 	}, options{
 		serviceAdapter: func() (service.Adapter, error) { return adapter, nil }, lifecycleBudget: &budget,
+		privilegeAuthorizer: &fakePrivilegeAuthorizer{},
 	})
 	if code != 0 {
 		t.Fatalf("enable exit=%d out=%s err=%s", code, out.String(), stderr.String())
 	}
-	for _, expected := range []string{`Moving "db" from USER scope to SYSTEM scope`, "requires administrator authorization", "Target service is healthy", "scope change complete"} {
+	for _, expected := range []string{`Moving "db" from USER scope to SYSTEM scope`, "Target service is healthy", "scope change complete"} {
 		if !strings.Contains(stderr.String(), expected) {
 			t.Fatalf("progress missing %q: %s", expected, stderr.String())
 		}
@@ -1034,12 +1352,14 @@ func replaceDirectoryWithBlocker(path string) (func() error, error) {
 
 func useFakeServiceAdapter(t *testing.T, adapter service.Adapter) func(*testing.T, ...string) (int, string, string) {
 	t.Helper()
+	authorizer := &fakePrivilegeAuthorizer{}
 	return func(t *testing.T, args ...string) (int, string, string) {
 		t.Helper()
 		var out, stderr bytes.Buffer
 		budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
 		code := runContextWithOptions(context.Background(), args, IO{Out: &out, Err: &stderr}, options{
 			serviceAdapter: func() (service.Adapter, error) { return adapter, nil }, lifecycleBudget: &budget,
+			privilegeAuthorizer: authorizer,
 		})
 		return code, out.String(), stderr.String()
 	}
