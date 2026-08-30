@@ -16,7 +16,6 @@ import (
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	"github.com/yuanyuanzijin/tunlite/internal/service"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -77,6 +76,9 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	}
 	if flags.NArg() != 0 {
 		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
+	}
+	if !monitorPlatformSupported {
+		return usageError("monitor is not available on this platform; use status instead")
 	}
 	if opts.JSON {
 		return usageError("monitor is an interactive terminal view; use status --json for machine-readable state")
@@ -413,32 +415,6 @@ func readMonitorTerminalKeyEvents(input *os.File, output chan<- monitorKeyEvent)
 		resume := make(chan struct{})
 		output <- monitorKeyEvent{key: key, resume: resume}
 		<-resume
-	}
-}
-
-func readMonitorTerminalByte(input *os.File, timeout time.Duration) (byte, bool) {
-	timeoutMS := -1
-	if timeout >= 0 {
-		timeoutMS = int(timeout / time.Millisecond)
-		if timeoutMS < 1 {
-			timeoutMS = 1
-		}
-	}
-	for {
-		descriptors := []unix.PollFd{{Fd: int32(input.Fd()), Events: unix.POLLIN}}
-		ready, err := unix.Poll(descriptors, timeoutMS)
-		if err == unix.EINTR {
-			continue
-		}
-		if err != nil || ready == 0 || descriptors[0].Revents&(unix.POLLIN|unix.POLLHUP) == 0 {
-			return 0, false
-		}
-		buffer := []byte{0}
-		if count, readErr := input.Read(buffer); count == 1 {
-			return buffer[0], true
-		} else if readErr != nil {
-			return 0, false
-		}
 	}
 }
 
