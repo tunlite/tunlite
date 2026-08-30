@@ -21,9 +21,11 @@ import (
 
 const (
 	launchctlProgram = "/bin/launchctl"
+	mktempProgram    = "/usr/bin/mktemp"
+	ddProgram        = "/bin/dd"
 	installProgram   = "/usr/bin/install"
 	removeProgram    = "/bin/rm"
-	stdinPath        = "/dev/stdin"
+	syncProgram      = "/bin/sync"
 	psProgram        = "/bin/ps"
 	killProgram      = "/bin/kill"
 	trueProgram      = "/usr/bin/true"
@@ -356,10 +358,23 @@ func (l *Launchd) ensureTargetAvailable(ctx context.Context, target Artifact) er
 }
 
 func (l *Launchd) install(ctx context.Context, artifact Artifact) ([]byte, bool, error) {
-	previous, err := os.ReadFile(artifact.Path)
-	existed := err == nil
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, false, err
+	info, statErr := os.Lstat(artifact.Path)
+	existed := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, false, statErr
+	}
+	var previous []byte
+	var err error
+	if existed {
+		if NormalizeScope(artifact.Scope) == ScopeSystem {
+			if err := l.validateTrustedSystemFile(artifact.Path, info); err != nil {
+				return nil, false, fmt.Errorf("refuse to read untrusted system launchd definition: %w", err)
+			}
+		}
+		previous, err = os.ReadFile(artifact.Path)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	if NormalizeScope(artifact.Scope) == ScopeUser {
 		if err := replaceFile(artifact.Path, artifact.Content, 0o600); err != nil {
@@ -379,9 +394,46 @@ func (l *Launchd) install(ctx context.Context, artifact Artifact) ([]byte, bool,
 		}
 	}
 	if err := l.installSystemArtifact(ctx, artifact.Path, artifact.Content); err != nil {
-		return nil, false, err
+		recoveryCtx, cancel := scopeCompensationContext(ctx)
+		defer cancel()
+		if recoveryErr := l.recoverFailedSystemInstall(recoveryCtx, artifact, previous, existed); recoveryErr != nil {
+			return previous, existed, &RecoveryBlockedError{
+				Operation: "install system launchd definition", Cause: err, Recovery: recoveryErr,
+			}
+		}
+		return previous, existed, err
 	}
 	return previous, existed, nil
+}
+
+func (l *Launchd) recoverFailedSystemInstall(ctx context.Context, artifact Artifact, previous []byte, existed bool) error {
+	info, err := os.Lstat(artifact.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		if existed {
+			return l.installSystemArtifact(ctx, artifact.Path, previous)
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := l.validateTrustedSystemFile(artifact.Path, info); err != nil {
+		return err
+	}
+	current, err := os.ReadFile(artifact.Path)
+	if err != nil {
+		return err
+	}
+	if existed && bytes.Equal(current, previous) {
+		return nil
+	}
+	if !bytes.Equal(current, artifact.Content) {
+		return errors.New("system launchd definition is neither the exact previous nor intended transaction content")
+	}
+	if existed {
+		return l.installSystemArtifact(ctx, artifact.Path, previous)
+	}
+	return l.removeArtifact(ctx, artifact)
 }
 
 func (l *Launchd) restore(ctx context.Context, artifact Artifact, previous []byte, existed bool) error {
@@ -394,14 +446,187 @@ func (l *Launchd) restore(ctx context.Context, artifact Artifact, previous []byt
 	return l.removeArtifact(ctx, artifact)
 }
 
-func (l *Launchd) installSystemArtifact(ctx context.Context, destination string, content []byte) error {
-	_, err := l.runner.Run(ctx, MacOSSudoProgram, []string{
-		"-n", "--", installProgram, "-S", "-o", "root", "-g", "wheel", "-m", "0644", stdinPath, destination,
-	}, Streams{In: bytes.NewReader(content)})
+func (l *Launchd) installSystemArtifact(ctx context.Context, destination string, content []byte) (result error) {
+	directoryMetadata, err := l.validateTrustedSystemDirectory()
 	if err != nil {
+		return err
+	}
+	template := filepath.Join(filepath.Dir(destination), "."+filepath.Base(destination)+".tunlite.XXXXXXXX")
+	stageCtx, cancelStage := scopeCompensationContext(ctx)
+	var stageStdout bytes.Buffer
+	_, stageErr := l.runner.Run(stageCtx, MacOSSudoProgram, []string{"-n", "--", mktempProgram, template}, Streams{Out: &stageStdout})
+	cancelStage()
+	staged, err := validateLaunchdStagingPath(destination, stageStdout.Bytes())
+	if err != nil {
+		if stageErr != nil {
+			return errors.Join(&PrivilegeError{Operation: "stage system launchd service", Cause: stageErr},
+				fmt.Errorf("privileged mktemp did not return a safely cleanable path: %w", err))
+		}
+		return fmt.Errorf("unsafe privileged launchd staging path: %w", err)
+	}
+	defer func() {
+		cleanupCtx, cancel := scopeCompensationContext(ctx)
+		defer cancel()
+		_, cleanupErr := l.runner.Run(cleanupCtx, MacOSSudoProgram, []string{"-n", "--", removeProgram, "-f", staged}, Streams{})
+		if cleanupErr != nil {
+			cleanupErr = &PrivilegeError{Operation: "remove staged system launchd service " + staged, Cause: cleanupErr}
+			result = errors.Join(result, cleanupErr)
+		}
+	}()
+	stageMetadata, err := l.validateTrustedSystemStage(staged, directoryMetadata, nil, 0)
+	if err != nil {
+		return fmt.Errorf("unsafe privileged launchd staging file: %w", err)
+	}
+	if stageErr != nil {
+		return &PrivilegeError{Operation: "stage system launchd service", Cause: stageErr}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// macOS dd has no O_NOFOLLOW/O_EXCL output flag. Reopening this pathname is
+	// safe against the supported non-root threat model because the real daemon
+	// directory is root-owned and not group/world writable, mktemp created a
+	// root-owned 0600 file with one link, and we verify the exact directory and
+	// stage dev+inode again after the fsynced write. A concurrent root adversary
+	// is intentionally outside Tunlite's privilege-boundary guarantees.
+	if _, err := l.runner.Run(context.WithoutCancel(ctx), MacOSSudoProgram, []string{
+		"-n", "--", ddProgram, "of=" + staged, "bs=65536", "conv=fsync",
+	}, Streams{In: bytes.NewReader(content)}); err != nil {
+		return &PrivilegeError{Operation: "write staged system launchd service", Cause: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := l.validateTrustedSystemStage(staged, directoryMetadata, &stageMetadata, int64(len(content))); err != nil {
+		return fmt.Errorf("staged system launchd definition changed during write: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := l.runner.Run(context.WithoutCancel(ctx), MacOSSudoProgram, []string{
+		"-n", "--", installProgram, "-S", "-o", "root", "-g", "wheel", "-m", "0644", staged, destination,
+	}, Streams{}); err != nil {
 		return &PrivilegeError{Operation: "install system launchd service", Cause: err}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// install -S fsyncs its target file and replaces it atomically through an
+	// INS@XXXXXX file in the destination directory. sync(8) additionally
+	// forces the rename and directory metadata to stable storage; macOS has no
+	// command-line utility for fsyncing one already-open directory descriptor.
+	if _, err := l.runner.Run(ctx, syncProgram, nil, Streams{}); err != nil {
+		return fmt.Errorf("flush system launchd directory metadata: %w", err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		return fmt.Errorf("inspect installed system launchd definition: %w", err)
+	}
+	if err := l.validateTrustedSystemFile(destination, info); err != nil {
+		return fmt.Errorf("installed system launchd definition is untrusted: %w", err)
+	}
+	installed, err := os.ReadFile(destination)
+	if err != nil {
+		return fmt.Errorf("read installed system launchd definition: %w", err)
+	}
+	if !bytes.Equal(installed, content) {
+		return errors.New("installed system launchd definition bytes do not match the staged definition")
+	}
 	return nil
+}
+
+func validateLaunchdStagingPath(destination string, output []byte) (string, error) {
+	raw := strings.TrimSuffix(string(output), "\n")
+	if raw == "" || strings.ContainsAny(raw, "\r\n\x00") {
+		return "", fmt.Errorf("mktemp returned malformed path %q", string(output))
+	}
+	if !filepath.IsAbs(raw) || filepath.Clean(raw) != raw || filepath.Dir(raw) != filepath.Dir(destination) {
+		return "", fmt.Errorf("mktemp returned path outside the canonical daemon directory: %q", raw)
+	}
+	prefix := "." + filepath.Base(destination) + ".tunlite."
+	suffix := strings.TrimPrefix(filepath.Base(raw), prefix)
+	if suffix == filepath.Base(raw) || len(suffix) != 8 {
+		return "", fmt.Errorf("mktemp returned path with unexpected name %q", raw)
+	}
+	for _, character := range suffix {
+		if !(character >= 'A' && character <= 'Z') && !(character >= 'a' && character <= 'z') && !(character >= '0' && character <= '9') {
+			return "", fmt.Errorf("mktemp returned path with unsafe suffix %q", suffix)
+		}
+	}
+	return raw, nil
+}
+
+func (l *Launchd) validateTrustedSystemFile(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("system launchd path %q is not a regular non-symlink file", path)
+	}
+	if info.Mode().Perm() != 0o644 && filepath.Clean(l.daemonDir) == "/Library/LaunchDaemons" {
+		return fmt.Errorf("system launchd path %q has mode %04o, expected 0644", path, info.Mode().Perm())
+	}
+	if filepath.Clean(l.daemonDir) == "/Library/LaunchDaemons" {
+		metadata, ok := securityMetadata(info)
+		if !ok || metadata.UID != 0 || metadata.GID != 0 {
+			return fmt.Errorf("system launchd path %q is not owned by root:wheel", path)
+		}
+	}
+	return nil
+}
+
+func (l *Launchd) validateTrustedSystemDirectory() (fileSecurityMetadata, error) {
+	info, err := os.Lstat(l.daemonDir)
+	if err != nil {
+		return fileSecurityMetadata{}, fmt.Errorf("inspect system launchd directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fileSecurityMetadata{}, fmt.Errorf("system launchd directory %q is not a real directory", l.daemonDir)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fileSecurityMetadata{}, fmt.Errorf("system launchd directory %q is group/world writable (%04o)", l.daemonDir, info.Mode().Perm())
+	}
+	metadata, ok := securityMetadata(info)
+	if !ok {
+		return fileSecurityMetadata{}, fmt.Errorf("cannot verify system launchd directory identity %q", l.daemonDir)
+	}
+	if filepath.Clean(l.daemonDir) == "/Library/LaunchDaemons" && (metadata.UID != 0 || metadata.GID != 0) {
+		return fileSecurityMetadata{}, fmt.Errorf("system launchd directory %q is not owned by root:wheel", l.daemonDir)
+	}
+	return metadata, nil
+}
+
+func (l *Launchd) validateTrustedSystemStage(
+	path string,
+	directory fileSecurityMetadata,
+	expected *fileSecurityMetadata,
+	expectedSize int64,
+) (fileSecurityMetadata, error) {
+	currentDirectory, err := l.validateTrustedSystemDirectory()
+	if err != nil {
+		return fileSecurityMetadata{}, err
+	}
+	if currentDirectory.Dev != directory.Dev || currentDirectory.Ino != directory.Ino {
+		return fileSecurityMetadata{}, fmt.Errorf("system launchd directory identity changed during staging")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fileSecurityMetadata{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return fileSecurityMetadata{}, fmt.Errorf("stage %q is not a regular non-symlink 0600 file", path)
+	}
+	metadata, ok := securityMetadata(info)
+	if !ok || metadata.Nlink != 1 || metadata.Dev != directory.Dev {
+		return fileSecurityMetadata{}, fmt.Errorf("stage %q identity, link count, or filesystem is unsafe", path)
+	}
+	if filepath.Clean(l.daemonDir) == "/Library/LaunchDaemons" && (metadata.UID != 0 || metadata.GID != 0) {
+		return fileSecurityMetadata{}, fmt.Errorf("stage %q is not owned by root:wheel", path)
+	}
+	if expected != nil && (metadata.Dev != expected.Dev || metadata.Ino != expected.Ino) {
+		return fileSecurityMetadata{}, fmt.Errorf("stage %q inode changed during the privileged write", path)
+	}
+	if info.Size() != expectedSize {
+		return fileSecurityMetadata{}, fmt.Errorf("stage %q has size %d, expected %d", path, info.Size(), expectedSize)
+	}
+	return metadata, nil
 }
 
 func (l *Launchd) removeArtifact(ctx context.Context, artifact Artifact) error {
@@ -410,6 +635,13 @@ func (l *Launchd) removeArtifact(ctx context.Context, artifact Artifact) error {
 	}
 	if err := l.validateSystemArtifact(artifact); err != nil {
 		return err
+	}
+	info, err := os.Lstat(artifact.Path)
+	if err != nil {
+		return err
+	}
+	if err := l.validateTrustedSystemFile(artifact.Path, info); err != nil {
+		return fmt.Errorf("refuse to remove untrusted system launchd definition: %w", err)
 	}
 	content, err := os.ReadFile(artifact.Path)
 	if err != nil {
