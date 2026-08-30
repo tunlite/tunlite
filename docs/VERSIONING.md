@@ -72,6 +72,8 @@ Push CI 结果当作发布许可。
 
 - SSH 核心行为和机器契约在多个预览版中没有破坏性漂移。
 - systemd 与 launchd 经真实用户和真机持续验证。
+- macOS user/system Scope 的迁移、权限失败、冲突与自动回滚经过隔离真机验证；Linux
+  capabilities 继续明确 system Scope 未实现。
 - 安装成功率、首次连接耗时、断线恢复和多隧道使用达到可接受水平。
 - 已知高风险问题均已关闭，安装和版本升级文档能覆盖主流路径。
 

@@ -23,9 +23,32 @@ import (
 )
 
 type serviceSelection struct {
-	target string
-	group  string
-	all    bool
+	target   string
+	group    string
+	all      bool
+	scope    service.Scope
+	scopeSet bool
+}
+
+type serviceScopeFlag struct {
+	value service.Scope
+	set   bool
+}
+
+func (f *serviceScopeFlag) String() string { return string(f.value) }
+
+func (f *serviceScopeFlag) Set(value string) error {
+	if f.set {
+		return errors.New("--scope may only be specified once")
+	}
+	f.set = true
+	switch service.Scope(value) {
+	case service.ScopeUser, service.ScopeSystem:
+		f.value = service.Scope(value)
+		return nil
+	default:
+		return fmt.Errorf("unsupported scope %q; expected user or system", value)
+	}
 }
 
 type serviceItemError struct {
@@ -36,10 +59,11 @@ type serviceItemError struct {
 }
 
 type serviceArtifactResult struct {
-	Adapter    string `json:"adapter"`
-	UnitName   string `json:"unitName"`
-	Path       string `json:"path"`
-	PlanDigest string `json:"planDigest"`
+	Adapter    string        `json:"adapter"`
+	Scope      service.Scope `json:"scope"`
+	UnitName   string        `json:"unitName"`
+	Path       string        `json:"path"`
+	PlanDigest string        `json:"planDigest"`
 }
 
 type serviceItemResult struct {
@@ -78,6 +102,79 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			results[index].Detailed = selection.target != ""
 		}
 		return renderServiceResults(streams, opts, command, results)
+	}
+	if command == "enable" && selection.scopeSet {
+		if !service.SupportsScope(adapter, selection.scope) {
+			unsupported := &service.UnsupportedScopeError{Adapter: adapter.Name(), Scope: selection.scope}
+			results := make([]serviceItemResult, 0, len(targets))
+			for _, connection := range targets {
+				results = append(results, failedServiceItem(connection.Metadata.Name, unsupported.Code(), unsupported, "low", nil))
+			}
+			return renderServiceResults(streams, opts, command, results)
+		}
+		var preflightErr error
+		for _, connection := range targets {
+			if records.RunActive(connection.Metadata.Name) {
+				preflightErr = errors.New("connection is running in the foreground; stop that run before changing its service scope")
+				break
+			}
+			record, exists, loadErr := records.Load(connection.Metadata.Name)
+			if loadErr != nil {
+				preflightErr = loadErr
+				break
+			}
+			if !exists {
+				targetArtifact, buildErr := buildServiceArtifactScoped(ctx, adapter, connection, selection.scope)
+				if buildErr != nil {
+					preflightErr = buildErr
+					break
+				}
+				if preflightErr = unboundNativeIdentityConflict(ctx, adapter, targetArtifact); preflightErr == nil {
+					if opts.DryRun {
+						preflightErr = service.CheckScopeInstall(ctx, adapter, targetArtifact)
+					} else {
+						preflightErr = service.PreflightScopeInstall(ctx, adapter, targetArtifact)
+					}
+				}
+			} else {
+				if ownerErr := ensureDeclarationOwner(record, config.Path()); ownerErr != nil {
+					preflightErr = ownerErr
+					break
+				}
+				sourceArtifact, buildErr := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+				if buildErr != nil {
+					preflightErr = buildErr
+					break
+				}
+				if sourceState := service.Evaluate(ctx, adapter, record, &sourceArtifact); sourceState.ConsistencyState != service.ConsistencyConsistent {
+					preflightErr = errors.New("connection has drifted; resolve it before changing service scope")
+					break
+				}
+				if service.NormalizeScope(record.Scope) == selection.scope {
+					continue
+				}
+				targetArtifact, buildErr := buildScopeTransitionArtifact(ctx, adapter, connection, record, selection.scope)
+				if buildErr != nil {
+					preflightErr = buildErr
+					break
+				}
+				if opts.DryRun {
+					preflightErr = service.CheckScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
+				} else {
+					preflightErr = service.PreflightScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
+				}
+			}
+			if preflightErr != nil {
+				break
+			}
+		}
+		if preflightErr != nil {
+			results := make([]serviceItemResult, 0, len(targets))
+			for _, connection := range targets {
+				results = append(results, failedServiceOperation(connection.Metadata.Name, preflightErr, "scope_transition_failed"))
+			}
+			return renderServiceResults(streams, opts, command, results)
+		}
 	}
 	if command == "start" || command == "enable" || command == "restart" {
 		lifecycleObserverFor(&opts)
@@ -120,7 +217,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 		case "stop":
 			result = stopService(ctx, adapter, records, connection, config.Path(), opts)
 		case "enable":
-			result = enableService(ctx, adapter, records, connection, config.Path(), opts)
+			result = enableService(ctx, adapter, records, connection, config.Path(), selection.scope, selection.scopeSet, streams, opts)
 		case "disable":
 			result = disableService(ctx, adapter, records, connection, config.Path(), opts)
 		case "restart":
@@ -148,7 +245,7 @@ func renderUnsupportedStatus(_ []string, selection serviceSelection, streams IO,
 	results := make([]serviceItemResult, 0, len(targets))
 	for _, connection := range targets {
 		state := service.State{
-			Connection: connection.Metadata.Name, ServiceState: service.ServiceUnsupported,
+			Connection: connection.Metadata.Name, Scope: service.ScopeUser, ServiceState: service.ServiceUnsupported,
 			Mode: service.ModeStopped, ProcessState: service.ProcessInactive, Health: service.HealthUnknown,
 			ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
 			Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{{
@@ -169,6 +266,7 @@ func renderUnsupportedStatus(_ []string, selection serviceSelection, streams IO,
 
 func parseServiceSelection(command string, args []string) (serviceSelection, error) {
 	selection := serviceSelection{}
+	scopeFlag := serviceScopeFlag{}
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		selection.target = args[0]
 		args = args[1:]
@@ -177,6 +275,7 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&selection.group, "group", "", "select connections by group")
 	flags.BoolVar(&selection.all, "all", false, "select all connections")
+	flags.Var(&scopeFlag, "scope", "native service scope: user or system")
 	if err := flags.Parse(args); err != nil {
 		return selection, usageError(err.Error())
 	}
@@ -187,6 +286,10 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 	flags.Visit(func(item *flag.Flag) {
 		groupSet = groupSet || item.Name == "group"
 	})
+	selection.scope, selection.scopeSet = scopeFlag.value, scopeFlag.set
+	if selection.scopeSet && command != "enable" {
+		return selection, usageError("--scope is only valid with enable")
+	}
 	if groupSet {
 		var err error
 		selection.group, err = parseGroup(selection.group)
@@ -208,7 +311,7 @@ func parseServiceSelection(command string, args []string) (serviceSelection, err
 		return selection, usageError("choose exactly one of a connection name, --group, or --all")
 	}
 	if selectors == 0 && command != "status" {
-		return selection, usageError(fmt.Sprintf("usage: tunlite %s <name> | --group <group> | --all", command))
+		return selection, usageError(commandUsage(command))
 	}
 	return selection, nil
 }
@@ -265,22 +368,126 @@ func selectServiceConnections(document configstore.Document, selection serviceSe
 }
 
 func buildServiceArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection) (service.Artifact, error) {
-	return buildBoundServiceArtifact(ctx, adapter, connection, nil)
+	return buildServiceArtifactScoped(ctx, adapter, connection, service.ScopeUser)
 }
 
-func buildBoundServiceArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection, record *service.Record) (service.Artifact, error) {
+func serviceExecutionPlan(ctx context.Context, connection core.Connection) (plan.ExecutionPlan, error) {
 	registry, err := core.NewRegistry(sshdriver.New())
+	if err != nil {
+		return plan.ExecutionPlan{}, err
+	}
+	executionPlan, err := core.NewPlanner(registry).Plan(ctx, connection, core.PlanOptions{NonInteractive: true})
+	if err != nil {
+		return plan.ExecutionPlan{}, err
+	}
+	return executionPlan, nil
+}
+
+func buildServiceArtifactScoped(ctx context.Context, adapter service.Adapter, connection core.Connection, scope service.Scope) (service.Artifact, error) {
+	executionPlan, err := serviceExecutionPlan(ctx, connection)
 	if err != nil {
 		return service.Artifact{}, err
 	}
-	executionPlan, err := core.NewPlanner(registry).Plan(ctx, connection, core.PlanOptions{NonInteractive: true})
+	return service.BuildScoped(adapter, scope, connection.Metadata.Name, executionPlan)
+}
+
+func buildBoundServiceArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection, record *service.Record) (service.Artifact, error) {
+	if record != nil {
+		if err := ensureRecordScopeSupported(adapter, *record); err != nil {
+			return service.Artifact{}, err
+		}
+	}
+	executionPlan, err := serviceExecutionPlan(ctx, connection)
 	if err != nil {
 		return service.Artifact{}, err
 	}
 	if record != nil {
 		return adapter.BuildBound(record.Reference(), executionPlan)
 	}
-	return adapter.Build(connection.Metadata.Name, executionPlan)
+	return service.BuildScoped(adapter, service.ScopeUser, connection.Metadata.Name, executionPlan)
+}
+
+func ensureRecordScopeSupported(adapter service.Adapter, record service.Record) error {
+	scope := service.NormalizeScope(record.Scope)
+	if !service.SupportsScope(adapter, scope) {
+		return &service.UnsupportedScopeError{Adapter: adapter.Name(), Scope: scope}
+	}
+	return nil
+}
+
+func buildScopeTransitionArtifact(ctx context.Context, adapter service.Adapter, connection core.Connection, record service.Record, target service.Scope) (service.Artifact, error) {
+	for _, scope := range []service.Scope{service.NormalizeScope(record.Scope), service.NormalizeScope(target)} {
+		if !service.SupportsScope(adapter, scope) {
+			return service.Artifact{}, &service.UnsupportedScopeError{Adapter: adapter.Name(), Scope: scope}
+		}
+	}
+	executionPlan, err := serviceExecutionPlan(ctx, connection)
+	if err != nil {
+		return service.Artifact{}, err
+	}
+	reference := record.Reference()
+	reference.Scope = target
+	reference.ArtifactPath = ""
+	return adapter.BuildBound(reference, executionPlan)
+}
+
+type unboundNativeIdentityError struct {
+	connection string
+	unit       string
+	scopes     []service.Scope
+}
+
+func (e *unboundNativeIdentityError) Error() string {
+	values := make([]string, 0, len(e.scopes))
+	for _, scope := range e.scopes {
+		values = append(values, string(service.NormalizeScope(scope)))
+	}
+	if len(values) == 0 {
+		values = append(values, "unknown")
+	}
+	return fmt.Sprintf("native service %s exists in %s scope without a Tunlite management record; resolve or manage it before creating another native service", e.unit, strings.Join(values, " and "))
+}
+
+func (e *unboundNativeIdentityError) Code() string { return "scope_conflict" }
+
+func (e *unboundNativeIdentityError) Actions() []core.Action {
+	actions := []core.Action{{Type: "manage_native_service", Parameters: map[string]any{"service": e.unit}}}
+	if e.connection != "" {
+		actions = append(actions, resolveActions(e.connection)...)
+	}
+	return actions
+}
+
+func nativeIdentityCandidates(ctx context.Context, adapter service.Adapter, expected service.Artifact) ([]service.Candidate, error) {
+	if !adapter.Capabilities().Discovery {
+		return []service.Candidate{}, nil
+	}
+	candidates, err := adapter.Discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]service.Candidate, 0, 1)
+	for _, candidate := range candidates {
+		if candidate.Reference.UnitName == expected.UnitName {
+			matches = append(matches, candidate)
+		}
+	}
+	return matches, nil
+}
+
+func unboundNativeIdentityConflict(ctx context.Context, adapter service.Adapter, expected service.Artifact) error {
+	matches, err := nativeIdentityCandidates(ctx, adapter, expected)
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	scopes := make([]service.Scope, 0, len(matches))
+	for _, candidate := range matches {
+		scopes = append(scopes, candidateScope(candidate))
+	}
+	return &unboundNativeIdentityError{connection: expected.Connection, unit: expected.UnitName, scopes: scopes}
 }
 
 func loadServiceRecord(records *service.Store, connection core.Connection, declarationPath string) (service.Record, error) {
@@ -313,12 +520,18 @@ func lifecycleRecordAndArtifact(ctx context.Context, adapter service.Adapter, re
 	if err != nil {
 		return service.Record{}, service.Artifact{}, false, err
 	}
+	if err := unboundNativeIdentityConflict(ctx, adapter, artifact); err != nil {
+		return service.Record{}, service.Artifact{}, false, err
+	}
 	return recordForArtifact(artifact, service.ModeStopped, declarationPath), artifact, true, nil
 }
 
 func materializeLifecycleRecord(ctx context.Context, adapter service.Adapter, records *service.Store, record service.Record, artifact service.Artifact, missing bool) error {
 	if !missing {
 		return nil
+	}
+	if err := unboundNativeIdentityConflict(ctx, adapter, artifact); err != nil {
+		return err
 	}
 	observation, err := adapter.Inspect(ctx, artifact.Reference())
 	if err != nil {
@@ -341,7 +554,7 @@ func materializeLifecycleRecord(ctx context.Context, adapter service.Adapter, re
 func startService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
 	record, artifact, missing, err := lifecycleRecordAndArtifact(ctx, adapter, records, connection, declarationPath)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
+		return failedServiceOperation(connection.Metadata.Name, err, "service_state_read_failed")
 	}
 	if record.Mode == service.ModePersistent {
 		return failedServiceItem(connection.Metadata.Name, "persistent_connection", errors.New("connection is persistent; start cannot change it to temporary background mode"), "low", nil)
@@ -391,7 +604,7 @@ func stopService(ctx context.Context, adapter service.Adapter, records *service.
 	}
 	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
 	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
 	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
@@ -424,10 +637,29 @@ func stopService(ctx context.Context, adapter service.Adapter, records *service.
 	return result
 }
 
-func enableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
+func enableService(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	connection core.Connection,
+	declarationPath string,
+	targetScope service.Scope,
+	targetScopeSet bool,
+	streams IO,
+	opts options,
+) serviceItemResult {
+	if targetScopeSet {
+		if existing, exists, loadErr := records.Load(connection.Metadata.Name); loadErr != nil {
+			return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", loadErr, "low", nil)
+		} else if exists && service.NormalizeScope(existing.Scope) != targetScope {
+			return migrateAndEnableService(ctx, adapter, records, connection, declarationPath, existing, targetScope, streams, opts)
+		} else if !exists && targetScope == service.ScopeSystem {
+			return installAndEnableScopedService(ctx, adapter, records, connection, declarationPath, targetScope, streams, opts)
+		}
+	}
 	record, artifact, missing, err := lifecycleRecordAndArtifact(ctx, adapter, records, connection, declarationPath)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "service_state_read_failed", err, "low", nil)
+		return failedServiceOperation(connection.Metadata.Name, err, "service_state_read_failed")
 	}
 	conditions := []core.Condition{}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
@@ -468,6 +700,187 @@ func enableService(ctx context.Context, adapter service.Adapter, records *servic
 	return observeLifecycleResult(ctx, adapter, record, artifact, "enable", result, opts)
 }
 
+func installAndEnableScopedService(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	connection core.Connection,
+	declarationPath string,
+	targetScope service.Scope,
+	streams IO,
+	opts options,
+) serviceItemResult {
+	artifact, err := buildServiceArtifactScoped(ctx, adapter, connection, targetScope)
+	if err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
+	}
+	if err := unboundNativeIdentityConflict(ctx, adapter, artifact); err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "scope_transition_failed")
+	}
+	record := recordForArtifact(artifact, service.ModePersistent, declarationPath)
+	result := serviceItemResult{
+		Connection: connection.Metadata.Name, Outcome: "applied", Changed: true,
+		Conditions: []core.Condition{}, Artifact: artifactResult(artifact),
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, "absent", targetScope, "start")
+	if opts.DryRun {
+		result.Outcome = "planned"
+		state := service.State{
+			Connection: record.Connection, Adapter: adapter.Name(), Scope: targetScope,
+			ServiceState: service.ServiceAbsent, Mode: service.ModeStopped,
+			ProcessState: service.ProcessInactive, Health: service.HealthUnknown,
+			ConsistencyState: service.ConsistencyMissing, ObservedAt: time.Now().UTC(),
+			Endpoints: append([]plan.Endpoint(nil), artifact.Plan.Endpoints...), Conditions: []core.Condition{},
+		}
+		result.State = &state
+		return result
+	}
+	transition, err := service.StageScopeInstall(ctx, adapter, artifact, service.ModePersistent, transitionHealthVerifier(artifact))
+	if err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "scope_transition_failed")
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, "absent", targetScope, "target_ready")
+	if err := records.Write(ctx, record); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
+			transition.Rollback(recoveryCtx))
+	}
+	if err := transition.Commit(ctx); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, serviceOperationErrorCode(err, "scope_transition_failed"), err,
+			errors.Join(records.Remove(connection.Metadata.Name), transition.Rollback(recoveryCtx)))
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, "absent", targetScope, "complete")
+	return observeLifecycleResult(ctx, adapter, record, artifact, "enable", result, opts)
+}
+
+func migrateAndEnableService(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	connection core.Connection,
+	declarationPath string,
+	oldRecord service.Record,
+	targetScope service.Scope,
+	streams IO,
+	opts options,
+) serviceItemResult {
+	if err := ensureDeclarationOwner(oldRecord, declarationPath); err != nil {
+		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, "low", nil)
+	}
+	sourceArtifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &oldRecord)
+	if err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
+	}
+	before := service.Evaluate(ctx, adapter, oldRecord, &sourceArtifact)
+	if before.ConsistencyState != service.ConsistencyConsistent {
+		return failedServiceItem(connection.Metadata.Name, "connection_drifted",
+			errors.New("connection has drifted; resolve it before changing service scope"), "low", resolveActions(connection.Metadata.Name))
+	}
+	targetArtifact, err := buildScopeTransitionArtifact(ctx, adapter, connection, oldRecord, targetScope)
+	if err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
+	}
+	if _, err := service.PlanScopeTransition(adapter, oldRecord, targetScope); err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "scope_transition_failed")
+	}
+	result := serviceItemResult{
+		Connection: connection.Metadata.Name, Outcome: "applied", Changed: true,
+		Conditions: []core.Condition{}, Artifact: artifactResult(targetArtifact),
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, string(service.NormalizeScope(oldRecord.Scope)), targetScope, "start")
+	if opts.DryRun {
+		result.Outcome = "planned"
+		result.State = &before
+		return result
+	}
+	transition, err := service.StageScopeTransition(
+		ctx, adapter, oldRecord.Reference(), targetArtifact, service.ModePersistent, transitionHealthVerifier(targetArtifact),
+	)
+	if err != nil {
+		return failedServiceOperation(connection.Metadata.Name, err, "scope_transition_failed")
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, string(service.NormalizeScope(oldRecord.Scope)), targetScope, "target_ready")
+	newRecord := updatedRecordForArtifact(oldRecord, targetArtifact, service.ModePersistent)
+	if err := records.Write(ctx, newRecord); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err, transition.Rollback(recoveryCtx))
+	}
+	if err := transition.Commit(ctx); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		recordErr := records.Write(recoveryCtx, oldRecord)
+		return failedServiceItemAfterRecovery(connection.Metadata.Name, "scope_transition_failed", err,
+			errors.Join(recordErr, transition.Rollback(recoveryCtx)))
+	}
+	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, string(service.NormalizeScope(oldRecord.Scope)), targetScope, "complete")
+	return observeLifecycleResult(ctx, adapter, newRecord, targetArtifact, "enable", result, opts)
+}
+
+func updatedRecordForArtifact(record service.Record, artifact service.Artifact, mode string) service.Record {
+	record.Adapter = artifact.Adapter
+	record.Scope = service.NormalizeScope(artifact.Scope)
+	record.Mode = mode
+	record.ArtifactPath = artifact.Path
+	record.UnitName = artifact.UnitName
+	record.LogPaths = append([]string(nil), artifact.LogPaths...)
+	record.PlanDigest = artifact.PlanDigest
+	record.BaselineDigest = service.ContentDigest(artifact.Content)
+	return record
+}
+
+func renderScopeChangeProgress(streams IO, opts options, connection, from string, to service.Scope, phase string) {
+	if opts.JSON || !terminalProgressEnabled(streams) {
+		return
+	}
+	toLabel := strings.ToUpper(string(to))
+	fromLabel := strings.ToUpper(from)
+	switch phase {
+	case "start":
+		if isChinese(opts.Language) {
+			if from == "absent" {
+				fmt.Fprintf(streams.Err, "正在把“%s”安装到 %s 范围…\n", connection, toLabel)
+			} else {
+				fmt.Fprintf(streams.Err, "正在把“%s”从 %s 范围迁移到 %s 范围…\n", connection, fromLabel, toLabel)
+			}
+			if from == string(service.ScopeSystem) || to == service.ScopeSystem {
+				fmt.Fprintln(streams.Err, "这会更改原生服务的管理范围，需要管理员授权；Tunlite 不会等待或读取密码。")
+			}
+		} else {
+			if from == "absent" {
+				fmt.Fprintf(streams.Err, "Installing %q in %s scope…\n", connection, toLabel)
+			} else {
+				fmt.Fprintf(streams.Err, "Moving %q from %s scope to %s scope…\n", connection, fromLabel, toLabel)
+			}
+			if from == string(service.ScopeSystem) || to == service.ScopeSystem {
+				fmt.Fprintln(streams.Err, "This changes native service ownership and requires administrator authorization; Tunlite never waits for or reads a password.")
+			}
+		}
+	case "target_ready":
+		fmt.Fprintln(streams.Err, localized(opts.Language, "Target service is healthy; saving the new scope…", "目标服务已就绪，正在保存新的范围…"))
+	case "complete":
+		fmt.Fprintln(streams.Err, localized(opts.Language, "Service scope change complete.", "服务范围变更完成。"))
+	}
+}
+
+func transitionHealthVerifier(artifact service.Artifact) func(context.Context, service.Reference) error {
+	return func(ctx context.Context, _ service.Reference) error {
+		for _, check := range artifact.Plan.HealthChecks {
+			probeCtx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutMS)*time.Millisecond)
+			connection, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", check.Address)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("endpoint %s did not become healthy: %w", check.Address, err)
+			}
+			_ = connection.Close()
+		}
+		return nil
+	}
+}
+
 func disableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
 	record, err := loadServiceRecord(records, connection, declarationPath)
 	if err != nil {
@@ -475,7 +888,7 @@ func disableService(ctx context.Context, adapter service.Adapter, records *servi
 	}
 	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
 	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
 	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
@@ -521,7 +934,7 @@ func restartService(ctx context.Context, adapter service.Adapter, records *servi
 	}
 	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
 	if err != nil {
-		return failedServiceItem(connection.Metadata.Name, "execution_plan_failed", err, "low", nil)
+		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
 	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
 	if before.ConsistencyState != service.ConsistencyConsistent {
@@ -549,48 +962,89 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 	}
 	if !exists {
 		artifact, planErr := buildServiceArtifact(ctx, adapter, connection)
+		identityArtifact := artifact
+		if planErr != nil {
+			identityArtifact = adapter.Target(connection.Metadata.Name)
+		}
+		var identityMatches []service.Candidate
+		var identityErr error
+		if identityArtifact.UnitName != "" {
+			identityMatches, identityErr = nativeIdentityCandidates(ctx, adapter, identityArtifact)
+		}
 		consistency := service.ConsistencyMissing
 		serviceState := service.ServiceAbsent
 		mode := service.ModeStopped
 		processState := service.ProcessInactive
+		scope := service.ScopeUser
+		endpoints := []plan.Endpoint{}
 		statusCondition := core.Condition{
 			Code: "service_missing", Severity: "warning", Message: "native service has not been materialized on this machine",
 			Connection: connection.Metadata.Name, Actions: []core.Action{{Type: "start_connection", Parameters: map[string]any{"connection": connection.Metadata.Name}}},
 		}
-		if planErr != nil {
+		if identityErr != nil {
+			consistency = service.ConsistencyBlocked
+			serviceState = service.ServiceUnknown
+			processState = service.ProcessUnknown
+			if actual, ok := scopeMismatchActual(identityErr); ok {
+				scope = actual
+				serviceState = service.ServiceRegistered
+			}
+			statusCondition = nativeStatusErrorCondition(identityErr, connection.Metadata.Name, adapter.Name())
+		} else if len(identityMatches) > 0 {
+			candidate := identityMatches[0]
+			scopes := make([]service.Scope, 0, len(identityMatches))
+			for _, match := range identityMatches {
+				scopes = append(scopes, candidateScope(match))
+			}
+			conflict := &unboundNativeIdentityError{connection: connection.Metadata.Name, unit: identityArtifact.UnitName, scopes: scopes}
+			consistency = service.ConsistencyBlocked
+			serviceState = service.ServiceRegistered
+			mode = observedMode(candidate.Observation)
+			processState = candidate.Observation.ProcessState
+			scope = candidateScope(candidate)
+			endpoints = append([]plan.Endpoint(nil), candidate.Plan.Endpoints...)
+			statusCondition = core.Condition{
+				Code: conflict.Code(), Severity: "error", Message: conflict.Error(), Connection: connection.Metadata.Name,
+				Actions: conflict.Actions(),
+			}
+		} else if planErr != nil && serviceOperationErrorCode(planErr, "") != "scope_unsupported" {
 			consistency = service.ConsistencyBlocked
 			statusCondition = core.Condition{
 				Code: "execution_plan_blocked", Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
 				Driver: connection.Spec.Driver, Actions: []core.Action{},
 			}
-		} else if observation, inspectErr := adapter.Inspect(ctx, artifact.Reference()); inspectErr != nil {
-			consistency = service.ConsistencyBlocked
-			serviceState = service.ServiceUnknown
-			processState = service.ProcessUnknown
-			statusCondition = core.Condition{
-				Code: "service_manager_unavailable", Severity: "error", Message: inspectErr.Error(), Connection: connection.Metadata.Name,
-				Actions: []core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{"adapter": adapter.Name()}}},
-			}
-		} else if observation.Installed {
-			consistency = service.ConsistencyBlocked
-			serviceState = service.ServiceRegistered
-			mode = observedMode(observation)
-			processState = observation.ProcessState
-			statusCondition = core.Condition{
-				Code: "service_binding_missing", Severity: "error",
-				Message:    "a native service exists at the expected identity but Tunlite has no management binding",
-				Connection: connection.Metadata.Name,
-				Actions: []core.Action{
-					{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "tunlite"}},
-					{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "system"}},
-				},
+		} else if planErr == nil {
+			observation, inspectErr := adapter.Inspect(ctx, artifact.Reference())
+			if inspectErr != nil {
+				consistency = service.ConsistencyBlocked
+				serviceState = service.ServiceUnknown
+				processState = service.ProcessUnknown
+				if actual, ok := scopeMismatchActual(inspectErr); ok {
+					scope = actual
+					serviceState = service.ServiceRegistered
+				}
+				statusCondition = nativeStatusErrorCondition(inspectErr, connection.Metadata.Name, adapter.Name())
+			} else if observation.Installed {
+				consistency = service.ConsistencyBlocked
+				serviceState = service.ServiceRegistered
+				mode = observedMode(observation)
+				processState = observation.ProcessState
+				statusCondition = core.Condition{
+					Code: "service_binding_missing", Severity: "error",
+					Message:    "a native service exists at the expected identity but Tunlite has no management binding",
+					Connection: connection.Metadata.Name,
+					Actions: []core.Action{
+						{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "tunlite"}},
+						{Type: "resolve_connection", Parameters: map[string]any{"connection": connection.Metadata.Name, "use": "system"}},
+					},
+				}
 			}
 		}
 		state := service.State{
-			Connection: connection.Metadata.Name, Adapter: adapter.Name(), ServiceState: serviceState,
+			Connection: connection.Metadata.Name, Adapter: adapter.Name(), Scope: scope, ServiceState: serviceState,
 			Mode: mode, ProcessState: processState, Health: service.HealthUnknown,
 			ConsistencyState: consistency, ObservedAt: time.Now().UTC(),
-			Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{statusCondition},
+			Endpoints: endpoints, Conditions: []core.Condition{statusCondition},
 		}
 		if records.RunActive(connection.Metadata.Name) {
 			state.Mode, state.ProcessState = service.ModeForeground, service.ProcessRunning
@@ -601,6 +1055,18 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 		return failedServiceItem(connection.Metadata.Name, "declaration_conflict", err, "low", nil)
 	}
 	artifact, planErr := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+	if planErr != nil && serviceOperationErrorCode(planErr, "") == "scope_unsupported" {
+		state := service.State{
+			Connection: connection.Metadata.Name, Adapter: adapter.Name(), Scope: service.NormalizeScope(record.Scope),
+			ServiceState: service.ServiceUnknown, Mode: record.Mode, ProcessState: service.ProcessUnknown,
+			Health: service.HealthUnknown, ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
+			Endpoints: []plan.Endpoint{}, Conditions: []core.Condition{{
+				Code: "scope_unsupported", Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
+				Driver: connection.Spec.Driver, Actions: []core.Action{},
+			}},
+		}
+		return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
+	}
 	var expected *service.Artifact
 	if planErr == nil {
 		expected = &artifact
@@ -612,11 +1078,30 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 	if planErr != nil {
 		state.ConsistencyState = service.ConsistencyBlocked
 		state.Conditions = append(state.Conditions, core.Condition{
-			Code: "execution_plan_blocked", Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
+			Code: serviceOperationErrorCode(planErr, "execution_plan_blocked"), Severity: "error", Message: planErr.Error(), Connection: connection.Metadata.Name,
 			Driver: connection.Spec.Driver, Actions: []core.Action{},
 		})
 	}
 	return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
+}
+
+func nativeStatusErrorCondition(err error, connection, adapter string) core.Condition {
+	code := serviceOperationErrorCode(err, "service_manager_unavailable")
+	actions := []core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{"adapter": adapter}}}
+	if code == "scope_conflict" || code == "scope_mismatch" {
+		actions = resolveActions(connection)
+	}
+	return core.Condition{
+		Code: code, Severity: "error", Message: err.Error(), Connection: connection, Actions: actions,
+	}
+}
+
+func scopeMismatchActual(err error) (service.Scope, bool) {
+	var mismatch *service.ScopeMismatchError
+	if !errors.As(err, &mismatch) {
+		return "", false
+	}
+	return service.NormalizeScope(mismatch.Actual), true
 }
 
 func planRiskConditions(connection core.Connection, executionPlan plan.ExecutionPlan) []core.Condition {
@@ -663,7 +1148,7 @@ func compactStrings(values []string) []string {
 func recordForArtifact(artifact service.Artifact, mode, declarationPath string) service.Record {
 	return service.Record{
 		RecordRevision: service.CurrentRecordRevision, Connection: artifact.Connection, ServiceKey: artifact.Connection, Adapter: artifact.Adapter,
-		Mode: mode, ArtifactPath: artifact.Path, UnitName: artifact.UnitName,
+		Scope: service.NormalizeScope(artifact.Scope), Mode: mode, ArtifactPath: artifact.Path, UnitName: artifact.UnitName,
 		LogPaths: append([]string(nil), artifact.LogPaths...), PlanDigest: artifact.PlanDigest,
 		BaselineDigest: service.ContentDigest(artifact.Content), DeclarationPath: declarationPath, Origin: "tunlite",
 	}
@@ -684,7 +1169,7 @@ func resolveActions(connection string) []core.Action {
 }
 
 func artifactResult(artifact service.Artifact) *serviceArtifactResult {
-	return &serviceArtifactResult{Adapter: artifact.Adapter, UnitName: artifact.UnitName, Path: artifact.Path, PlanDigest: artifact.PlanDigest}
+	return &serviceArtifactResult{Adapter: artifact.Adapter, Scope: service.NormalizeScope(artifact.Scope), UnitName: artifact.UnitName, Path: artifact.Path, PlanDigest: artifact.PlanDigest}
 }
 
 func succeededServiceItem(connection string, state service.State) serviceItemResult {
@@ -701,9 +1186,33 @@ func failedServiceItem(connection, code string, err error, risk string, actions 
 	}
 }
 
+func serviceOperationErrorCode(err error, fallback string) string {
+	var coded interface{ Code() string }
+	if errors.As(err, &coded) && coded.Code() != "" {
+		return coded.Code()
+	}
+	return fallback
+}
+
+func failedServiceOperation(connection string, err error, fallback string) serviceItemResult {
+	code := serviceOperationErrorCode(err, fallback)
+	risk := "low"
+	var actions []core.Action
+	if code == "recovery_blocked" || code == "scope_conflict" {
+		risk = "high"
+		var actionable interface{ Actions() []core.Action }
+		if errors.As(err, &actionable) {
+			actions = actionable.Actions()
+		} else {
+			actions = resolveActions(connection)
+		}
+	}
+	return failedServiceItem(connection, code, err, risk, actions)
+}
+
 func failedServiceItemAfterRecovery(connection, code string, cause, recovery error) serviceItemResult {
 	if recovery == nil {
-		return failedServiceItem(connection, code, cause, "low", nil)
+		return failedServiceOperation(connection, cause, code)
 	}
 	return failedServiceItem(connection, "recovery_blocked",
 		errors.Join(cause, fmt.Errorf("automatic recovery failed: %w", recovery)), "high", resolveActions(connection))
@@ -769,13 +1278,13 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 				row := statusRow{state: *result.State}
 				style := displayStatusRow(row, opts.Language)
 				if isChinese(opts.Language) {
-					fmt.Fprintf(streams.Out, "%s  %s  运行位置：%s  登录自启：%s\n",
+					fmt.Fprintf(streams.Out, "%s  %s  运行位置：%s  自动启动：%s  范围：%s\n",
 						result.Connection, style.glyph+" "+style.label,
-						statusRunsAs(row, opts.Language), statusOnLogin(row, opts.Language))
+						statusRunsAs(row, opts.Language), statusAutostart(row, opts.Language), statusScope(row, opts.Language))
 				} else {
-					fmt.Fprintf(streams.Out, "%s  %s  runs as: %s  on login: %s\n",
+					fmt.Fprintf(streams.Out, "%s  %s  runs as: %s  autostart: %s  scope: %s\n",
 						result.Connection, style.glyph+" "+style.label,
-						statusRunsAs(row, opts.Language), statusOnLogin(row, opts.Language))
+						statusRunsAs(row, opts.Language), statusAutostart(row, opts.Language), statusScope(row, opts.Language))
 				}
 			} else {
 				fmt.Fprintf(streams.Out, "%s: %s\n", result.Connection, result.Outcome)
@@ -819,6 +1328,9 @@ func serviceLogs(ctx context.Context, args []string, streams IO, opts options) e
 	record, err := loadServiceRecord(records, *connection, config.Path())
 	if err != nil {
 		return capabilityError(err.Error())
+	}
+	if err := ensureRecordScopeSupported(adapter, record); err != nil {
+		return err
 	}
 	if opts.JSON && follow {
 		var lock sync.Mutex

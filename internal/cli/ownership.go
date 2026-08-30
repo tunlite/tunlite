@@ -129,7 +129,7 @@ func manageConnection(ctx context.Context, args []string, streams IO, opts optio
 		return errors.Join(oldDigestErr, newDigestErr)
 	}
 	if oldPlanDigest != newPlanDigest || service.ContentDigest(candidate.Observation.Artifact) != service.ContentDigest(refreshed.Observation.Artifact) ||
-		observedMode(candidate.Observation) != observedMode(refreshed.Observation) {
+		observedMode(candidate.Observation) != observedMode(refreshed.Observation) || candidateScope(candidate) != candidateScope(refreshed) {
 		return stateConflictError("native service changed while it was being selected; retry manage")
 	}
 	candidate = refreshed
@@ -139,7 +139,7 @@ func manageConnection(ctx context.Context, args []string, streams IO, opts optio
 	}
 	record := service.Record{
 		RecordRevision: service.CurrentRecordRevision, Connection: name, ServiceKey: candidate.Reference.Connection,
-		Adapter: adapter.Name(), Mode: observedMode(candidate.Observation),
+		Adapter: adapter.Name(), Scope: candidateScope(candidate), Mode: observedMode(candidate.Observation),
 		ArtifactPath: candidate.Reference.ArtifactPath, UnitName: candidate.Reference.UnitName,
 		LogPaths: append([]string(nil), candidate.Reference.LogPaths...), PlanDigest: digest,
 		BaselineDigest: service.ContentDigest(candidate.Observation.Artifact), DeclarationPath: config.Path(), Origin: "system",
@@ -369,8 +369,9 @@ func resolveConnection(ctx context.Context, args []string, streams IO, opts opti
 			return err
 		}
 		previousArtifact := service.Artifact{
-			Connection: record.Reference().Connection, Adapter: record.Adapter, UnitName: record.UnitName,
-			Path: record.ArtifactPath, Content: append([]byte(nil), before.Artifact...), LogPaths: append([]string(nil), record.LogPaths...),
+			Connection: record.Reference().Connection, Adapter: record.Adapter, Scope: service.NormalizeScope(record.Scope),
+			UnitName: record.UnitName, Path: record.ArtifactPath, Content: append([]byte(nil), before.Artifact...),
+			PlanDigest: record.PlanDigest, LogPaths: append([]string(nil), record.LogPaths...),
 		}
 		previousMode := observedMode(before)
 		rollback := func(cause error) error {
@@ -480,6 +481,40 @@ func resolvableServiceRecord(ctx context.Context, adapter service.Adapter, recor
 	if err != nil {
 		return service.Record{}, err
 	}
+	candidates, err := nativeIdentityCandidates(ctx, adapter, artifact)
+	if err != nil {
+		return service.Record{}, err
+	}
+	if len(candidates) > 1 {
+		scopes := make([]service.Scope, 0, len(candidates))
+		for _, candidate := range candidates {
+			scopes = append(scopes, candidateScope(candidate))
+		}
+		return service.Record{}, &unboundNativeIdentityError{connection: connection.Metadata.Name, unit: artifact.UnitName, scopes: scopes}
+	}
+	if len(candidates) == 1 {
+		candidate := candidates[0]
+		scope := candidateScope(candidate)
+		if !service.SupportsScope(adapter, scope) {
+			return service.Record{}, &service.UnsupportedScopeError{Adapter: adapter.Name(), Scope: scope}
+		}
+		if bound, found, findErr := records.FindBinding(candidate.Reference, connection.Metadata.Name); findErr != nil {
+			return service.Record{}, findErr
+		} else if found {
+			return service.Record{}, conflictError(fmt.Sprintf("native service %s is already managed as connection %q", candidate.Reference.UnitName, bound.Connection))
+		}
+		serviceKey := candidate.Reference.Connection
+		if serviceKey == "" {
+			serviceKey = connection.Metadata.Name
+		}
+		return service.Record{
+			RecordRevision: service.CurrentRecordRevision, Connection: connection.Metadata.Name, ServiceKey: serviceKey,
+			Adapter: adapter.Name(), Scope: scope, Mode: observedMode(candidate.Observation),
+			ArtifactPath: candidate.Reference.ArtifactPath, UnitName: candidate.Reference.UnitName,
+			LogPaths:       append([]string(nil), candidate.Reference.LogPaths...),
+			BaselineDigest: service.ContentDigest(candidate.Observation.Artifact), DeclarationPath: declarationPath, Origin: "recovered",
+		}, nil
+	}
 	observation, err := adapter.Inspect(ctx, artifact.Reference())
 	if err != nil {
 		return service.Record{}, err
@@ -530,11 +565,19 @@ func findCandidateByReference(ctx context.Context, adapter service.Adapter, refe
 		return service.Candidate{}, err
 	}
 	for _, candidate := range candidates {
-		if candidate.Reference.UnitName == reference.UnitName && candidate.Reference.ArtifactPath == reference.ArtifactPath {
+		if candidate.Reference.UnitName == reference.UnitName && candidate.Reference.ArtifactPath == reference.ArtifactPath &&
+			candidateScope(candidate) == service.NormalizeScope(reference.Scope) {
 			return candidate, nil
 		}
 	}
 	return service.Candidate{}, capabilityError("system definition cannot be mapped losslessly; restore the Tunlite definition or unmanage it")
+}
+
+func candidateScope(candidate service.Candidate) service.Scope {
+	if candidate.Reference.Scope != "" {
+		return service.NormalizeScope(candidate.Reference.Scope)
+	}
+	return service.NormalizeScope(candidate.Observation.Scope)
 }
 
 func observedMode(observation service.Observation) string {

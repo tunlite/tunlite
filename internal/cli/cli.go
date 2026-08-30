@@ -391,6 +391,8 @@ func renderError(streams IO, opts options, err error) int {
 	kind := "internal_error"
 	if typed != nil && typed.kind != "" {
 		kind = typed.kind
+	} else {
+		kind = serviceOperationErrorCode(err, kind)
 	}
 	if opts.JSON {
 		riskLevel := "low"
@@ -401,6 +403,16 @@ func renderError(streams IO, opts options, err error) int {
 			}
 			if typed.actions != nil {
 				actions = typed.actions
+			}
+		}
+		var actionable interface{ Actions() []core.Action }
+		if errors.As(err, &actionable) {
+			actions = actionable.Actions()
+		}
+		if kind == "recovery_blocked" || kind == "scope_conflict" {
+			riskLevel = "high"
+			if len(actions) == 0 {
+				actions = []core.Action{{Type: "inspect_service_manager", Parameters: map[string]any{}}}
 			}
 		}
 		_ = writeResponse(streams.Out, map[string]any{

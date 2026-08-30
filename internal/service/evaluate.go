@@ -13,7 +13,8 @@ import (
 func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Artifact) State {
 	state := State{
 		Connection: record.Connection, Adapter: adapter.Name(), ServiceState: ServiceUnknown,
-		Mode: record.Mode, ProcessState: ProcessUnknown, Health: HealthUnknown,
+		Scope: NormalizeScope(record.Scope),
+		Mode:  record.Mode, ProcessState: ProcessUnknown, Health: HealthUnknown,
 		ConsistencyState: ConsistencyConsistent, ObservedAt: time.Now().UTC(),
 		Conditions: []core.Condition{}, Endpoints: []plan.Endpoint{},
 	}

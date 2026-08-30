@@ -143,7 +143,8 @@ func renderStatusTableSelected(rows []statusRow, color bool, selected int, lang 
 			return style.glyph + " " + style.label
 		}},
 		{header: localized(lang, "RUNS AS", "运行位置"), max: 14, value: func(row statusRow) string { return statusRunsAs(row, lang) }},
-		{header: localized(lang, "ON LOGIN", "登录自启"), max: 10, value: func(row statusRow) string { return statusOnLogin(row, lang) }},
+		{header: localized(lang, "AUTOSTART", "自动启动"), max: 10, value: func(row statusRow) string { return statusAutostart(row, lang) }},
+		{header: localized(lang, "SCOPE", "范围"), max: 8, value: func(row statusRow) string { return statusScope(row, lang) }},
 		{header: "PID", max: 10, value: statusPID},
 		{header: localized(lang, "UP", "已运行"), max: 10, value: statusUptime},
 		{header: localized(lang, "RESTARTS", "重启次数"), max: 8, value: statusRestarts},
@@ -284,11 +285,20 @@ func statusRunsAs(row statusRow, lang language) string {
 	}
 }
 
-func statusOnLogin(row statusRow, lang language) string {
+func statusAutostart(row statusRow, lang language) string {
 	if row.state.Mode == service.ModePersistent {
 		return localized(lang, "yes", "是")
 	}
 	return localized(lang, "no", "否")
+}
+
+func statusScope(row statusRow, lang language) string {
+	switch service.NormalizeScope(row.state.Scope) {
+	case service.ScopeSystem:
+		return localized(lang, "SYSTEM", "系统")
+	default:
+		return localized(lang, "USER", "用户")
+	}
 }
 
 func statusPID(row statusRow) string {
@@ -360,7 +370,8 @@ func renderStatusDetail(row statusRow, color bool, lang language) []string {
 	}
 	appendRow(localized(lang, "state", "状态"), style.glyph+" "+style.label, style.color)
 	appendRow(localized(lang, "runs as", "运行位置"), statusRunsAs(row, lang), "")
-	appendRow(localized(lang, "on login", "登录自启"), statusOnLogin(row, lang), "")
+	appendRow(localized(lang, "autostart", "自动启动"), statusAutostart(row, lang), "")
+	appendRow(localized(lang, "scope", "范围"), statusScope(row, lang), "")
 	appendRow("PID", statusPID(row), "")
 	appendRow(localized(lang, "up", "已运行"), statusUptime(row), "")
 	appendRow(localized(lang, "restarts", "重启次数"), statusRestarts(row), "")

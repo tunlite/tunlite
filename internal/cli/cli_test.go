@@ -179,6 +179,28 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	if capabilities["protocolVersion"] != float64(ProtocolVersion) {
 		t.Fatalf("unexpected capabilities: %#v", capabilities)
 	}
+	nativeServices, ok := capabilities["nativeServices"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities omitted native service metadata: %#v", capabilities)
+	}
+	scope, ok := nativeServices["scope"].(map[string]any)
+	if !ok || scope["default"] != "user" {
+		t.Fatalf("unexpected native service scope contract: %#v", scope)
+	}
+	if elevation := scope["nonInteractiveElevation"]; elevation != "external" && elevation != "unsupported" {
+		t.Fatalf("unexpected non-interactive elevation contract: %#v", scope)
+	}
+	supported, ok := scope["supported"].([]any)
+	if !ok || len(supported) == 0 || supported[0] != "user" {
+		t.Fatalf("user service scope is not reported: %#v", scope)
+	}
+	systemSupported := false
+	for _, value := range supported {
+		systemSupported = systemSupported || value == "system"
+	}
+	if migration, ok := scope["migration"].(bool); !ok || migration != systemSupported {
+		t.Fatalf("scope migration overclaims platform support: %#v", scope)
+	}
 	drivers, ok := capabilities["drivers"].([]any)
 	if !ok || len(drivers) != 1 {
 		t.Fatalf("capabilities omitted SSH driver metadata: %#v", capabilities)
@@ -219,6 +241,20 @@ func TestSetHelpDocumentsClearableSSHFields(t *testing.T) {
 	code, out, stderr := invoke(t, "set", "--help")
 	if code != 0 || stderr != "" || !strings.Contains(out, "--clear identity|jump|options") {
 		t.Fatalf("set help omitted clear fields: exit=%d stdout=%s stderr=%s", code, out, stderr)
+	}
+}
+
+func TestEnableHelpDocumentsScopeWithoutPlatformOverclaim(t *testing.T) {
+	for _, args := range [][]string{{"enable", "--help"}, {"enable", "--help", "--lang", "zh-CN"}} {
+		code, out, stderr := invoke(t, args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", args, code, out, stderr)
+		}
+		for _, expected := range []string{"--scope user|system", "capabilities"} {
+			if !strings.Contains(out, expected) {
+				t.Fatalf("args=%v missing %q: %s", args, expected, out)
+			}
+		}
 	}
 }
 
@@ -781,13 +817,14 @@ func TestRunForegroundStartsAndStopsProvider(t *testing.T) {
 	}
 	temp := t.TempDir()
 	marker := filepath.Join(temp, "started")
-	provider := filepath.Join(temp, "fake-ssh")
-	script := []byte("#!/bin/sh\n: > \"$TUNLITE_TEST_MARKER\"\ntrap 'exit 0' TERM INT\nwhile :; do :; done\n")
-	if err := os.WriteFile(provider, script, 0o700); err != nil {
+	stoppedMarker := filepath.Join(temp, "stopped")
+	provider, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TUNLITE_SSH", provider)
-	t.Setenv("TUNLITE_TEST_MARKER", marker)
+	t.Setenv(foregroundProviderMarker, marker)
+	t.Setenv(foregroundProviderStopped, stoppedMarker)
 	t.Setenv("TUNLITE_HOME", temp)
 	adapter := newFakeServiceAdapter(filepath.Join(temp, "native"))
 	invoke := useFakeServiceAdapter(t, adapter)
@@ -828,6 +865,9 @@ func TestRunForegroundStartsAndStopsProvider(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("foreground provider did not stop after cancellation")
+	}
+	if _, err := os.Stat(stoppedMarker); err != nil {
+		t.Fatalf("foreground provider exited without observing termination: %v", err)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(out.Bytes()))

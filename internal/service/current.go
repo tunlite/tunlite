@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,9 +21,19 @@ func NewCurrent(runner CommandRunner) (Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch runtime.GOOS {
+	return newCurrent(runtime.GOOS, home, runner, exec.LookPath, user.Current, currentUID())
+}
+
+func newCurrent(
+	goos, home string,
+	runner CommandRunner,
+	lookPath func(string) (string, error),
+	currentUser func() (*user.User, error),
+	uid int,
+) (Adapter, error) {
+	switch goos {
 	case "linux":
-		if _, err := exec.LookPath("systemctl"); err != nil {
+		if _, err := lookPath("systemctl"); err != nil {
 			return nil, errors.New("systemd user services are unavailable; use `tunlite run` on this platform")
 		}
 		base := os.Getenv("XDG_CONFIG_HOME")
@@ -36,18 +47,27 @@ func NewCurrent(runner CommandRunner) (Adapter, error) {
 		}
 		return NewSystemd(filepath.Join(base, "systemd", "user"), runner), nil
 	case "darwin":
-		if _, err := exec.LookPath("launchctl"); err != nil {
-			return nil, errors.New("launchd user services are unavailable; use `tunlite run` on this platform")
+		if _, err := lookPath("launchctl"); err != nil {
+			return nil, errors.New("launchd services are unavailable; use `tunlite run` on this platform")
 		}
-		uid := currentUID()
-		if err := probeServiceManager(runner, "launchctl", []string{"print", "gui/" + strconv.Itoa(uid)}); err != nil {
-			return nil, fmt.Errorf("launchd user services are unavailable: %w; use `tunlite run` on this platform", err)
+		systemErr := probeServiceManager(runner, "launchctl", []string{"print", "system"})
+		userErr := probeServiceManager(runner, "launchctl", []string{"print", "gui/" + strconv.Itoa(uid)})
+		if systemErr != nil && userErr != nil {
+			return nil, fmt.Errorf("launchd services are unavailable (system: %v; user: %v); use `tunlite run` on this platform", systemErr, userErr)
 		}
-		return NewLaunchd(
+		userName := ""
+		resolvedUser, err := currentUser()
+		if err == nil && resolvedUser != nil && resolvedUser.Username != "root" && uid > 0 {
+			userName = resolvedUser.Username
+		}
+		adapter := NewLaunchdWithSystemScope(
 			filepath.Join(home, "Library", "LaunchAgents"),
+			"/Library/LaunchDaemons",
 			filepath.Join(home, "Library", "Logs", "Tunlite"),
-			uid, runner,
-		), nil
+			uid, userName, runner,
+		)
+		adapter.setDomainAvailability(userErr == nil, systemErr == nil)
+		return adapter, nil
 	default:
 		return nil, errors.New("native background services are supported on Linux and macOS; use `tunlite run` on this platform")
 	}

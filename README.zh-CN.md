@@ -62,6 +62,9 @@ tunlite enable db
 tunlite status db
 tunlite logs db --lines 100
 
+# macOS 可显式迁移为系统范围，不依赖用户登录；该操作需要管理员授权。
+tunlite enable db --scope system
+
 # 认证尚未配置时，使用系统 OpenSSH 工具完成密钥配置，再检查连接。
 tunlite check db
 
@@ -103,6 +106,22 @@ tunlite CLI -> SSH Driver -> ExecutionPlan -> systemd/launchd -> ssh
 生成的服务直接执行 `ssh`。安装完成后，即使 Tunlite 二进制暂时丢失，已经运行的连接
 也不会因此退出；只是在恢复 CLI 前不能继续管理。
 
+### 服务范围
+
+每个 Connection 声明永远只有一份。Scope（服务范围）只是当前机器上的运行归属，保存在
+Service Record 和原生服务产物中，不会写入可导出、可迁移的 Connection。
+
+- `tunlite enable <name>` 对新服务默认使用 `user`，已有服务未显式传 Scope 时保留原范围。
+- `tunlite enable <name> --scope user|system` 显式选择或迁移范围，不增加单独的 `migrate` 命令。
+- `user` 不需要管理员权限。macOS 的 `system` 对应 launchd LaunchDaemon，需要管理员
+  授权；Linux 当前只支持 systemd 用户服务，system Scope 会明确返回不支持。
+- Tunlite 即使在人工终端中也不会读取或询问管理员密码；请在 Tunlite 外部建立授权后重试。
+  `--non-interactive` 进一步保证绝不等待输入。自动化使用 system Scope 时必须在外部预先
+  准备可供非交互提权检查使用的授权，否则稳定返回 `privilege_required`。
+
+人工终端迁移会显示来源、目标、权限影响和执行进度；`--json` 的 stdout 始终保持纯机器输出，
+并逐项返回稳定结果。
+
 ## Agent 契约
 
 自动化调用统一使用 `--json --non-interactive`，并查询运行时能力，不解析人类文本：
@@ -118,8 +137,8 @@ tunlite add db -L 5432:localhost:5432 deploy@app01 --dry-run --json --non-intera
 响应 Envelope。需要在 stdout 读取原始 JSON 时，使用 `schema --output -` 或
 `export --output -`。
 
-状态同时包含 `serviceState`、`mode`、`processState`、`health` 和
-`consistencyState` 五个维度。
+状态包含 `serviceState`、`mode`、`processState`、`health` 和
+`consistencyState` 五个相互独立的观测维度；另有 `scope: user|system` 表示本机服务归属。
 批量操作逐项返回结果，部分失败使用退出码 `5`。公开监听和 Publish 在声明写入及
 `--dry-run` 中返回结构化风险提示；V1 不维护独立的批准状态。
 
@@ -146,7 +165,8 @@ V1 配置写入 `~/.config/tunlite/connections.json`。`import` 只接受文档�
 - 内置 SSH `-L`、`-R`、`-D`，支持多 Forward、跳板机、Identity File、严格的
   OpenSSH `Key=Value` Option、检查、诊断、日志和漂移修复。
 - 单文件原生二进制；安装、升级和卸载由发行渠道负责。
-- macOS 12+ 使用 launchd、Linux 使用 systemd 用户服务持久运行。
+- macOS 12+ 支持 launchd 用户与系统范围；Linux 使用 systemd 用户服务，尚未实现 Linux
+  system Scope。
 - 首个预览版不发布 Windows 产物。每 Connection Task Scheduler Adapter 和 Windows
   真机验证完整通过后，Windows 才进入正式支持矩阵。
 - 外部 Driver 和插件安装延后到真实非 SSH 需求得到验证之后。

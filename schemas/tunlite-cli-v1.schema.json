@@ -74,9 +74,10 @@
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["adapter", "unitName", "path", "planDigest"],
+      "required": ["adapter", "scope", "unitName", "path", "planDigest"],
       "properties": {
         "adapter": { "type": "string" },
+        "scope": { "enum": ["user", "system"] },
         "unitName": { "type": "string" },
         "path": { "type": "string" },
         "planDigest": { "type": "string" }

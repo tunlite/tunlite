@@ -398,7 +398,7 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		if err != nil {
 			return err
 		}
-		if err := previewRenamedConnectionService(oldName, newName, store.Path()); err != nil {
+		if err := previewRenamedConnectionService(oldName, newName, store.Path(), opts); err != nil {
 			return err
 		}
 		return renderConnectionMutation(streams, opts, "rename", "planned", updated)

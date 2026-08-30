@@ -27,7 +27,7 @@ func NewStore(root string) *Store {
 func (s *Store) Load(connection string) (Record, bool, error) {
 	raw, err := os.ReadFile(s.path(connection))
 	if errors.Is(err, os.ErrNotExist) {
-		return Record{RecordRevision: CurrentRecordRevision, Connection: connection, Mode: ModeStopped}, false, nil
+		return Record{RecordRevision: CurrentRecordRevision, Connection: connection, Scope: ScopeUser, Mode: ModeStopped}, false, nil
 	}
 	if err != nil {
 		return Record{}, false, err
@@ -48,6 +48,7 @@ func (s *Store) Load(connection string) (Record, bool, error) {
 	if err := validateRecord(record, connection); err != nil {
 		return Record{}, false, err
 	}
+	record.Scope = NormalizeScope(record.Scope)
 	return record, true, nil
 }
 
@@ -58,6 +59,7 @@ func (s *Store) Write(ctx context.Context, record Record) error {
 	if record.RecordRevision == 0 {
 		record.RecordRevision = CurrentRecordRevision
 	}
+	record.Scope = NormalizeScope(record.Scope)
 	if err := validateRecord(record, record.Connection); err != nil {
 		return err
 	}
@@ -175,6 +177,9 @@ func validateRecord(record Record, connection string) error {
 	}
 	if record.Connection == "" || record.Connection != connection {
 		return errors.New("service state connection does not match its file")
+	}
+	if scope := NormalizeScope(record.Scope); scope != ScopeUser && scope != ScopeSystem {
+		return fmt.Errorf("unsupported service scope %q", record.Scope)
 	}
 	if record.Mode != ModeStopped && record.Mode != ModeBackground && record.Mode != ModePersistent {
 		return fmt.Errorf("unsupported service mode %q", record.Mode)

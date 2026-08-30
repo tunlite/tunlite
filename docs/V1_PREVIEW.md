@@ -10,11 +10,11 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 
 ## 支持矩阵
 
-| 平台 | 架构 | 前台与配置 CLI | 持久 Connection | 当前验证等级 |
+| 平台 | 架构 | 前台与配置 CLI | 持久 Connection / Scope | 当前验证等级 |
 |---|---|---:|---:|---|
-| macOS 12+ | x64 | 支持 | launchd，支持 | 自动测试、plist 原生校验，以及 Intel 真机生命周期、日志、崩溃恢复和接管/交还测试 |
-| macOS 12+ | arm64 | 支持 | launchd，支持 | 自动测试与交叉编译；稳定版前补 Apple Silicon 真机验收 |
-| Linux | x64、arm64 | 支持 | systemd 用户服务，支持 | 自动测试、交叉编译及 Ubuntu 24.04 PID 1 systemd 容器 E2E；稳定版前补非容器发行版真机验收 |
+| macOS 12+ | x64 | 支持 | launchd user 支持；system 实现，管理员真机验收待完成 | user Scope 已有自动测试、plist 原生校验及 Intel 真机生命周期验证；system Scope 发布前补隔离真机迁移/回滚验证 |
+| macOS 12+ | arm64 | 支持 | launchd user 支持；system 实现，管理员真机验收待完成 | 自动测试与交叉编译；稳定版前补 Apple Silicon user/system 真机验收 |
+| Linux | x64、arm64 | 支持 | systemd user 支持；system 不支持 | 自动测试、交叉编译及 Ubuntu 24.04 PID 1 systemd 容器 E2E；稳定版前补非容器发行版真机验收 |
 
 系统 `ssh` 必须位于 PATH，或通过 `TUNLITE_SSH` 指定绝对路径。Linux 持久模式需要
 可用的 systemd 用户会话；容器、精简发行版和没有用户会话总线的环境应使用
@@ -23,17 +23,23 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 首个预览版不发布 Windows 产物。Task Scheduler 和真实 Windows 验证完成后，Windows
 按独立验收计划进入支持矩阵。
 
+每个 Connection 声明只有一份，Scope 不进入导出配置。`enable` 对新服务默认 user，
+已有 Record 未传 `--scope` 时保留原范围；显式使用 `--scope user|system` 才选择或迁移。
+macOS system Scope 对应 LaunchDaemon，需要管理员授权；Linux system Scope 稳定返回
+`scope_unsupported`。`--non-interactive` 不等待密码，外部未预置可供 `sudo -n` 使用的
+授权时返回 `privilege_required`。
+
 V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和前台实时
 `tunlite monitor`。Monitor 使用类似 `top` 的全屏布局，标题显示当前 Tunlite 版本，
 总览显示运行、变更中、异常和停止数量；`Enter`/右键进入详情，`Esc`/左键返回，最外层
 `Esc` 退出。详情页同时显示选中 Connection 最近 20 行原生日志。启动、停止和重启期间
 立即显示“启动中”“停止中”“重启中”；停止和重启必须按 `y` 二次确认，其他任意键取消，
-启动直接执行。停止长期后台连接时，确认文字必须明确同时关闭登录自启；重启确认必须说明
-连接会短暂中断且登录自启设置不变。
+启动直接执行。停止长期后台连接时，确认文字必须明确同时关闭自动启动；重启确认必须说明
+连接会短暂中断且自动启动设置不变。
 
-人类状态界面固定拆成“状态、运行位置、登录自启”三个概念，不要求普通用户理解内部
+人类状态界面固定拆成“状态、运行位置、自动启动、范围”四个概念，不要求普通用户理解内部
 `foreground/background/persistent` 模式。Monitor 宽屏列为“名称、状态、运行位置、
-登录自启、PID、已运行、重启次数、SSH 目标、转发”；窄屏先隐藏 SSH 目标和转发，
+自动启动、范围、PID、已运行、重启次数、SSH 目标、转发”；窄屏按优先级隐藏次要列，
 `PID`、`UP`/已运行和 `RESTARTS`/重启次数始终优先保留。
 
 帮助、生命周期进度、`status` 和 `monitor` 首批支持中文和英文：`--lang zh-CN|en`
@@ -56,6 +62,10 @@ override 或 GitOps 合并规则。
 需要交换声明时使用 `export`、`validate` 和 `import`。导出文件可能包含绝对私钥路径、
 机器专用端口或其他本机信息，提交 Git 前必须人工检查。导入不会安装插件、执行认证或
 启动 Connection。
+
+Scope 是本机 Service Record、Artifact 和 State 的属性，不属于 ConnectionList。
+因此 export/import 不会把一台机器的 user/system 归属带到另一台机器；目标机器首次
+创建服务时仍默认 user。
 
 `set` 只修改明确给出的 Driver 字段。SSH 的私钥、跳板列表和额外 Option 分别用
 `--clear identity`、`--clear jump`、`--clear options` 删除，`--clear` 可在同一条命令中
@@ -143,6 +153,12 @@ scripts/test-release-e2e.sh v1.0.0-preview.1
 scripts/test-linux-docker-e2e.sh v1.0.0-preview.1
 ```
 
+macOS system Scope 还必须通过不触碰开发者现有服务的隔离验收：user→system、system→user、
+成功后进入 persistent、失败后恢复原 Scope/原 Mode、权限缺失、目标冲突、每个迁移步骤
+故障注入与完整回滚。自动测试不得调用
+真实 sudo；真实 `/Library/LaunchDaemons` 和 system launchd domain 只在专用真机门禁中
+执行。完成该门禁前，Release Notes 必须继续标注 system Scope 尚未经过管理员真机验证。
+
 Tag 触发的 Release workflow 会在自身运行中执行跨平台 test/vet、race、最低 Go 版本、
 module/staticcheck/govulncheck、真实 OpenSSH，以及归档二进制的 macOS launchd E2E；只有
 这些 Job 全部成功后才 Attest 并允许 `publish`。Workflow 把已经生成的 `dist` 显式传给
@@ -176,5 +192,5 @@ CI 固定的工具链，不能用本机任意 Go 版本生成后手工上传。
 稳定 `v1.0.0` 前还必须在非容器 Linux 真机完成 systemd 用户服务的
 `add → start → stop → enable → status → restart → disable → remove`
 验收，并完成 Apple Silicon 真机验收；逐个平台解压产物并确认嵌入版本正确，核对
-`SHA256SUMS`。这些未完成项不阻塞 `v1.0.0-preview.1`，但必须在 Preview Release Notes
+`SHA256SUMS`，并完成 macOS user↔system Scope 的专用管理员真机迁移与回滚验收。这些未完成项不阻塞 `v1.0.0-preview.1`，但必须在 Preview Release Notes
 和支持矩阵中明确写出，不能用“预计支持”替代事实。

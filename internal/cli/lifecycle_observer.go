@@ -177,7 +177,7 @@ func lifecyclePendingState(
 		return pending
 	}
 	return service.State{
-		Connection: record.Connection, Adapter: adapter.Name(), ServiceState: service.ServiceUnknown,
+		Connection: record.Connection, Adapter: adapter.Name(), Scope: service.NormalizeScope(record.Scope), ServiceState: service.ServiceUnknown,
 		Mode: record.Mode, ProcessState: service.ProcessUnknown, Health: service.HealthUnknown,
 		ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
 		Endpoints: artifact.Plan.Endpoints, Platform: map[string]any{},

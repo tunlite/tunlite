@@ -29,7 +29,7 @@ func NewSystemd(unitDir string, runner CommandRunner) *Systemd {
 func (s *Systemd) Name() string { return "systemd" }
 
 func (s *Systemd) Capabilities() Capabilities {
-	return Capabilities{Registration: true, Background: true, Persistence: true, Logs: true, Discovery: true}
+	return Capabilities{Registration: true, Background: true, Persistence: true, Logs: true, Discovery: true, UserScope: true}
 }
 
 func (s *Systemd) Target(connection string) Artifact {
@@ -242,12 +242,16 @@ func (s *Systemd) Discover(ctx context.Context) ([]Candidate, error) {
 			continue
 		}
 		embedded := embeddedPlanFromText(string(raw), "# "+embeddedPlanPrefix)
-		var value plan.ExecutionPlan
-		var decodeErr error
+		value, decodeErr := parseSystemdExecutionPlan(raw)
+		if decodeErr != nil {
+			continue
+		}
 		if embedded != "" {
-			value, decodeErr = decodeEmbeddedPlan(embedded)
-		} else {
-			value, decodeErr = parseSystemdExecutionPlan(raw)
+			embeddedValue, embeddedErr := decodeEmbeddedPlan(embedded)
+			if embeddedErr != nil {
+				continue
+			}
+			value, decodeErr = mergeEmbeddedPlan(value, embeddedValue)
 		}
 		if decodeErr != nil {
 			continue
@@ -330,11 +334,13 @@ func parseSystemdExecutionPlan(raw []byte) (plan.ExecutionPlan, error) {
 	if values := properties["Type"]; len(values) > 1 || (len(values) == 1 && strings.TrimSpace(values[0]) != "simple") {
 		return plan.ExecutionPlan{}, errors.New("systemd service must use Type=simple")
 	}
-	if values := properties["RestartSec"]; len(values) > 1 || (len(values) == 1 && strings.TrimSpace(values[0]) != "10" && strings.TrimSpace(values[0]) != "10s") {
-		return plan.ExecutionPlan{}, errors.New("systemd service restart delay cannot map to the Tunlite standard")
+	restartDelay, err := parseSystemdSeconds(properties["RestartSec"], 10, true)
+	if err != nil {
+		return plan.ExecutionPlan{}, fmt.Errorf("systemd service restart delay: %w", err)
 	}
-	if values := properties["TimeoutStopSec"]; len(values) > 1 || (len(values) == 1 && strings.TrimSpace(values[0]) != "5" && strings.TrimSpace(values[0]) != "5s") {
-		return plan.ExecutionPlan{}, errors.New("systemd service stop timeout cannot map to the Tunlite standard")
+	stopTimeout, err := parseSystemdSeconds(properties["TimeoutStopSec"], 5, false)
+	if err != nil {
+		return plan.ExecutionPlan{}, fmt.Errorf("systemd service stop timeout: %w", err)
 	}
 	if values := properties["KillMode"]; len(values) > 1 || (len(values) == 1 && strings.TrimSpace(values[0]) != "control-group") {
 		return plan.ExecutionPlan{}, errors.New("systemd service must use KillMode=control-group")
@@ -347,17 +353,33 @@ func parseSystemdExecutionPlan(raw []byte) (plan.ExecutionPlan, error) {
 	if len(properties["Restart"]) == 1 {
 		restart = strings.TrimSpace(properties["Restart"][0])
 	}
-	if restart != "on-failure" {
-		return plan.ExecutionPlan{}, errors.New("systemd service does not guarantee failure recovery")
+	if restart != "always" {
+		return plan.ExecutionPlan{}, errors.New("systemd service does not guarantee keep-up recovery")
 	}
 	value := plan.ExecutionPlan{
 		Mode:      plan.ModeDirect,
 		Exec:      plan.Exec{Program: arguments[0], Args: arguments[1:], Environment: map[string]string{}},
-		Lifecycle: plan.Lifecycle{Restart: restart, RestartDelaySeconds: 10, StopTimeoutSeconds: 5},
+		Lifecycle: plan.Lifecycle{Restart: restart, RestartDelaySeconds: restartDelay, StopTimeoutSeconds: stopTimeout},
 		Endpoints: []plan.Endpoint{}, HealthChecks: []plan.HealthCheck{}, Redactions: []plan.Redaction{},
 	}
 	if err := plan.Validate(value); err != nil {
 		return plan.ExecutionPlan{}, err
+	}
+	return value, nil
+}
+
+func parseSystemdSeconds(values []string, fallback int, allowZero bool) (int, error) {
+	if len(values) == 0 {
+		return fallback, nil
+	}
+	if len(values) != 1 {
+		return 0, errors.New("must appear exactly once")
+	}
+	raw := strings.TrimSpace(values[0])
+	raw = strings.TrimSuffix(raw, "s")
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 || (!allowZero && value == 0) {
+		return 0, errors.New("must be a valid number of seconds")
 	}
 	return value, nil
 }

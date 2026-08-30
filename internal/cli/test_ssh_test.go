@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
 
 const testSSHProcess = "TUNLITE_TEST_SSH_PROCESS"
+const foregroundProviderMarker = "TUNLITE_TEST_FOREGROUND_MARKER"
+const foregroundProviderStopped = "TUNLITE_TEST_FOREGROUND_STOPPED"
 
 var portableTestSSH string
 
@@ -17,6 +20,22 @@ var portableTestSSH string
 // fixture. Child executions exit successfully before testing parses the SSH
 // argv, while the parent test process continues through the normal suite.
 func TestMain(m *testing.M) {
+	if marker := os.Getenv(foregroundProviderMarker); marker != "" {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, foregroundTerminationSignals()...)
+		if err := os.WriteFile(marker, []byte("started\n"), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, "write foreground provider marker:", err)
+			os.Exit(2)
+		}
+		<-signals
+		if stopped := os.Getenv(foregroundProviderStopped); stopped != "" {
+			if err := os.WriteFile(stopped, []byte("stopped\n"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, "write foreground provider stop marker:", err)
+				os.Exit(2)
+			}
+		}
+		os.Exit(0)
+	}
 	if os.Getenv(testSSHProcess) == "1" {
 		os.Exit(0)
 	}

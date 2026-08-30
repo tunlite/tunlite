@@ -99,7 +99,7 @@ tunlite status preview-test
 curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
-### 4. 登录自启与恢复
+### 4. 自动启动与恢复
 
 ```bash
 tunlite enable preview-test
@@ -107,7 +107,7 @@ tunlite status preview-test
 curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
-状态应显示正常运行、系统后台、登录自启为是。退出并重新登录当前 macOS 用户，或重启
+状态应显示正常运行、系统后台、自动启动为是。退出并重新登录当前 macOS 用户，或重启
 测试机；不要在唯一远程登录依赖该 Connection 时执行。重新登录后：
 
 ```bash

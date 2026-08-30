@@ -157,6 +157,8 @@ Tunlite 希望成为一个经得起长期演进的工具。这里的“稳定”
     必经入口。
 13. 公开仓库是代码、Issue、CI、Tag 和 Release 的唯一权威来源。私有仓库可以
     存放安全或商业资料，但不能维护另一份分叉的开源核心实现。
+14. 每个 Connection 声明始终只有一份；user/system Scope 是本机原生服务归属，不进入
+    portable Connection。默认 user，只有显式 `enable --scope` 才选择或迁移 Scope。
 
 ### 2.1 v1 必须保留的扩展边界
 
@@ -417,10 +419,13 @@ Tunlite 内部必须准确处理服务定义、当前进程、用户会话启动
 | `background` | 后台运行 | 是 | 是 | 否 | 是 |
 | `persistent` | 后台长期运行 | 是 | 是 | 是 | 是 |
 
+表中的“用户会话启动后恢复”描述默认 user Scope；macOS system Scope 的 persistent 由系统
+启动阶段恢复，不依赖该用户先登录。
+
 这四个值是生命周期实现和机器契约中的标准模式，不直接作为新手界面的唯一状态答案。
-给人看的 `status`、Monitor 和未来图形界面固定拆成三个问题：当前是否正常、在哪里运行、
-是否登录自启。对应展示为“状态 / 运行位置 / 登录自启”；其中运行位置只有“当前终端 / 系统
-后台 / —”，登录自启只有“是 / 否”。内部五维状态仍完整保留在 JSON 中供脚本和 Agent
+给人看的 `status`、Monitor 和未来图形界面固定拆成四个问题：当前是否正常、在哪里运行、
+是否自动启动、归用户还是系统。对应展示为“状态 / 运行位置 / 自动启动 / 范围”；其中运行位置只有“当前终端 / 系统
+后台 / —”，自动启动只有“是 / 否”。内部五维状态仍完整保留在 JSON 中供脚本和 Agent
 判断，不能为了简化界面而压缩机器事实。
 
 运行方式表达用户意图，不替代观测状态。`background` 或 `persistent` 仍可能因为正在
@@ -455,9 +460,23 @@ enable/restart、launchd 的加载策略与 KeepAlive 等不同机制实现上�
 Connection 只占用少量配置和服务文件空间，不产生按 Connection 计算的运行时内存。
 
 `persistent` 只能通过用户明确执行 `enable` 进入。`add`、`run`、`start`、项目配置
-导入、普通 `set`、迁移和异常恢复都不得顺便进入长期运行。Agent 执行 `enable` 或
-`disable` 时必须把启动、停止和本机持久化副作用完整放入结构化计划，不能从项目声明
+导入、普通 `set` 和异常恢复都不得顺便进入长期运行。显式 Scope 迁移本身就是
+`enable --scope`，因此成功后必须进入 `persistent`，不能恢复迁移前的 Mode。Agent 执行
+`enable` 或 `disable` 时必须把启动、停止和本机持久化副作用完整放入结构化计划，不能从项目声明
 推导出静默授权。
+
+Scope 与上述 Mode 正交。新 Service Record 默认 `user`；已有 Record 不传 `--scope` 时
+保留当前值。`enable <name>|--group|--all --scope user|system` 是唯一显式选择入口；不新增
+`migrate` 命令，也不允许 `start/disable/restart` 顺带改 Scope。显式改变 Scope 时必须先
+规划整批、说明影响，再执行停旧、装新、按 `enable` 语义进入 `persistent`、稳定观测、
+更新 Record、删旧的可回滚事务。成功后 Mode 是 `persistent`；只有失败回滚才恢复原
+Scope 和原 Mode。任何目标不支持、权限不可用或计划冲突都必须在首个写操作前让整批失败。
+预检通过后的每个 Connection 独立提交并自行回滚；后项运行时失败返回 partial 和逐项结果，
+不再次中断并迁回已经成功的前项。
+
+`system` 属于管理员授权能力。人工调用可以通过系统既有授权机制完成，但 Tunlite 不读取
+密码；`--non-interactive` 只使用外部预置、可由 `sudo -n` 验证的授权，不能等待终端输入。
+缺少授权返回稳定 `privilege_required`。Connection export/import 永远不携带 Scope。
 
 处于 `foreground` 时，当前 `run` 调用者拥有进程生命周期。`start`、`stop`、
 `enable`、`disable`、`restart`、`set`、`rename`、`unmanage` 和 `remove` 必须拒绝；
@@ -616,6 +635,9 @@ Tunlite 不搬运、复制或接管日志存储。`logs` 根据已绑定服务�
 | `health` | `unknown`、`healthy`、`unhealthy` | 已声明端点是否有健康证据？ |
 | `consistencyState` | `consistent`、`drifted`、`missing`、`blocked` | 声明、生成物、依赖和 OS 服务是否一致？ |
 
+此外必须报告正交的 `scope: user|system`，回答本机原生服务由当前用户还是系统管理；它
+不是第六种 Mode，也不进入 Connection 声明。
+
 `processState: running` 只表示进程仍在运行，不能声称端到端健康。
 `mode: persistent` 表达长期运行意图，但不能掩盖服务缺失、插件缺失或进程故障；真实
 运行状态始终由 `processState` 和 `health` 单独报告。
@@ -629,8 +651,8 @@ socket，也不存在常驻的聚合状态进程。
 
 人类总览的状态收敛为“已停止、启动中、正常运行、停止中、重启中、运行异常、需要处理”。
 Monitor 的运维列按重要性保留名称、状态、PID、已运行时长和历史重启次数，再展示运行
-位置、登录自启、SSH 目标和转发；终端变窄时先隐藏 SSH 目标和转发，不能先隐藏 PID、
-已运行和重启次数。`restarting` 表示当前动作，`RESTARTS` 表示历史次数，“登录自启”表示
+位置、自动启动、范围、SSH 目标和转发；终端变窄时先隐藏 SSH 目标、转发及次要语义列，
+不能先隐藏 PID、已运行和重启次数。`restarting` 表示当前动作，`RESTARTS` 表示历史次数，“自动启动”表示
 跨登录意图，三者不得都写成含糊的“重启”。
 
 `list`、`status` 和持续刷新的 `monitor` 必须保持本机、只读、有明确时限：不得执行
@@ -707,7 +729,7 @@ Envelope；Driver 配置随锁定的 Driver 版本迁移。本机缓存、服务
 猜测字段含义。V1 Preview 只接受唯一、严格的 `configVersion: 1` 文档；不读取 0.x 或
 未发布 Go Preview 格式，也不为它们提供别名和静默转换。
 
-Connection 声明不保存 `foreground`、`background` 或 `persistent` 生命周期字段。
+Connection 声明不保存 `foreground`、`background`、`persistent` 或 `scope` 生命周期字段。
 同一份具名声明可以被 `run`、`start` 或原生自动启动复用；当前进程和自动启动属于
 本机运行状态，不能写进可迁移的 Provider 配置。
 
@@ -772,7 +794,9 @@ Connection 必须同时生成默认禁用的原生服务定义，但默认不得
 导出结果。
 
 同名项目声明与本机私有 Connection 冲突时必须报错，不得静默覆盖。`import`、
-`resolve` 和批量 `enable` 都必须逐项返回结果，允许部分失败但不能隐瞒失败项。
+`resolve` 和批量 `enable` 都必须逐项返回结果，允许普通生命周期执行出现部分失败但不能
+隐瞒失败项；显式 Scope 变更是例外，必须先完成全批预检，不能在发现后项不支持前已经
+迁移前项。
 
 未来可以允许 Connection 依赖其他具名 Connection，但在出现真实的组合 Driver
 场景，并证明启动、停止和失败语义安全之前，不得公开依赖图能力。
@@ -1098,20 +1122,20 @@ SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `host` 或 `user@host
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
 | `run` | `tunlite run <name>` | 在当前终端前台运行已有 Connection；退出即停止，不创建临时匿名配置。保留。 |
-| `start` | `tunlite start <name> \| --group group \| --all` | 通过已有原生服务在后台运行，但不设置登录后自动启动。保留。 |
+| `start` | `tunlite start <name> \| --group group \| --all` | 通过已有原生服务在后台运行，但不设置自动启动。保留。 |
 | `stop` | `tunlite stop <name> \| --group group \| --all` | 把临时后台运行变为停止；对后台长期运行明确拒绝并提示使用 `disable`，避免“现在停了、下次登录又出现”的隐藏状态。保留。 |
 | `restart` | `tunlite restart <name> \| --group group \| --all` | 重新启动后台进程，不改变是否持久启用。保留；这是高频运维动作，不强迫用户组合两条命令。 |
-| `enable` | `tunlite enable <name> \| --group group \| --all` | 设置用户会话启动后自动运行，并确保连接现在处于后台运行；已由 `start` 启动时直接升级为持久模式，不报冲突。保留。 |
+| `enable` | `tunlite enable (<name> \| --group group \| --all) [--scope user\|system]` | 设置自动启动并确保现在运行；新服务默认 user，未传 Scope 时保留已有范围，显式不同值执行可回滚迁移。macOS system 需要管理员授权；Linux system 尚未实现。保留。 |
 | `disable` | `tunlite disable <name> \| --group group \| --all` | 把后台长期运行变为停止：同时停止当前进程并取消以后自动启动；对临时后台运行提示使用 `stop`。保留。 |
 | `status` | `tunlite status [<name> \| --group group \| --all]` | 读取声明、服务、进程、健康和一致性状态；无目标时按 Group 查看全部。保留，作为脚本和 Agent 的状态入口。 |
 | `logs` | `tunlite logs <name> [--lines N] [--follow]` | 通过原生服务适配器查看一条 Connection 的历史或实时日志。保留。 |
 | `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局，按 Group 分区显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；停止和重启需要 `y` 二次确认，其他键取消，启动直接执行。不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
 
-四种标准模式继续存在于机器契约，但人类界面使用“状态 / 运行位置 / 登录自启”三列表达。
-原生服务定义从 `add` 起就存在；`start` 和 `enable` 的差异只在登录自启意图，不在是否
-“注册过”。`enable` / `disable` 必须保留：删除两个动词并不会删除登录自启概念，反而会
+四种标准模式继续存在于机器契约，但人类界面使用“状态 / 运行位置 / 自动启动 / 范围”表达。
+原生服务定义从 `add` 起就存在；`start` 和 `enable` 的差异只在自动启动意图，不在是否
+“注册过”。`enable` / `disable` 必须保留：删除两个动词并不会删除自动启动概念，反而会
 让 `start` 同时承担临时启动和修改长期意图，让 `stop` 产生难以发现的长期副作用，并且
-失去“只关闭登录自启”的对称表达。它们也与原生服务管理工具和 0.10.3 用户心智一致。
+失去“只关闭自动启动”的对称表达。它们也与原生服务管理工具和 0.10.3 用户心智一致。
 任何可能等待 SSH、原生服务管理器或批量状态采集的人工终端操作，都必须在进入等待前
 输出动作指示；稳定 JSON Envelope 不得混入这些人类进度文本。
 
@@ -1442,9 +1466,10 @@ V1 不提供 `purge` 或其他彻底清理命令。需要彻底清理时，用�
 ## 12. 平台策略
 
 - Linux/systemd 用户服务是后台能力的参考实现，但不能宣称所有 Linux 都提供
-  systemd 或可用的 `systemctl --user`。
-- macOS/launchd 用户 LaunchAgent 是一等支持平台，Intel 与 Apple Silicon 使用同一
-  语义；默认承诺用户登录后的自动启动，不静默创建需要管理员权限的系统 LaunchDaemon。
+  systemd 或可用的 `systemctl --user`；Linux system Scope 未实现，Capability 必须明确。
+- macOS/launchd 用户 LaunchAgent 是默认的一等支持范围；显式 `enable --scope system`
+  可以迁移为 LaunchDaemon。Intel 与 Apple Silicon 使用同一语义，系统范围需要管理员
+  授权且不得在非交互模式等待密码。
 - v1 首发平台是 Linux 和 macOS。Windows 不进入首发支持矩阵，原因是 Task Scheduler
   Adapter 和真实 Windows 验证不在本次交付范围，而不是把 GUI 当作某个平台
   是否获得核心支持的前置条件。
@@ -1452,7 +1477,7 @@ V1 不提供 `purge` 或其他彻底清理命令。需要彻底清理时，用�
   尚无 Adapter 的平台，Connection 标记为 `foreground-only`，使用
   `tunlite run <name>`。后台命令返回能力不支持，不能回退到 nohup、PID 文件或隐藏
   Supervisor。
-- 真正早于用户登录的系统级自动启动属于更高权限的独立能力，必须显式设计、授权和
+- 早于用户登录的系统级自动启动只在 macOS system Scope 承诺；必须显式选择、授权和
   测试，不能与默认用户级 `enable` 混为一谈。
 
 公共契约只能承诺各平台能够诚实提供的交集。平台特有信息可以放在可选命名空间对象中，
@@ -1518,7 +1543,7 @@ Machine Mode，不是默认 Windows 体验。
 
 Windows 只有同时满足以下条件后才能进入正式核心支持矩阵：
 
-- 每 Connection Task Scheduler Adapter 完成启停、登录自启、失败恢复、状态、日志、
+- 每 Connection Task Scheduler Adapter 完成启停、自动启动、失败恢复、状态、日志、
   原子更新和回滚的真实 Windows 验证。
 - Windows 10/11 的发行渠道安装、OpenSSH 检查、升级和卸载形成完整用户旅程。
 Windows Tray 随跨平台 Desktop 计划交付，可以与 Windows Core 支持同期或随后发布，

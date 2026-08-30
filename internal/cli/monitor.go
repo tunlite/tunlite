@@ -631,7 +631,8 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 			return style.glyph + " " + style.label
 		}},
 		{header: localized(lang, "RUNS AS", "运行位置"), max: 12, value: func(row statusRow) string { return statusRunsAs(row, lang) }},
-		{header: localized(lang, "ON LOGIN", "登录自启"), max: 10, value: func(row statusRow) string { return statusOnLogin(row, lang) }},
+		{header: localized(lang, "AUTOSTART", "自动启动"), max: 10, value: func(row statusRow) string { return statusAutostart(row, lang) }},
+		{header: localized(lang, "SCOPE", "范围"), max: 8, value: func(row statusRow) string { return statusScope(row, lang) }},
 		{header: "PID", max: 7, value: statusPID},
 		{header: localized(lang, "UP", "已运行"), max: 8, value: statusUptime},
 		{header: localized(lang, "RESTARTS", "重启次数"), max: 8, value: statusRestarts},
@@ -645,7 +646,7 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 		columns = columns[:len(columns)-1]
 	}
 	if width < 82 {
-		columns = []tableColumn{columns[0], columns[1], columns[4], columns[5], columns[6]}
+		columns = []tableColumn{columns[0], columns[1], columns[5], columns[6], columns[7]}
 	}
 	widths := make([]int, len(columns))
 	for index, column := range columns {
@@ -663,7 +664,7 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 	available := width - 2 - (len(columns) - 1)
 	for tableWidth(widths) > available {
 		changed := false
-		for _, columnIndex := range []int{len(columns) - 1, len(columns) - 2, 0, 1, 2, 3, 5, 6, 4} {
+		for _, columnIndex := range []int{len(columns) - 1, len(columns) - 2, 0, 1, 2, 3, 4, 6, 7, 5} {
 			if columnIndex >= 0 && columnIndex < len(columns) {
 				if widths[columnIndex] > visibleWidth(columns[columnIndex].header) {
 					widths[columnIndex]--
@@ -822,7 +823,7 @@ func executeMonitorMutation(ctx context.Context, command string, row statusRow, 
 	past := map[string]string{
 		"start":   localized(opts.Language, "started", "已启动"),
 		"stop":    localized(opts.Language, "stopped", "已停止"),
-		"disable": localized(opts.Language, "stopped and disabled on login", "已停止并关闭登录自启"),
+		"disable": localized(opts.Language, "stopped and automatic startup disabled", "已停止并关闭自动启动"),
 		"restart": localized(opts.Language, "restarted", "已重启"),
 	}
 	completedMessage := past[command] + " " + row.connection.Metadata.Name
@@ -888,13 +889,13 @@ func localizedTransition(value string, lang language) string {
 func monitorConfirmationText(confirmation monitorConfirmation, lang language) string {
 	if confirmation.key == monitorRestart {
 		return fmt.Sprintf(localized(lang,
-			" Restart %q? Connection will briefly drop; on-login stays unchanged. y confirms; any other key cancels",
-			" 重启“%s”？连接会短暂中断，登录自启设置不变。按 y 确认，其他任意键取消"), confirmation.name)
+			" Restart %q? Connection will briefly drop; autostart stays unchanged. y confirms; any other key cancels",
+			" 重启“%s”？连接会短暂中断，自动启动设置不变。按 y 确认，其他任意键取消"), confirmation.name)
 	}
 	if confirmation.persistent {
 		return fmt.Sprintf(localized(lang,
-			" Stop %q and turn off on-login? It will not return after login. y confirms; any other key cancels",
-			" 停止“%s”并关闭登录自启？重新登录后不会自动恢复。按 y 确认，其他任意键取消"), confirmation.name)
+			" Stop %q and turn off autostart? The native service manager will not restore it automatically. y confirms; any other key cancels",
+			" 停止“%s”并关闭自动启动？以后不会由原生服务管理器自动恢复。按 y 确认，其他任意键取消"), confirmation.name)
 	}
 	return fmt.Sprintf(localized(lang,
 		" Stop %q? y confirms; any other key cancels",
