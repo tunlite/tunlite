@@ -1,13 +1,13 @@
 # Tunlite CLI 交互设计
 
-- **状态：提案，待确认**
+- **状态：Preview P0 已接受并实现；P1/P2 保留为后续评估**
 - **适用目标：** `v1.0.0-preview` 及其后续演进
-- **文档性质：** 产品交互设计审查稿，不是当前行为承诺
-- **最后核对：** 2026-08-30
+- **文档性质：** 已接受交互基线、实现记录与后续候选项
+- **最后核对：** 2026-08-31
 
-> 本文同时记录“当前实现”和“建议终态”。两者必须严格区分：标为“建议”、
-> “应”或“待确认”的内容，在用户确认并完成代码、测试和真机验收前，都不能写入帮助、
-> Release Note、Schema 或能力清单，不能被视为已经支持。
+> 2026-08-30 已接受 Preview P0 交互设计，2026-08-31 已完成对应实现、自动门禁和 Intel
+> macOS system Scope 成功路径真机验收。本文中的 P1/P2 仍只是候选项，未进入帮助、
+> Release Note、Schema 或能力清单，也不能被视为已经支持。
 
 ## 1. 目的与审查方法
 
@@ -35,7 +35,7 @@
 | 边界 | 当前产品范围 |
 | --- | --- |
 | Driver | Preview 只正式支持内置 SSH Driver；`ssh` 是默认 Driver。 |
-| macOS | 支持 launchd user Scope；system Scope 已实现但必须通过管理员授权与专用真机门禁后才可对外确认。 |
+| macOS | 支持 launchd user/system Scope；Intel 已通过专用管理员真机成功路径，Apple Silicon 真机仍未验证。 |
 | Linux | 支持 systemd user Scope；不支持 Linux system Scope。 |
 | Windows | 核心可保持编译，但 Preview 不发布 Windows 产物，也不承诺后台服务。 |
 | Connection | 一份可迁移 Connection 声明；前台/后台、自动启动、Scope 和原生绑定是机器本地状态，不复制成多份 Connection。 |
@@ -61,7 +61,7 @@ monitor remove rename resolve restart run schema set start status stop
 unmanage validate version
 ```
 
-建议继续按用户任务分为七个命令族：
+按用户任务分为七个命令族：
 
 | 命令族 | 命令 | 用户问题 |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ unmanage validate version
 | 机器契约 | `schema capabilities` | 自动化可以依赖什么？ |
 | 基础入口 | `help version` | 如何发现用法和版本？ |
 
-不建议新增 `watch`、`rm`、`discover`、`adopt`、`sync`、`migrate`、`tun` 等同义命令。
+当前不新增 `watch`、`rm`、`discover`、`adopt`、`sync`、`migrate`、`tun` 等同义命令。
 新概念应先证明无法由现有命令族清晰表达。
 
 ## 4. 跨命令交互原则
@@ -90,9 +90,9 @@ unmanage validate version
 `foreground/background/persistent` 仍可保留在 JSON 机器契约中，但不能作为用户理解产品
 的唯一入口。尤其不能把 `persistent` 翻译成“后台”，因为它还包含自动启动意图。
 
-### 4.1.1 本轮不再重开的已接受决策
+### 4.1.1 2026-08-30 已接受决策
 
-以下三项已经是产品决策，不再放入待确认列表，也不以本提案为由重新设计：
+以下三项已经是产品决策，不再作为开放问题，也不以本次文档收口为由重新设计：
 
 - `add` 在受支持平台 eager materialize 默认停止的原生服务定义。
 - `set` 一旦出现 forwards 或 options，就分别把该集合视为完整新集合，而不是追加。
@@ -112,8 +112,7 @@ unmanage validate version
 
 ### 4.3 先完成参数预检，再输出耗时进度
 
-当前全局进度入口发生在命令自己的完整参数解析之前，虽然部分缺参已被挡住，但仍可能
-对其他无效参数先打印“正在……”再报 usage。建议终态顺序固定为：
+Preview 已把完整参数预检放在耗时进度之前，顺序固定为：
 
 ```text
 解析全局参数 → 解析命令参数 → 纯读取预检 → 输出动作/风险 → 授权 → 执行 → 收敛观察 → 结果
@@ -146,11 +145,11 @@ unknown 或 drifted；默认退出码是否继续为 0，应由脚本契约明�
 
 ## 5. 逐命令审查
 
-下表的“当前行为”来自当前实现核对；“建议终态”仍待产品确认和实现。
+下表记录 Preview 已实现行为和已接受规则；明确标为 P1/P2 的内容才是后续候选。
 
 ### 5.1 Connection 声明
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
 | `add` | `tunlite add <name> [--driver ssh] [--group group] [-p port] [-i key] [-J jump] [-L/-R/-D ...] [-o Key=Value ...] user@host` | 保存一份 Connection；默认 SSH 端口是 22；接受常见命令中的 `-N/-T`，但 Tunlite 本身固定生成无远端命令、无终端的隧道计划。在存在受支持服务管理器时 eager materialize 一份默认停止、禁用自动启动的原生服务定义。没有服务管理器时保存声明并警告只能前台运行。不会启动隧道。 | “添加配置”却写原生服务，有隐藏副作用，但它消除了以后 start 时才发现冲突的延迟失败。该 eager materialization 已是接受的主设计。 | 维持已接受的 eager materialization。帮助、dry-run 和成功结果必须明确列出“写 Connection + 创建停止的原生服务定义”，不使用“已启动”。 |
 | `list` | `tunlite list [--group group]` | 只列配置中的受管 Connection，按一个 `group` 分段；无 group 进入未分组。不扫描外部原生服务。 | 简单清晰；若只显示声明而不提示异常状态，用户可能误以为都可运行。 | 保持轻量清单。默认展示名称、Group、Driver、主要端点；需要运行态时明确引导 `status`，不把 `list` 变成第二个 status。 |
@@ -172,7 +171,7 @@ eager materialization 是已接受的主设计，理由是它在添加时一次�
 
 #### `set` 的集合语义
 
-建议帮助中直接给出例子：
+帮助使用以下例子说明整表替换：
 
 ```text
 # 这不是追加；结果只保留下列两个 forward
@@ -182,43 +181,43 @@ tunlite set db -L 5432:localhost:5432 -D 1080
 tunlite set db -o ServerAliveInterval=30 -o ServerAliveCountMax=3
 ```
 
-当前实现的 SSH option allowlist **实际允许 `SetEnv`**，这是 Preview 安全缺口，不得写成
-已经禁止。建议 P0 从 allowlist 删除并新增拒绝回归测试。原因不是语法做不到，而是它可把
-任意环境值写入 provider 进程/远端环境，扩大 Secret 泄漏、服务文件持久化和不可审查配置
-的攻击面。其他允许列表之外的 OpenSSH option 继续拒绝；不得用 `--force` 绕过。
+Preview 的 SSH option allowlist 已禁止 `SetEnv` 并有拒绝回归测试。原因不是语法做不到，
+而是它可把任意环境值写入 provider 进程/远端环境，扩大 Secret 泄漏、服务文件持久化和
+不可审查配置的攻击面。其他允许列表之外的 OpenSSH option 继续拒绝；不得用 `--force`
+绕过。
 
 ### 5.2 运行与原生生命周期
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
 | `run` | `tunlite run <name>` | 在当前终端运行已有 Connection；持有前台锁；若存在后台记录，必须证明它已停止且一致。Ctrl-C/context cancel 会输出 stopped/cancelled 并 exit 0；provider 自身异常退出仍报错。`--dry-run` 输出执行计划。JSON 当前先写 starting Envelope，必须保留为流式首帧回归。 | 心智清晰；机器事件与 provider 输出的 stream 归属仍要完全固化。 | 保持前台语义。TTY 人类输出到 stderr；机器模式按已接受的首帧流式契约回归，不能假装是单个 JSON 文档。 |
 | `start` | `tunlite start <name> \| --group <group> \| --all` | stopped → temporary background；现在运行但不自动启动。background 时幂等；persistent 时拒绝。批量逐项执行；观察有预算，可返回“仍在 starting”。 | 与 enable 的区别需要持续展示。 | 固定为当前登录会话的临时后台，不注册 system LaunchDaemon、不请求 sudo。结果显示“运行位置：后台服务；自动启动：否”；若未收敛，明确返回 pending/starting。 |
 | `stop` | `tunlite stop <name> \| --group <group> \| --all` | temporary background → stopped；stopped 幂等。 | stop 与 disable 的边界必须只由 mode 决定。 | 只允许停止 temporary background；对 user/system persistent 一律报错并提示 `disable`，不请求 sudo。 |
 | `enable` | `tunlite enable (<name> \| --group <group> \| --all) [--scope user\|system]` | 确保现在运行并开启自动启动；显式不同 Scope 做迁移，观察可返回 still starting。 | “enable”实际是注册 persistent，副作用必须直说。 | 注册 persistent：user 安装/加载 LaunchAgent，无 sudo；system 安装/加载 LaunchDaemon，需要统一 sudo 授权。新服务默认 user，已有 persistent 未传 Scope 时保留原 Scope。 |
 | `disable` | `tunlite disable <name> \| --group <group> \| --all` | persistent → stopped，同时停止并关闭自动启动；background 时拒绝使用 stop；stopped 幂等。保留 Connection。system 在授权事务中 bootout/disable 并删除 root-owned LaunchDaemon artifact，保留用户态 Record 和 system Scope 意图；user 可保留可重建 artifact。 | 与 enable 对称，不能删除。 | user LaunchAgent 不需要 sudo；system 解除注册和删除 root artifact 需要统一 sudo 授权。temporary background 必须提示使用 stop。 |
-| `restart` | `tunlite restart <name> \| --group <group> \| --all` | 支持 temporary background、user persistent、system persistent；保持 mode、autostart、Scope；stopped 拒绝。会短暂中断流量，可能返回仍在 restarting。**当前实现缺口：system Restart 仍通过 `runMutation` 执行特权 `bootout/bootstrap`，尚不符合已确认终态。** | 高频且清晰；system restart 不应因为服务定义是 root-owned 就索要密码。 | 全 Scope 支持；显式 CLI 命令不二次确认，Monitor `r` 需要确认。system restart 只有在 PID/身份、原生定义 consistent、KeepAlive 已启用且会拉起预期 Provider 全部可证明后才终止，任一前置失败零变更；不请求 sudo，也不得降级到特权 service-manager 重载。 |
-| `status` | `tunlite status [<name> \| --group <group> \| --all]` | 读取声明、记录、原生服务、进程、端点健康和一致性。默认实现预算为整批 5 秒、单项 2 秒、最多并发 8（可调实现参数，不是长期协议）。即使状态 unhealthy/drifted/unknown，只要读取成功仍 exit 0。缺少 record/identity 时当前会先把 scope 初始化为 user，可能把“未知”误显示为 user。actual mode 与 record 中 desired mode 不同会归为 drift，但人类界面没有并列展示两者。 | 信息最重要，但单个“正常运行”会把 `health=unknown` 误当健康；exit 0 容易被脚本误用。 | `health=unknown` 显示“运行中，健康未知”，绝不能叫“正常”。人类界面无 Scope 证据时 P0 先显示 `—/未知`；JSON 如何表达 unknown 单独确认。详情并列 desired/actual mode。默认 exit 0 保持“读取成功”兼容，并在 JSON 明确 conditions；是否增加 `--fail-if unhealthy|attention` 待确认。 |
-| `logs` | `tunlite logs <name> [--lines N] [--follow]` | 默认读取 100 行，允许范围 1–100000；`--json` 非 follow 返回 Envelope，follow 返回 NDJSON log events。日志是 provider 外部输出，无法保证清除未知 Secret。 | 功能明确；流式 JSON 与普通 JSON 必须区别。 | 保留。`logs --follow --json` 首帧声明协议/stream 是已接受契约并列为 P0；Ctrl-C 正常结束；文档明确日志不可信和脱敏边界。 |
-| `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 默认 1 秒刷新，允许 0.25–60 秒；需要交互终端；全屏 top 风格。当前任意一行状态采集失败可能拖垮整体，system restart 也尚未实现无 sudo 路径。 | 是最适合新手的运行入口，但必须容忍单连接故障并准确映射生命周期动作。 | `x` 按 mode 映射：temporary background→stop，persistent→disable，后者使用明确的强确认；`r` 对 temporary/user persistent/system persistent 全部可用并确认，system `r` 不提示密码。只有 system disable 等真正 root 操作才退出 raw mode进入 sudo。 |
+| `restart` | `tunlite restart <name> \| --group <group> \| --all` | 支持 temporary background、user persistent、system persistent；保持 mode、autostart、Scope；stopped 拒绝。会短暂中断流量，可能返回仍在 restarting。system persistent 会先验证 PID/身份、原生定义与 KeepAlive，再由当前用户终止 Provider 并等待 KeepAlive 拉起新 PID；不调用 sudo 或特权 service-manager 重载。 | 高频且清晰；system restart 不因服务定义是 root-owned 而索要密码。 | 已实现全 Scope 支持；显式 CLI 命令不二次确认，Monitor `r` 需要确认。任一安全前置证明失败时零变更退出，不降级到特权 fallback。 |
+| `status` | `tunlite status [<name> \| --group <group> \| --all]` | 读取声明、记录、原生服务、进程、端点健康和一致性。默认实现预算为整批 5 秒、单项 2 秒、最多并发 8（可调实现参数，不是长期协议）。即使状态 unhealthy/drifted/unknown，只要读取成功仍 exit 0。无 Scope 证据时人类界面显示 `—/未知`，详情并列 desired/actual mode 并在漂移时给出 actions；`health=unknown` 不显示为“正常运行”。 | 信息完整；exit 0 表示读取成功，自动化仍须检查机器 conditions。 | 是否增加 `--fail-if unhealthy|attention` 留到 P1 评估；不改变 Preview 默认退出语义。 |
+| `logs` | `tunlite logs <name> [--lines N] [--follow]` | 默认读取 100 行，允许范围 1–100000；`--json` 非 follow 返回 Envelope，follow 返回带协议/stream 首帧的 NDJSON events。日志是 provider 外部输出，无法保证清除未知 Secret。 | 功能明确；流式 JSON 与普通 JSON 必须区别。 | 保留已接受的首帧契约；Ctrl-C 正常结束；文档明确日志不可信和脱敏边界。 |
+| `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 默认 1 秒刷新，允许 0.25–60 秒；需要交互终端；全屏 top 风格。行级状态错误隔离；`x` 按 mode 映射 stop/disable 并确认，`r` 覆盖 temporary/user persistent/system persistent 并确认。system restart 无 sudo；只有 system disable 等真实 root 动作退出 raw mode 进入 sudo，完成后恢复 TUI。 | 是新手和运维的实时入口；单连接故障不拖垮整体。 | P0 已实现；继续以真机回归保护确认文案、终端恢复和无密码 system restart。 |
 
 ### 5.3 所有权、发现与漂移
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
-| `manage` | `tunlite manage [native-service] [--name name]` | 扫描可无损解析的外部 SSH 原生服务，导入 Connection、绑定记录和基线，不重启兼容的在运服务。`--name` 省略时默认使用发现到的原生 Connection 名。无显式 target 时当前会读 stdin 让用户编号选择；`--non-interactive` 要求 target，但普通管道 stdin 并未被严格拒绝。 | 省略 target 的交互选择方便，但必须是真实 TTY，不能在 CI 中悬挂。 | 无 target 时要求 stdin 和终端输出都是真实 TTY；有效请求因 non-interactive/非 TTY 无法选择时按已接受契约 exit 4。只有参数语法错误才 exit 2。dry-run 展示将接管的 identity、Scope、mode 和解析出的 SSH 配置。 |
+| `manage` | `tunlite manage [native-service] [--name name]` | 扫描可无损解析的外部 SSH 原生服务，导入 Connection、绑定记录和基线，不重启兼容的在运服务。`--name` 省略时默认使用发现到的原生 Connection 名。无显式 target 时只在 stdin 和终端输出都是真实 TTY 时读取编号选择；non-interactive/非 TTY 的有效选择请求 exit 4。 | 省略 target 的交互选择方便，同时不会在 CI 或管道中悬挂。 | 参数语法错误 exit 2；dry-run 展示将接管的 identity、Scope、mode 和解析出的 SSH 配置。 |
 | `unmanage` | `tunlite unmanage <name>` | 删除 Tunlite 声明和绑定，但保留原生 service 定义及其当前运行/自动启动状态；适用于外部接管或 Tunlite 创建的服务。 | “取消管理”容易被误解为停止或删除。 | 成功前后明确显示“原生服务将继续运行/保持自动启动，Tunlite 不再管理”。若无法证明已完整交还则失败回滚，不能静默留下半绑定。 |
 | `resolve` | `tunlite resolve <name> --use tunlite\|system` | 漂移时显式选择事实来源。`--use tunlite` 可能重写原生定义并重启运行服务；`--use system` 正常路径只读取原生定义，再写 Tunlite Connection/record，不修改 system 原生服务，因此不需要 system sudo。 | 方向明确，但两个方向的权限与副作用不同，必须预演。 | 保留显式 `--use`，无默认值。`--use tunlite` 的真实 system 写/补偿进入授权门；正常 `--use system` 不得无故 sudo。dry-run 输出字段 diff、是否重启、native identity 与 Scope；参数已是明确选择，不再二次确认。 |
 
 ### 5.4 检查与诊断
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
 | `check` | `tunlite check <connection-or-user@host> [-p port] [-i key] [-J host] [--timeout seconds]` | 对已存 Connection 或临时 SSH target 做只读连通性/认证检查；不保存临时 target，不启动隧道。默认超时 12 秒，允许 0.25–120 秒。 | 两类输入实用，但错误必须区分 DNS、TCP、host key、认证。 | 保留。参数预检后立即显示检查阶段；JSON 给稳定 condition/action，不建议把原始 ssh 文本当机器契约。`--dry-run` 在发起任何 DNS/TCP/SSH 前 exit 2。 |
 | `doctor` | `tunlite doctor [name] [--offline] [--timeout seconds]` | 综合检查本机环境、配置、服务管理器和 Connection；`--offline` 跳过网络深检。默认每 Connection 超时 12 秒，允许 0.25–120 秒；可能扫描多个对象。 | 与 check 分工合理。 | 保留。先输出检查范围和 online/offline；每项独立超时，单项失败不阻断其余诊断；最终按 error/warning/info 汇总。`--dry-run` 在环境/服务管理器/网络探测前 exit 2。 |
 
 ### 5.5 声明交换
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
 | `import` | `tunlite import <path> [--force]` | 严格读取声明并逐 Connection 合并。对每项同时处理 eager materialization/更新；不是整批原子：前项成功、后项失败时保留前项并返回 partial/exit 5。`--force` 允许同名更新但不允许换 Driver；若更新的是正在 background/persistent 运行的 Connection，执行计划变化可能自动 restart。只有更新 system persistent 并需要原子替换 LaunchDaemon 时才进入统一授权门；普通 restart 本身不提权。不会接管外部服务或隐式启动原本 stopped 的对象。 | partial 与整表语义已接受，但必须把覆盖、重启和逐项提交说清。 | 维持已接受的逐项 partial；执行前显示 N 项、覆盖数、可能重启和“逐项提交”；JSON 必须逐项结果，不新增 `--atomic` 候选。 |
 | `export` | `tunlite export [--output path\|-] [--force]` | 导出可迁移 Connection，不含本机 record、Scope、mode、原生 identity 或日志。默认直接向 stdout 输出原始声明 JSON；指定普通文件时已有文件需 force。`--json` 无 output 时改为 Envelope；`--json --output -` 拒绝，避免原始文档和 Envelope 混淆。 | 边界清晰。 | 保留。帮助明确不导出本机生命周期和 Secret 管理承诺；raw stdout 与 JSON Envelope 继续互斥。 |
@@ -226,7 +225,7 @@ tunlite set db -o ServerAliveInterval=30 -o ServerAliveCountMax=3
 
 ### 5.6 机器契约与基础入口
 
-| 命令 | 语法 | 当前行为与副作用 | 易用性判断 | 建议终态 |
+| 命令 | 语法 | 实现行为与副作用 | 易用性判断 | 已接受规则/后续 |
 | --- | --- | --- | --- | --- |
 | `schema` | `tunlite schema [connection\|connection-list\|ssh\|cli\|service-state] [--output path\|-] [--force]` | 默认输出 `connection` Schema；写文件时有覆盖保护；`--json --output -` 拒绝。 | 清晰。 | 保留。Schema 与对应 config/protocol version 同步测试；raw Schema 不包 Envelope，机器元信息模式才包。 |
 | `capabilities` | `tunlite capabilities` | 返回版本、平台、26 命令、Driver、服务管理器、Scope、状态枚举和退出码。会探测本机服务管理器；人类模式较简略。 | 是 Agent/Desktop 握手入口。 | JSON 保持唯一权威能力入口；不可用/未知能力不能默认成 user 或 false 而丢失原因。人类模式增加“为什么不可用”的短说明。 |
@@ -240,25 +239,25 @@ tunlite set db -o ServerAliveInterval=30 -o ServerAliveCountMax=3
 
 ### 6.1 单项语义
 
-| Flag | 当前语义 | 建议终态 |
+| Flag | Preview 语义 | 约束/后续 |
 | --- | --- | --- |
 | `--json` | 输出 JSON Envelope、NDJSON 或命令特定机器结果；Monitor 拒绝。 | 成功和错误都不得混入 ANSI、进度或本地化字段值。流式命令明确标为 NDJSON。 |
-| `--non-interactive` | 目标语义是禁止选择/授权交互并让 system scope 只使用外部预授权 sudo，但当前覆盖不完整：Monitor 仍没有显式拒绝该 flag，manage 的非 TTY 判定也不完整。 | 整条调用链零提示、零 stdin 读取。参数语法错误 exit 2；有效请求因认证、选择或其他人工交互无法继续时按已接受契约 exit 4。 |
-| `--dry-run` | 对实现了预演的变更命令不写入；全局解析器也会接受部分无意义组合。Monitor 拒绝。 | 仅在能给出真实计划的命令上声明支持。读命令要么明确等价只读，要么以 usage 拒绝，不能静默忽略。 |
+| `--non-interactive` | 禁止选择/授权交互并让 system scope 只使用外部预授权 sudo；Monitor 在进入 TUI 前拒绝，manage 无 target 时不读取非 TTY stdin。 | 整条调用链零提示、零 stdin 读取。参数语法错误 exit 2；有效请求因认证、选择或其他人工交互无法继续时 exit 4。 |
+| `--dry-run` | 对实现了预演的变更命令不写入；不支持的组合在参数预检中拒绝，Monitor 拒绝。 | 仅在能给出真实计划的命令上声明支持。读命令要么明确等价只读，要么以 usage 拒绝，不能静默忽略。 |
 | `--lang en\|zh-CN` | 控制帮助、部分人类进度/状态/TUI；JSON 字段和值保持英文。 | 只影响人类文字。JSON `code/outcome/action/type/state` 永不翻译；message 可否本地化需一次性定契约，建议稳定英文并另加可选 displayMessage。 |
 
-### 6.2 命令族支持矩阵（建议终态）
+### 6.2 命令族支持矩阵（已接受）
 
 | 命令/命令族 | `--json` | `--non-interactive` | `--dry-run` | `--lang` |
 | --- | --- | --- | --- | --- |
 | `add set rename remove` | 支持 | 支持 | 支持 | 支持人类输出 |
 | `run` | 支持，但定义为 NDJSON/流式 | 支持 | 支持 | 支持人类输出 |
 | `start stop enable disable restart` | 支持 | 支持 | 支持 | 支持人类输出 |
-| `status` | 支持 | 等价只读，允许 | 不支持；P0 以 exit 2 拒绝无意义 flag | 支持人类输出 |
+| `status` | 支持 | 等价只读，允许 | 不支持；exit 2 拒绝无意义 flag | 支持人类输出 |
 | `logs` | 支持；follow 为 NDJSON | 支持 | 不支持 | 支持非 JSON 辅助文字 |
 | `monitor` | **不支持** | 不执行；因需要人工交互 exit 4 | **不支持** | 支持 |
 | `manage unmanage resolve` | 支持 | 支持；manage 无 target 时拒绝 | 支持 | 支持人类输出 |
-| `check doctor` | 支持 | 支持 | **不支持；P0 在外部探测前 exit 2** | 支持人类输出 |
+| `check doctor` | 支持 | 支持 | **不支持；在外部探测前 exit 2** | 支持人类输出 |
 | `import` | 支持 | 支持 | 支持逐项合并/服务更新预演 | 支持人类输出 |
 | `export` | 支持；默认 raw stdout，`--json` 改为 Envelope | 支持 | 仅写普通文件时有实际预演意义 | 支持人类输出 |
 | `validate` | 支持 | 等价只读，允许 | 不支持 | 支持人类输出 |
@@ -309,13 +308,14 @@ tunlite set db -o ServerAliveInterval=30 -o ServerAliveCountMax=3
 | `consistencyState` | consistent/drifted/missing/blocked | 声明、record 与原生服务是否一致？ |
 | `scope` | user/system/unknown | 原生服务实际属于当前用户还是系统？ |
 
-`scope` 当前 Schema 只有 user/system；若缺少 record 且也发现不到 identity，当前实现会误用
-user。这里拆成两个决策层：人类界面 P0 直接显示 `—/未知`，不等待协议升级；JSON 如何
-表达 unknown、是否增加枚举或可空字段仍待确认。在任何形式下都不能伪造 user 证据。
+Preview 的持久 Record 只接受显式 `user/system`，不会把缺少 Scope 的旧记录默认成 user。
+当状态观察缺少 Record/identity 证据时，人类界面显示 `—/未知`，不会伪造 user 证据。
+未来如果机器契约需要把 `unknown` 作为可持久枚举，应按协议升级流程单独设计，不在
+Preview.1 中隐式扩大 Schema。
 
 ### 7.2 健康未知不能叫“正常”
 
-当前人类状态把 `processState=running && health=unknown` 显示为绿色“正常运行”。建议改为：
+人类状态按以下规则显示，`processState=running && health=unknown` 不再显示为“正常运行”：
 
 | Process | Health | 人类标签 | 颜色/严重度 |
 | --- | --- | --- | --- |
@@ -329,7 +329,7 @@ user。这里拆成两个决策层：人类界面 P0 直接显示 `—/未知`�
 ### 7.3 desired 与 actual mode
 
 Record 中的 mode 是 Tunlite 的期望/记录，launchd/systemd 观察结果是 actual mode。两者不同时，
-当前只给 `service_mode_drifted` condition。建议详情明确显示：
+Preview 在 `service_mode_drifted` condition 之外，详情明确显示：
 
 ```text
 期望运行方式  长期后台（自动启动）
@@ -354,14 +354,14 @@ Record 中的 mode 是 Tunlite 的期望/记录，launchd/systemd 观察结果�
 - native identity、原生定义路径、日志路径（详情/JSON，不必挤入总表）
 - observedAt 与数据是否过期
 
-`status` 默认 exit 0 表示“状态成功读取”，不是“全部健康”。是否新增脚本判定选项由产品确认，
+`status` 默认 exit 0 表示“状态成功读取”，不是“全部健康”。是否新增脚本判定选项留到 P1，
 不能直接把 unhealthy 改成非 0 破坏现有自动化。
 
 ## 8. TTY、耗时进度与批量操作
 
 ### 8.1 TTY 判定
 
-| 场景 | 终态要求 |
+| 场景 | Preview 要求 |
 | --- | --- |
 | 普通人类命令 | 只有进度的实际输出目的地 stderr 是 TTY 时才显示短进度；不能因为 stdout 是 TTY 就向重定向的 stderr 写交互进度。结果仍按 stdout/stderr 契约输出。 |
 | `monitor` | stdin 与输出必须是真实 TTY；否则快速失败并引导 `status --json`。 |
@@ -387,8 +387,7 @@ Record 中的 mode 是 Tunlite 的期望/记录，launchd/systemd 观察结果�
 
 ### 8.3 批量语义
 
-当前普通批量操作主要按 Connection 逐项处理；不能把下面的“整批目标快照 + 全量只读预检”
-描述成已经普遍实现。`--group/--all` 的**建议新增终态流程**是：
+`--group/--all` 按已接受的以下流程执行：
 
 1. 固定目标快照并按稳定顺序排序。
 2. 对全部目标做不写入的参数、能力、冲突和 Scope 预检。
@@ -404,11 +403,9 @@ Record 中的 mode 是 Tunlite 的期望/记录，launchd/systemd 观察结果�
 
 ### 9.1 固定流程
 
-当前只有显式 `enable --scope ...` 会在 CLI 层预先进入统一交互授权；其他真正修改 system
-注册或定义的路径可能直接落到 Adapter 的 `sudo -n`，缓存未预置或已过期时只会失败而
-不会先给用户统一授权机会。授权门不能只看命令行有没有 `--scope`，也不能因为 Record 的
-Scope 是 system 就无条件提权。P0 必须让**所有且仅有实际会注册、解除注册或原子替换
-LaunchDaemon 的路径**统一经过授权门：
+2026-08-30 接受并在 2026-08-31 实现统一授权门：它不只检查命令行有没有 `--scope`，也
+不会因为 Record 的 Scope 是 system 就无条件提权。**所有且仅有实际会注册、解除注册或
+原子替换 LaunchDaemon 的路径**统一经过授权门：
 
 | 入口 | 为什么可能写 system Scope |
 | --- | --- |
@@ -491,7 +488,7 @@ temporary 的 start/stop、user persistent 的 disable 和任何 Scope 的 resta
 ## 10. 确认策略
 
 确认用于“键盘上容易误触且参数没有充分表达意图”的交互场景，不用于重复询问已经明确的 CLI
-参数。建议终态：
+参数。Preview 确认策略为：
 
 | 场景 | 是否确认 | 理由 |
 | --- | --- | --- |
@@ -533,7 +530,7 @@ temporary 的 start/stop、user persistent 的 disable 和任何 Scope 的 resta
 
 ## 12. 安全约束
 
-1. 当前 allowlist 允许 SSH `SetEnv`；P0 必须修复为 Preview 禁止，并以回归测试固定安全 option allowlist。
+1. Preview 已禁止 SSH `SetEnv`，并以拒绝回归测试固定安全 option allowlist。
 2. 不把 Secret 主动写入 argv、plist/unit、导出或诊断；身份文件只保存路径。
 3. provider/原生日志是不可信外部输出，只能脱敏已知值，不能承诺识别全部 Secret。
 4. 所有服务文件使用 argv 数组/原生转义，不通过 shell 拼接。
@@ -543,34 +540,31 @@ temporary 的 start/stop、user persistent 的 disable 和任何 Scope 的 resta
 8. 公开监听、远程转发、覆盖与重启风险进入 conditions；条件不是授权，也不保存“已批准”。
 9. TUI 无论正常、失败或信号退出都恢复终端。
 
-## 13. 实施优先级提案
+## 13. 实施优先级与完成记录
 
-### P0：进入公开 Preview 前
+### P0：2026-08-30 接受，2026-08-31 实现
 
-- 修正 `health=unknown` 被显示为“正常运行”。
-- 人类界面缺少 Scope 证据时显示 `—/未知`，不默认 user；JSON 表达方式仍按第 14 节确认。
-- status 详情并列 desired/actual mode，漂移给明确 actions。
-- Monitor 行级错误隔离，一条坏 Connection 不拖垮整体。
-- 为第 9 节枚举的全部 system 注册、解除注册和配置原子替换建立统一授权门，不只覆盖显式
-  `enable --scope`；同时证明 `start`、`stop`、`restart` 和只读路径不会调用 sudo。
-- 将 system restart 从当前特权 `runMutation` + `bootout/bootstrap` 改为“验证进程身份 →
-  验证原生定义 consistent、KeepAlive 已启用且会拉起预期 Provider → 当前用户终止 Provider
-  → KeepAlive 拉起 → PID 与健康收敛”；禁止 `kickstart` 和任何 sudo fallback，任一前置
-  证明失败时零变更退出。
-- Monitor 只有 system disable 等真实提权动作才在授权前退出 raw mode，授权后可靠恢复并
-  重绘；system restart 保持在 TUI 中执行确认和无密码重启。
-- `manage` 无 target 时强制真实 TTY；non-interactive/管道快速失败。
-- 保持交互/认证所需退出码数值 4 不变，但把 capabilities 当前过窄的 `authenticationFailed`
-  与 CLI Schema 一并对齐为覆盖“认证、选择或人工交互所需”的名称（建议
-  `interactionRequired`）；命名迁移必须同步契约版本与测试，不能只改单侧文案。
-- 所有耗时进度移动到完整参数预检之后。
-- 固化全局 flag 支持矩阵和不支持组合测试；JSON/非 TTY 零 ANSI/TUI 控制序列。
-- 独立完成 dry-run 边界：`check`、`doctor`、`logs`（尤其 `--follow`）必须在任何外部探测/日志流之前 exit 2；全部支持 dry-run 的写命令保持零副作用。
-- `set` help/dry-run 明确 forwards/options 整表替换及可能自动 restart。
-- `unmanage` 明确原生服务继续运行；`rename` 明确保留 native identity。
-- 实现已接受的流式首帧契约：`logs --follow --json` 新增协议/stream 首帧，`run --json` 固定现有 starting 首帧并补回归。
-- 完成既定人类界面的中英文双语一致性；单命令 help 是否采用统一副作用模板仍是待确认门，不伪装为已实现。
-- 修复当前仍允许 `SetEnv` 的安全缺口，并验证 Preview 明确拒绝。
+- `health=unknown` 不再显示为“正常运行”；人类界面无 Scope 证据时显示 `—/未知`，严格
+  Record 不接受缺失 Scope 的历史默认值；status 详情并列 desired/actual mode 和 actions。
+- Monitor 隔离单行错误，显示版本、PID、UP、RESTARTS 与生命周期中间状态；导航、停止/
+  重启确认和终端恢复纳入回归。
+- 第 9 节全部 system 注册、解除注册和配置原子替换入口使用统一授权门；`start`、`stop`、
+  `restart`、remove 的用户态收尾和只读路径不会为了 system Record 无条件 sudo。
+- system restart 已改为“验证进程身份、原生定义与 KeepAlive → 当前用户终止 Provider →
+  KeepAlive 拉起 → PID 与健康收敛”；禁止 `bootout/bootstrap/kickstart` 和 sudo fallback，
+  任一前置证明失败时零变更退出。
+- Monitor 只有 system disable 等真实提权动作才退出 raw mode 进入 sudo，结束后恢复 TUI；
+  system restart 在 TUI 中确认后无密码执行。
+- `manage` 无 target 时要求真实 TTY；non-interactive/管道快速失败。
+- 耗时进度位于完整参数预检之后；全局 flag、dry-run、JSON/非 TTY 和流式首帧契约有回归。
+- `set` 明确 forwards/options 整表替换与自动 restart；`unmanage` 说明原生服务继续运行，
+  `rename` 保留 native identity。
+- 中英文帮助、生命周期、status 与 Monitor 已实现首批一致性；SSH `SetEnv` 已明确拒绝。
+
+Intel 真机进一步验证了最终候选 Universal 2 产物的 LaunchDaemon
+USER→SYSTEM→USER→SYSTEM、真实 `-L` 流量、system `set`、无 sudo restart、disable/remove
+和精确清理。迁移失败、权限/冲突和逐步回滚仍由自动故障注入证明，不能把成功路径描述成
+每种故障都在硬件上复现。
 
 ### P1：Preview 反馈后、稳定版前评估
 
@@ -588,42 +582,39 @@ temporary 的 start/stop、user persistent 的 disable 和任何 Scope 的 resta
 - 原生 identity 离线重建/改名工具。
 - Shell completion 和额外本地化语言。
 
-## 14. 需要用户明确确认的产品决策
+## 14. 已接受决策与后续评估
 
-在改代码前，需要逐项确认：
+2026-08-30 已接受并进入 Preview 基线：`rename` 保留旧 native identity；status exit 0 表示
+读取成功；Monitor 对 persistent 的停止映射为 disable 并使用强确认；eager add、`set`
+集合整表替换、批量/import 逐项 partial，以及 `run`/`logs --follow` 的流式首帧方向保持不变。
 
-1. `rename` 是否正式承诺保留旧 native service identity 以换取零中断。
-2. `status` 默认 exit 0 是否正式定义为“读取成功”；是否增加可选失败条件。
-3. Scope 缺失时，JSON 是否升级 Schema 允许 `unknown`、使用可空字段，及何时升级协议；人类 P0 显示 `—/未知` 不再等待该决策。
-4. Monitor 的停止 persistent 是否继续映射为 disable，并使用更强确认文案。
-5. 是否需要 `monitor --plain`；确认 NO_COLOR 不承担禁用 TUI 控制序列的职责。
-6. 单命令 help 是否采用固定“读取/写入/进程/自动启动/Scope/重启风险”摘要模板。
-7. P0 清单是否全部作为 Preview 发布门禁，还是允许其中哪项延后并公开记录风险。
+以下内容仍是 P1/P2 候选，不构成 Preview 能力承诺：
 
-已接受而不再重开的决策：eager add、`set` 集合整表替换、批量/import 逐项 partial，以及
-`run`/`logs --follow` 的流式首帧方向。
+1. status 是否增加 `--fail-if unhealthy|attention`。
+2. 是否增加 `monitor --plain`；`NO_COLOR` 仍只关闭颜色，不代表禁用 TUI。
+3. 是否把全部单命令 help 扩展为固定副作用摘要模板。
+4. 机器契约未来是否需要可持久的 `scope=unknown`；若需要必须按协议升级流程处理。
 
-用户确认应形成一份带日期的决策记录。没有确认的项目不能由实现者自行选择后写成既定事实。
+## 15. 验收记录与剩余矩阵
 
-## 15. 用户确认后才执行的验收矩阵
-
-本节只是未来验收计划。**在用户确认本文产品决策前，不执行以下 macOS 真机、sudo、
-LaunchDaemon 或 Linux Docker 操作。**
+本节同时记录已执行门禁和后续硬件验收。真实 sudo/LaunchDaemon 只在用户批准的隔离测试
+Connection 上执行；不得用生产隧道承载验收自身的远程会话。
 
 ### 15.1 macOS 真机
 
 | 平台/场景 | user Scope | system Scope | 交互重点 | 通过标准 |
 | --- | --- | --- | --- | --- |
-| Intel Mac，装过 0.x | add/start/stop/enable/restart/disable/remove；登录恢复；真实 -L/-R/-D；SIGKILL 恢复 | user→system→user 迁移、回滚、冲突、权限失败 | 历史环境不应触发隐式兼容；进度、状态术语、旧 binary 路径 | 流量、PID、UP、RESTARTS、Scope、Autostart 与真实 launchd 一致；无残留。 |
-| Apple Silicon 新机 | 从 Release Universal 2 安装；同一 user 生命周期和真实 SSH | 首次 sudo、LaunchDaemon 跨登录/注销、删除 CLI 后持续运行 | 新手文案、无变量安装流程、授权提示 | 无 Rosetta 依赖；用户能按文档独立完成；退出/失败恢复终端。 |
+| Intel Mac，装过 0.x（已通过） | Release Universal 2 的 LaunchAgent 生命周期、真实 -L/-R/-D、SIGKILL 恢复 | USER→SYSTEM→USER→SYSTEM、真实 -L、set、无 sudo restart、disable/remove | 同一 TTY 复用中间授权；root/user plist owner/mode/domain；精确清理 | 2026-08-31 成功路径通过；权限、冲突和逐步回滚由自动故障注入覆盖。 |
+| Apple Silicon 新机（待执行） | 从 Release Universal 2 安装；同一 user 生命周期和真实 SSH | 首次 sudo、LaunchDaemon 双向迁移、restart、disable | 新手文案、无变量安装流程、授权提示 | 无 Rosetta 依赖；用户能按文档独立完成；退出/失败恢复终端。 |
 | Monitor + sudo | user 行与 system 行混合 | 对 system persistent 执行 `x`→disable；另测 system `r` | disable 时 raw mode → sudo → raw mode；restart 始终无密码 | 密码字符不进入 TUI，所有路径恢复光标和终端；restart 的 sudo 调用数为 0。 |
 | 故障隔离 | 一条 plist/状态/日志故意损坏 | system 行权限不可读 | 一坏行不能拖垮 Monitor/status --all | 其他行继续刷新；坏行有 condition/action。 |
 | Flag/语言 | en、zh-CN、NO_COLOR、非 TTY、JSON | sudo 提示与 JSON 同时存在 | stdout/stderr、ANSI、控制序列 | JSON 纯净；NO_COLOR 无颜色；非 TTY 不进入 TUI。 |
 
 system Scope 真机验收必须在专用测试 Connection 上执行，记录 `/Library/LaunchDaemons`
-精确目标和清理结果；不得用生产隧道承载验收自身的远程会话。
+精确目标和清理结果；不得用生产隧道承载验收自身的远程会话。Intel 已按此规则完成，
+Apple Silicon 仍待执行。
 
-### 15.2 Linux Docker（PID 1 systemd）
+### 15.2 Linux Docker（PID 1 systemd，已通过）
 
 | 场景 | 操作 | 通过标准 |
 | --- | --- | --- |
@@ -700,14 +691,15 @@ PID 改变；任一前置验证失败均零变更退出；终止后 KeepAlive �
 | `help` | 总帮助/26 个单命令、中英文、usage 与已确认的副作用说明。 |
 | `version` | 人类版本、JSON protocolVersion、`--version/-v`、无网络副作用。 |
 
-## 16. 交付门槛
+## 16. 持续交付门槛
 
-本文经用户确认后，实施仍需满足：
+Preview 基线和后续变更持续满足：
 
 1. 先更新契约测试和帮助期望，再改实现。
 2. 所有“当前行为”变化写入 Changelog；未实现的建议不写成 Release 能力。
 3. 普通、race、vet、staticcheck、diff-check 全绿。
 4. 机器契约、Skill、Schema 与 26 命令清单一致。
-5. 完成用户批准的 macOS/Linux 矩阵并保存原始证据。
+5. 保存已完成的 Intel macOS/Linux Docker 原始证据；Apple Silicon 与非容器 Linux 保持为
+   稳定版前未完成门禁。
 6. 独立 Reviewer 复审交互一致性、安全、回滚和文档真实性。
 7. 未通过的项目明确标为 Preview 限制；不能用“应该可以”代替验证。

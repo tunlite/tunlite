@@ -2,7 +2,7 @@
 
 - **适用版本：** `v1.0.0-preview.1`
 - **适用平台：** macOS 12+、使用 systemd 用户服务的 Linux
-- **最后更新：** 2026-08-21
+- **最后更新：** 2026-08-31
 
 这份文档只保留用户视角的端到端验收：能否安装、能否连接用户自己的 SSH 服务器、
 真实流量能否通过隧道，以及操作系统能否正确托管它。
@@ -23,6 +23,8 @@
 | Intel Mac 上的真实 launchd 生命周期、日志与崩溃恢复 | 通过，连续 3 次 |
 | Intel Mac 上的接管与交还零中断（Provider PID 不变） | 通过，连续 3 次 |
 | Intel Mac Release 二进制 + 隔离 sshd + launchd + `-L/-R/-D` 真实流量与崩溃恢复 | 通过 |
+| Intel Mac LaunchDaemon USER→SYSTEM→USER→SYSTEM、真实 `-L` 流量、system `set`、无 sudo restart、disable/remove 与精确清理 | 通过 |
+| Ubuntu 24.04 PID 1 systemd 容器中的真实 OpenSSH、崩溃恢复、容器重启和 CLI 移除/替换 | 通过 |
 | macOS x64/arm64、Linux x64/arm64 原生构建 | 通过 |
 | 三个发布归档的 SHA-256 | 通过 |
 | bootstrap 下载、校验、原子替换和真实 Release 安装 | 通过 |
@@ -46,11 +48,11 @@ uname -m
 
 按结果选择一个包：
 
-| 机器 | 应使用的原生二进制 |
-|---|---|
-| Intel 或 M 系列 Mac，`Darwin` | `tunlite-v1.0.0-preview.1-macos` |
-| x64 Linux，`Linux` + `x86_64` | `tunlite-v1.0.0-preview.1-linux-x64` |
-| ARM64 Linux，`Linux` + `aarch64`/`arm64` | `tunlite-v1.0.0-preview.1-linux-arm64` |
+| 机器 | 维护者交付来源 | 收到后文件名 |
+|---|---|---|
+| Intel 或 M 系列 Mac，`Darwin` | macOS Universal 2 产物 | `tunlite` |
+| x64 Linux，`Linux` + `x86_64` | Linux x64 产物 | `tunlite` |
+| ARM64 Linux，`Linux` + `aarch64`/`arm64` | Linux arm64 产物 | `tunlite` |
 
 首个预览版不发布 Windows 版本。没有 systemd 用户会话的 Linux 只能验收前台 `run`，
 暂时不能验收原生后台服务。
@@ -66,31 +68,39 @@ command -v ssh
 应输出 `ssh` 的路径。发布后的在线安装脚本另外需要 `curl`、`tar` 和
 `sha256sum`/`shasum`。
 
-### 3.1 现在：安装本地生成的原生二进制
+### 3.1 现在：安装收到的原生二进制
 
-当前 GitHub Release 尚未发布。由维护者直接把与机器匹配的单文件原生二进制交给测试
-人员，不需要再解压 tar 包。设置它的绝对路径：
-
-```bash
-BINARY="/绝对路径/tunlite-v1.0.0-preview.1-对应平台"
-```
-
-不要原样使用中文占位路径。确认文件存在后，复制到用户级 PATH：
+当前 GitHub Release 尚未发布。维护者直接提供文件名为 `tunlite` 的单文件原生二进制；
+测试者不需要源码、Go、Node.js、压缩包或打包命令。终端进入该文件所在目录后执行：
 
 ```bash
-test -f "$BINARY"
-chmod +x "$BINARY"
+test -f ./tunlite
+chmod +x ./tunlite
 mkdir -p "$HOME/.local/bin"
-install -m 0755 "$BINARY" "$HOME/.local/bin/tunlite"
+install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
 ```
 
 这只安装 `~/.local/bin/tunlite`，不会创建、启动或修改任何 Connection，也不会创建
-短命令。为了避免与旧 Node 版本混淆，整个验收过程使用规范路径：
+短命令。确保 `~/.local/bin` 在 PATH 后直接检查：
 
 ```bash
-TL="$HOME/.local/bin/tunlite"
-"$TL" version --json
+command -v tunlite
+tunlite version --json
 ```
+
+如果 `command -v` 没有输出 `~/.local/bin/tunlite`，当前终端可执行
+`export PATH="$HOME/.local/bin:$PATH"` 后重试；Tunlite 不会自动修改 Shell 启动文件。
+
+需要安装到全局 PATH 时，改用下面这一组，不要两处同时安装：
+
+```bash
+sudo mkdir -p /usr/local/bin
+sudo install -m 0755 ./tunlite /usr/local/bin/tunlite
+command -v tunlite
+tunlite version --json
+```
+
+这里的 sudo 只用于复制二进制，不会注册或启动 Tunlite Connection。
 
 必须看到：
 
@@ -140,20 +150,18 @@ ssh -p 2222 -o BatchMode=yes user@example-host true
 不要为了通过验收关闭 Host Key 校验。Tunlite 的任何命令都不会生成密钥或修改远端
 `authorized_keys`；SSH 凭据由用户使用系统 OpenSSH 工具管理。
 
-设置本次测试变量：
+下面固定使用测试名 `preview-test` 和 SOCKS 端口 `18080`、`18081`。先确认没有同名
+Connection，且端口未被其他程序使用：
 
 ```bash
-TL="$HOME/.local/bin/tunlite"
-TL_NAME="acceptance-$(date +%s)"
-TL_TARGET="user@example-host"
-TL_PORT=18080
-TL_PORT_2=18081
-printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
+tunlite status preview-test
+lsof -nP -iTCP:18080 -sTCP:LISTEN
+lsof -nP -iTCP:18081 -sTCP:LISTEN
 ```
 
-自定义 SSH 端口时，在下面的 `add` 命令中把 `-D` 前增加 `-p 2222`。测试名称带时间戳，
-不会覆盖已有 Connection。确认 18080 和 18081 没有被其他程序使用；被占用时换成其他
-大于 1024 的端口。
+`status` 报告不存在、两条 `lsof` 没有输出才可继续。若名称或端口冲突，把本文后续所有
+`preview-test` 或对应端口统一替换成另一个明确值；端口应大于 1024。自定义 SSH 端口时，
+在下面 `add` 的 `-D` 前增加 `-p 2222`。
 
 ## 5. 核心端到端验收
 
@@ -162,8 +170,8 @@ printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
 ### 第一步：创建，但不启动
 
 ```bash
-"$TL" add "$TL_NAME" -D "$TL_PORT" "$TL_TARGET"
-"$TL" status "$TL_NAME"
+tunlite add preview-test -D 18080 user@example-host
+tunlite status preview-test
 ```
 
 验收结果：
@@ -176,16 +184,16 @@ printf 'name=%s target=%s\n' "$TL_NAME" "$TL_TARGET"
 ### 第二步：验证用户自己的 SSH 认证
 
 ```bash
-"$TL" check "$TL_NAME" --timeout 12
+tunlite check preview-test --timeout 12
 ```
 
 必须看到 `ssh_authentication_succeeded`。失败时先解决 Host Key、密钥、网络或跳板机问题，
 不要继续测试后台运行。如果只是尚未安装本机公钥，用户可以在交互终端使用系统工具：
 
 ```bash
-ssh-copy-id "$TL_TARGET"             # 系统提供 ssh-copy-id 时
+ssh-copy-id user@example-host         # 系统提供 ssh-copy-id 时
 # 或按照服务器文档把 ~/.ssh/id_ed25519.pub 加入远端 ~/.ssh/authorized_keys
-"$TL" check "$TL_NAME" --timeout 12
+tunlite check preview-test --timeout 12
 ```
 
 OpenSSH 可能直接要求远端账户密码；只能由用户在终端输入。自动化和 Agent 不得等待、
@@ -196,19 +204,19 @@ OpenSSH 可能直接要求远端账户密码；只能由用户在终端输入。
 终端 A：
 
 ```bash
-"$TL" run "$TL_NAME"
+tunlite run preview-test
 ```
 
 保持终端 A 不动，在终端 B 验证真实 SOCKS 流量：
 
 ```bash
-curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
+curl --socks5-hostname 127.0.0.1:18080 https://example.com/
 ```
 
 必须能返回网页内容。然后回到终端 A 按 `Ctrl-C`，再次执行：
 
 ```bash
-"$TL" status "$TL_NAME"
+tunlite status preview-test
 ```
 
 状态应回到“已停止”。这一步证明 `run` 的生命周期确实属于当前终端。
@@ -216,10 +224,10 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
 ### 第四步：临时后台运行
 
 ```bash
-"$TL" start "$TL_NAME"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
-"$TL" logs "$TL_NAME" --lines 50
+tunlite start preview-test
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18080 https://example.com/
+tunlite logs preview-test --lines 50
 ```
 
 验收结果：
@@ -234,17 +242,17 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT" https://example.com/
 保持 background 运行，修改 SOCKS 端口：
 
 ```bash
-"$TL" set "$TL_NAME" -D "$TL_PORT_2"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite set preview-test -D 18081
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
 新端口必须可用，状态仍显示“正常运行 / 系统后台 / 自动启动：否”。修改执行计划时这一
 条隧道会短暂重启，但不需要用户执行 `sync`。然后停止：
 
 ```bash
-"$TL" stop "$TL_NAME"
-"$TL" status "$TL_NAME"
+tunlite stop preview-test
+tunlite status preview-test
 ```
 
 状态应回到“已停止”。
@@ -252,21 +260,18 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 ### 第六步：长期后台和登录恢复
 
 ```bash
-"$TL" enable "$TL_NAME"
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite enable preview-test
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
 状态必须显示“正常运行 / 系统后台 / 自动启动：是”。
 
-完整平台验收还需要退出并重新登录当前用户，或者重启测试机；重新进入终端后再次设置：
+完整平台验收还需要退出并重新登录当前用户，或者重启测试机；重新进入终端后直接验证：
 
 ```bash
-TL="$HOME/.local/bin/tunlite"
-TL_NAME="之前打印并保存的测试名称"
-TL_PORT_2=18081
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
 必须仍显示“正常运行 / 系统后台 / 自动启动：是”，真实流量能够通过。不要在一条承担
@@ -279,15 +284,15 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 先确认测试 Connection 仍显示“正常运行 / 系统后台 / 自动启动：是”：
 
 ```bash
-"$TL" status "$TL_NAME"
+tunlite status preview-test
 ```
 
 交还给操作系统：
 
 ```bash
-"$TL" unmanage "$TL_NAME"
-"$TL" list
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite unmanage preview-test
+tunlite list
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
 验收结果：
@@ -299,22 +304,20 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 重新接管。macOS：
 
 ```bash
-TL_NATIVE_ID="dev.tunlite.connection.$TL_NAME"
-"$TL" manage "$TL_NATIVE_ID" --name "$TL_NAME"
+tunlite manage dev.tunlite.connection.preview-test --name preview-test
 ```
 
 Linux：
 
 ```bash
-TL_NATIVE_ID="tunlite-$TL_NAME.service"
-"$TL" manage "$TL_NATIVE_ID" --name "$TL_NAME"
+tunlite manage tunlite-preview-test.service --name preview-test
 ```
 
 最后验证：
 
 ```bash
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
 必须重新出现在 Tunlite 中，保持 `persistent`，接管过程不应中断真实流量。
@@ -323,7 +326,9 @@ curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
 
 ### macOS：Intel 与 M 系列
 
-两种 Mac 的使用步骤相同，只有安装包不同。先确认 launchd 用户域可用：
+Intel 与 Apple Silicon 使用同一个 macOS Universal 2 文件和完全相同的安装、验收步骤；
+区别只有 `uname -m` 的架构结果，以及 Apple Silicon 真机门禁仍待完成。先确认 launchd
+用户域可用：
 
 ```bash
 launchctl print "gui/$(id -u)"
@@ -332,7 +337,7 @@ launchctl print "gui/$(id -u)"
 运行中的测试 Connection 可以直接从系统侧查看：
 
 ```bash
-launchctl print "gui/$(id -u)/dev.tunlite.connection.$TL_NAME"
+launchctl print "gui/$(id -u)/dev.tunlite.connection.preview-test"
 ```
 
 日志文件位于：
@@ -342,26 +347,41 @@ launchctl print "gui/$(id -u)/dev.tunlite.connection.$TL_NAME"
 ~/Library/Logs/Tunlite/<Connection>.stderr.log
 ```
 
-Intel Mac 当前已完成自动化真机生命周期、日志、崩溃恢复和接管/交还零中断验证；用户
-自己的 SSH 目标、真实业务流量和重新登录恢复仍需按本文人工验收。M 系列 Mac 还需在
-Apple Silicon 真机完成安装、真实流量、生命周期和重新登录恢复，才能标记为平台通过。
+Intel Mac 当前已完成 LaunchAgent Release E2E，以及 LaunchDaemon
+USER→SYSTEM→USER→SYSTEM、真实 `-L` 流量、system `set`、无 sudo restart 和清理验证；
+用户自己的 SSH 目标与网络仍需按本文验证。M 系列 Mac 还需在 Apple Silicon 真机完成
+安装、user/system 生命周期、Monitor、真实流量和重新登录恢复，才能标记为硬件通过。
 
 macOS 还应在不承担唯一远程登录通道的测试 Connection 上验收 system Scope。先从 user
 迁移到 system：
 
 ```bash
-"$TL" enable "$TL_NAME" --scope system
-"$TL" status "$TL_NAME"
-curl --socks5-hostname "127.0.0.1:$TL_PORT_2" https://example.com/
+tunlite enable preview-test --scope system
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
 ```
 
-Tunlite 应先显示“正在请求管理员授权”；随后由 `sudo` 显示自己的 `Password:` 提示。
-整批操作只应授权一次。成功后状态中的范围为 `SYSTEM`，服务在 LaunchDaemon 域运行。
+Tunlite 应先说明将注册 system 服务；随后由 `/usr/bin/sudo` 显示自己的 `Password:` 提示。
+Tunlite 不读取或保存密码。同一条命令只做一次交互授权，后续精确系统写入只使用该授权；
+是否复用到下一条命令由 macOS 的 sudo 策略和缓存决定。成功后状态中的范围为 `SYSTEM`，
+服务在 LaunchDaemon 域运行。
+
+先验证 system restart 不需要管理员密码。清除当前 sudo timestamp 后执行：
+
+```bash
+sudo -k
+tunlite restart preview-test
+tunlite status preview-test
+curl --socks5-hostname 127.0.0.1:18081 https://example.com/
+```
+
+`restart` 不应显示密码提示，范围和自动启动保持不变，流量短暂中断后恢复。只有注册、解除
+system 服务或原子替换 system 配置才需要 root；只读、status、logs 和 restart 不需要。
 再迁回 user：
 
 ```bash
-"$TL" enable "$TL_NAME" --scope user
-"$TL" status "$TL_NAME"
+tunlite enable preview-test --scope user
+tunlite status preview-test
 ```
 
 离开 system 同样需要删除系统定义，因此也会请求一次管理员授权；成功后范围恢复为
@@ -372,7 +392,7 @@ Tunlite 应先显示“正在请求管理员授权”；随后由 `sudo` 显示�
 `sudo -n -- ...`：
 
 ```bash
-"$TL" enable "$TL_NAME" --scope system --json --non-interactive
+tunlite enable preview-test --scope system --json --non-interactive
 ```
 
 `--dry-run` 只检查和展示计划，不应显示密码提示、请求授权或修改 user/system 服务。
@@ -388,8 +408,8 @@ systemctl --user show-environment
 运行中的测试 Connection 可以直接从系统侧查看：
 
 ```bash
-systemctl --user status "tunlite-$TL_NAME.service"
-journalctl --user -u "tunlite-$TL_NAME.service" -n 50 --no-pager
+systemctl --user status tunlite-preview-test.service
+journalctl --user -u tunlite-preview-test.service -n 50 --no-pager
 ```
 
 Linux 真机必须按本文完成一次安装、真实流量、重新登录恢复和接管/交还，才能标记为
@@ -400,26 +420,26 @@ systemd 真机通过。容器、WSL 或交叉编译结果不能代替这项验�
 先查看当前状态：
 
 ```bash
-"$TL" status "$TL_NAME"
+tunlite status preview-test
 ```
 
 如果“自动启动”为“是”：
 
 ```bash
-"$TL" disable "$TL_NAME"
+tunlite disable preview-test
 ```
 
 如果“运行位置”为“系统后台”且“自动启动”为“否”：
 
 ```bash
-"$TL" stop "$TL_NAME"
+tunlite stop preview-test
 ```
 
 状态变成“已停止”后删除：
 
 ```bash
-"$TL" remove "$TL_NAME"
-"$TL" list
+tunlite remove preview-test
+tunlite list
 ```
 
 测试 Connection、原生服务和 SSH 进程都应消失。macOS 历史日志和 Linux journald 历史
@@ -430,13 +450,13 @@ systemd 真机通过。容器、WSL 或交叉编译结果不能代替这项验�
 再把二进制移出 PATH：
 
 ```bash
-mv "$TL" "$TL.disabled"
+mv "$HOME/.local/bin/tunlite" "$HOME/.local/bin/tunlite.disabled"
 ```
 
 原生服务和 SSH 进程应继续运行。恢复管理能力时把文件移回即可：
 
 ```bash
-mv "$TL.disabled" "$TL"
+mv "$HOME/.local/bin/tunlite.disabled" "$HOME/.local/bin/tunlite"
 ```
 
 核心 CLI 不提供卸载或彻底清理命令；配置与服务必须通过 `remove`、`unmanage` 和本文
