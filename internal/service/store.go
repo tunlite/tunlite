@@ -48,7 +48,6 @@ func (s *Store) Load(connection string) (Record, bool, error) {
 	if err := validateRecord(record, connection); err != nil {
 		return Record{}, false, err
 	}
-	record.Scope = NormalizeScope(record.Scope)
 	return record, true, nil
 }
 
@@ -59,7 +58,6 @@ func (s *Store) Write(ctx context.Context, record Record) error {
 	if record.RecordRevision == 0 {
 		record.RecordRevision = CurrentRecordRevision
 	}
-	record.Scope = NormalizeScope(record.Scope)
 	if err := validateRecord(record, record.Connection); err != nil {
 		return err
 	}
@@ -178,7 +176,10 @@ func validateRecord(record Record, connection string) error {
 	if record.Connection == "" || record.Connection != connection {
 		return errors.New("service state connection does not match its file")
 	}
-	if scope := NormalizeScope(record.Scope); scope != ScopeUser && scope != ScopeSystem {
+	if record.Scope == "" {
+		return errors.New("service scope is required")
+	}
+	if record.Scope != ScopeUser && record.Scope != ScopeSystem {
 		return fmt.Errorf("unsupported service scope %q", record.Scope)
 	}
 	if record.Mode != ModeStopped && record.Mode != ModeBackground && record.Mode != ModePersistent {

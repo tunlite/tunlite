@@ -86,6 +86,25 @@ cleanup_tunlite_lifecycle() {
   cleanup_attempt tunlite-remove 10 "$tunlite" remove "$name" --json --non-interactive
 }
 
+run_interactive_logged() {
+  interactive_stage="$1"
+  shift
+  printf '%s interactive-start %s terminal=caller\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" >>"$main_log"
+  # Keep every interactive mutation on the caller's real controlling terminal.
+  # This lets tty-scoped sudo timestamps survive across consecutive stages.
+  # Tunlite requires both stdin and stderr to remain TTYs before it authorizes
+  # sudo -v. Redirecting either stream for a transcript would change the tested
+  # behavior, so the durable log records stage boundaries and the exact status
+  # while the complete command output remains visible on the real terminal.
+  if "$@"; then
+    interactive_result=0
+  else
+    interactive_result="$?"
+  fi
+  printf '%s interactive-exit %s status=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" "$interactive_result" >>"$main_log"
+  return "$interactive_result"
+}
+
 if [ "${TUNLITE_SYSTEM_E2E_SELFTEST:-}" = known-hosts ]; then
   selftest_base="${TMPDIR:-/tmp}"
   selftest_base="${selftest_base%/}"
@@ -234,6 +253,25 @@ remove"
   exit 0
 fi
 
+if [ "${TUNLITE_SYSTEM_E2E_SELFTEST:-}" = interactive-logged ]; then
+  selftest_base="${TMPDIR:-/tmp}"
+  selftest_base="${selftest_base%/}"
+  temporary="$(mktemp -d "$selftest_base/tunlite-system-e2e-interactive.XXXXXX")"
+  trap '/bin/rm -rf "$temporary"' 0
+  main_log="$temporary/main.log"
+  : >"$main_log"
+  if run_interactive_logged exit-seven sh -c 'exit 7'; then
+    fail 'run_interactive_logged self-test lost the child failure'
+  else
+    selftest_result="$?"
+  fi
+  [ "$selftest_result" -eq 7 ] || fail "run_interactive_logged returned $selftest_result, expected 7"
+  grep -F 'interactive-start exit-seven terminal=caller' "$main_log" >/dev/null || fail 'interactive stage start was not logged'
+  grep -F 'interactive-exit exit-seven status=7' "$main_log" >/dev/null || fail 'interactive stage exit was not logged'
+  say 'PASS: real-terminal interactive stages preserve child status and durable boundaries'
+  exit 0
+fi
+
 if [ "$(uname -s)" != Darwin ]; then
   fail 'this hardware gate runs only on macOS (Darwin)'
 fi
@@ -257,7 +295,7 @@ case "$username" in
   ''|*[!A-Za-z0-9._-]*) fail "unsafe current user name: $username" ;;
 esac
 
-for required in awk curl date grep id mktemp plutil ps script sed shasum stat tar; do
+for required in awk curl date grep id mktemp plutil ps sed shasum stat tar; do
   command -v "$required" >/dev/null 2>&1 || fail "required command is unavailable: $required"
 done
 command -v sudo >/dev/null 2>&1 || fail 'sudo is required for interactive LaunchDaemon registration and removal'
@@ -367,22 +405,6 @@ global_cleanup_authorized() {
   [ -f "$ownership_token" ] || return 1
   [ "$(sed -n '1p' "$ownership_token")" = "$label" ] || return 1
   safe_generated_paths
-}
-
-run_interactive_logged() {
-  interactive_stage="$1"
-  shift
-  interactive_log="$temporary/interactive-$interactive_stage.log"
-  printf '%s interactive-start %s transcript=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" "$interactive_log" >>"$main_log"
-  # script(1) preserves a PTY for Tunlite and sudo. Password input remains
-  # terminal no-echo input; it is not piped through tee or read by this script.
-  if /usr/bin/script -q -e "$interactive_log" "$@"; then
-    interactive_result=0
-  else
-    interactive_result="$?"
-  fi
-  printf '%s interactive-exit %s status=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" "$interactive_result" >>"$main_log"
-  return "$interactive_result"
 }
 
 # BEGIN TUNLITE KNOWN HOSTS HELPERS
@@ -860,7 +882,7 @@ wait_status_pid() {
   return 1
 }
 
-assert_record_matches_plist() {
+assert_system_record_matches_plist() {
   [ -f "$record_path" ] || fail "service record is missing: $record_path"
   [ -f "$daemon_plist" ] || fail "LaunchDaemon plist is missing: $daemon_plist"
   record_scope="$(plutil -extract scope raw -o - "$record_path")"
@@ -877,6 +899,25 @@ assert_record_matches_plist() {
   [ "$record_unit" = "$label" ] || fail 'record unit name does not match the generated label'
   [ "$record_plan" = "$plist_plan" ] || fail 'record plan digest does not match the plist plan digest'
   [ "$record_baseline" = "$plist_baseline" ] || fail 'record baseline digest does not match the exact plist bytes'
+}
+
+assert_user_record_matches_plist() {
+  [ -f "$record_path" ] || fail "service record is missing: $record_path"
+  [ -f "$agent_plist" ] || fail "LaunchAgent plist is missing: $agent_plist"
+  record_scope="$(plutil -extract scope raw -o - "$record_path")"
+  record_mode="$(plutil -extract mode raw -o - "$record_path")"
+  record_artifact="$(plutil -extract artifactPath raw -o - "$record_path")"
+  record_unit="$(plutil -extract unitName raw -o - "$record_path")"
+  record_plan="$(plutil -extract planDigest raw -o - "$record_path")"
+  record_baseline="$(plutil -extract baselineDigest raw -o - "$record_path")"
+  plist_plan="$(sed -n 's/^<!-- Generated by Tunlite\. DO NOT EDIT\. Plan-SHA256: \([0-9a-f][0-9a-f]*\) -->$/\1/p' "$agent_plist")"
+  plist_baseline="$(shasum -a 256 "$agent_plist" | awk '{print $1}')"
+  [ "$record_scope" = user ] || fail "record scope is $record_scope, expected user"
+  [ "$record_mode" = persistent ] || fail "record mode is $record_mode, expected persistent"
+  [ "$record_artifact" = "$agent_plist" ] || fail 'record artifact path does not match the exact LaunchAgent plist'
+  [ "$record_unit" = "$label" ] || fail 'user record unit name does not match the generated label'
+  [ "$record_plan" = "$plist_plan" ] || fail 'user record plan digest does not match the plist plan digest'
+  [ "$record_baseline" = "$plist_baseline" ] || fail 'user record baseline digest does not match the exact plist bytes'
 }
 
 invalidate_sudo_timestamp() {
@@ -1101,7 +1142,7 @@ wait_http "$local_port" "$marker1" 'user-scope -L traffic' || fail 'user-scope f
 
 say 'migrating USER -> SYSTEM; Tunlite should now request administrator authorization once'
 if ! run_interactive_logged user-to-system "$tunlite" enable "$name" --scope system; then
-  fail "USER -> SYSTEM migration failed; see $temporary/interactive-user-to-system.log"
+  fail "USER -> SYSTEM migration failed; inspect the terminal output and $main_log"
 fi
 system_pid="$(wait_status_pid system persistent 0)" || fail 'system LaunchDaemon did not become healthy'
 [ "$system_pid" != "$user_pid" ] || fail 'USER -> SYSTEM migration did not replace the provider PID'
@@ -1118,19 +1159,54 @@ if job_exists "gui/$uid"; then
   fail 'the migrated identity is still loaded in the user domain'
 fi
 [ ! -e "$agent_plist" ] || fail 'the migrated user LaunchAgent plist still exists'
-assert_record_matches_plist
+assert_system_record_matches_plist
+
+say 'migrating SYSTEM -> USER on the same terminal; the existing sudo timestamp should be reused'
+if ! run_interactive_logged system-to-user "$tunlite" enable "$name" --scope user; then
+  fail "SYSTEM -> USER migration failed; inspect the terminal output and $main_log"
+fi
+user_return_pid="$(wait_status_pid user persistent "$system_pid")" || fail 'migrated user LaunchAgent did not become healthy'
+wait_http "$local_port" "$marker1" 'migrated user-scope -L traffic' || fail 'SYSTEM -> USER migration did not preserve traffic'
+[ -f "$agent_plist" ] || fail 'SYSTEM -> USER migration did not create the LaunchAgent plist'
+[ "$(stat -f '%u:%Lp' "$agent_plist")" = "$uid:600" ] || fail 'LaunchAgent is not owned by the invoking user with mode 0600'
+[ "$(plutil -extract Label raw -o - "$agent_plist")" = "$label" ] || fail 'LaunchAgent Label is not canonical'
+if plutil -extract UserName raw -o - "$agent_plist" >/dev/null 2>&1; then
+  fail 'user LaunchAgent unexpectedly contains a UserName override'
+fi
+/bin/launchctl print "gui/$uid/$label" >/dev/null || fail 'LaunchAgent is not loaded in the user domain'
+[ ! -e "$daemon_plist" ] && [ ! -L "$daemon_plist" ] || fail 'SYSTEM -> USER migration retained the root LaunchDaemon plist'
+if job_exists system; then
+  fail 'SYSTEM -> USER migration retained the system-domain launchd job'
+fi
+[ ! -e "$system_demand" ] && [ ! -L "$system_demand" ] || fail 'SYSTEM -> USER migration retained the system demand marker'
+assert_user_record_matches_plist
+
+say 'migrating USER -> SYSTEM again on the same terminal before system lifecycle checks'
+if ! run_interactive_logged user-to-system-again "$tunlite" enable "$name" --scope system; then
+  fail "second USER -> SYSTEM migration failed; inspect the terminal output and $main_log"
+fi
+system_return_pid="$(wait_status_pid system persistent "$user_return_pid")" || fail 'second system LaunchDaemon did not become healthy'
+wait_http "$local_port" "$marker1" 'restored system-scope -L traffic' || fail 'second USER -> SYSTEM migration did not preserve traffic'
+[ -f "$daemon_plist" ] || fail 'second USER -> SYSTEM migration did not restore the LaunchDaemon plist'
+[ "$(stat -f '%Su:%Sg:%Lp' "$daemon_plist")" = 'root:wheel:644' ] || fail 'restored LaunchDaemon does not have root:wheel mode 0644'
+/bin/launchctl print "system/$label" >/dev/null || fail 'restored LaunchDaemon is not loaded in the system domain'
+if job_exists "gui/$uid"; then
+  fail 'second USER -> SYSTEM migration retained the user-domain launchd job'
+fi
+[ ! -e "$agent_plist" ] && [ ! -L "$agent_plist" ] || fail 'second USER -> SYSTEM migration retained the LaunchAgent plist'
+assert_system_record_matches_plist
 
 say 'changing the system execution plan; traffic must switch to target 2 and PID must change'
 plist_before_set="$(shasum -a 256 "$daemon_plist" | awk '{print $1}')"
 if ! run_interactive_logged system-set "$tunlite" set "$name" -L "$forward2"; then
-  fail "system set failed; see $temporary/interactive-system-set.log"
+  fail "system set failed; inspect the terminal output and $main_log"
 fi
-set_pid="$(wait_status_pid system persistent "$system_pid")" || fail 'system definition replacement did not produce a healthy new PID'
+set_pid="$(wait_status_pid system persistent "$system_return_pid")" || fail 'system definition replacement did not produce a healthy new PID'
 plist_after_set="$(shasum -a 256 "$daemon_plist" | awk '{print $1}')"
 [ "$plist_before_set" != "$plist_after_set" ] || fail 'system set did not change the LaunchDaemon definition'
 grep -F ">$forward2<" "$daemon_plist" >/dev/null || fail 'new forward is absent from the LaunchDaemon plist'
 grep -F ">$forward1<" "$daemon_plist" >/dev/null && fail 'old forward remained in the LaunchDaemon plist'
-assert_record_matches_plist
+assert_system_record_matches_plist
 wait_http "$local_port" "$marker2" 'post-set -L traffic to target 2' || fail 'system set did not switch traffic to target 2'
 
 say 'running the no-credential restart behavior gate; unit tests are the hard no-sudo call audit'
@@ -1152,7 +1228,7 @@ wait_http "$local_port" "$marker2" 'post-restart -L traffic' || fail 'traffic di
 
 say 'disabling SYSTEM; interactive administrator authorization is expected again'
 if ! run_interactive_logged system-disable "$tunlite" disable "$name"; then
-  fail "system disable failed; see $temporary/interactive-system-disable.log"
+  fail "system disable failed; inspect the terminal output and $main_log"
 fi
 [ ! -e "$daemon_plist" ] || fail 'system disable retained the root LaunchDaemon plist'
 if job_exists system; then

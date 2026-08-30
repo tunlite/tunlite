@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
@@ -30,32 +31,33 @@ func (adapter declaredScopeAdapter) BuildScoped(scope Scope, connection string, 
 	return artifact, err
 }
 
-func TestServiceStoreDefaultsLegacyScopeToUser(t *testing.T) {
+func TestServiceStoreRejectsExistingRecordWithoutScope(t *testing.T) {
 	root := t.TempDir()
-	legacy := []byte(`{"recordRevision":1,"connection":"db","serviceKey":"db","adapter":"systemd","mode":"stopped","unitName":"tunlite-db.service"}`)
-	if err := os.WriteFile(filepath.Join(root, "db.json"), legacy, 0o600); err != nil {
+	missingScope := []byte(`{"recordRevision":1,"connection":"db","serviceKey":"db","adapter":"systemd","mode":"stopped","unitName":"tunlite-db.service"}`)
+	if err := os.WriteFile(filepath.Join(root, "db.json"), missingScope, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := NewStore(root)
-	record, exists, err := store.Load("db")
-	if err != nil || !exists {
+	if _, exists, err := store.Load("db"); err == nil || exists || !strings.Contains(err.Error(), "service scope is required") {
 		t.Fatalf("exists=%t err=%v", exists, err)
-	}
-	if record.Scope != ScopeUser || record.Reference().Scope != ScopeUser {
-		t.Fatalf("legacy scope was not normalized: record=%#v reference=%#v", record, record.Reference())
-	}
-	state := Evaluate(context.Background(), observationAdapter{}, record, nil)
-	if state.Scope != ScopeUser {
-		t.Fatalf("legacy state scope=%q", state.Scope)
 	}
 }
 
-func TestServiceStoreWritesExplicitScopeAndRejectsUnknownScope(t *testing.T) {
+func TestServiceStoreNewRecordDefaultsToUserButWriteRequiresExplicitScope(t *testing.T) {
 	store := NewStore(t.TempDir())
-	record := Record{
-		RecordRevision: CurrentRecordRevision, Connection: "db", Adapter: "systemd",
-		Mode: ModeStopped,
+	record, exists, err := store.Load("db")
+	if err != nil || exists || record.Scope != ScopeUser {
+		t.Fatalf("new record=%#v exists=%t err=%v", record, exists, err)
 	}
+	record.Adapter = "systemd"
+	record.Scope = ""
+	if err := store.Write(context.Background(), record); err == nil || !strings.Contains(err.Error(), "service scope is required") {
+		t.Fatalf("missing scope write error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.root, "db.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-scope write created state: %v", err)
+	}
+	record.Scope = ScopeUser
 	if err := store.Write(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
