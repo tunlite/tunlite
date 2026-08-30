@@ -16,6 +16,7 @@ import (
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -42,6 +43,7 @@ type monitorConfirmation struct {
 	key        monitorKey
 	name       string
 	persistent bool
+	system     bool
 }
 
 type monitorTransition struct {
@@ -56,6 +58,11 @@ type monitorMutationResult struct {
 	message          string
 	pending          bool
 	completedMessage string
+}
+
+type monitorKeyEvent struct {
+	key    monitorKey
+	resume chan struct{}
 }
 
 func monitor(ctx context.Context, args []string, streams IO, opts options) error {
@@ -77,8 +84,11 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	if opts.DryRun {
 		return usageError("monitor does not support --dry-run; preview lifecycle changes with start, stop, or restart --dry-run")
 	}
+	if opts.NonInteractive {
+		return interactionRequiredError("monitor requires interactive input; use status --json in scripts")
+	}
 	if !streamsAreInteractive(streams) {
-		return usageError("monitor requires an interactive terminal; use status --json in scripts")
+		return interactionRequiredError("monitor requires an interactive terminal; use status --json in scripts")
 	}
 	seconds, err := strconv.ParseFloat(intervalText, 64)
 	if err != nil || seconds < 0.25 || seconds > 60 {
@@ -99,16 +109,33 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
 	defer cancelMonitor()
 
-	restore, err := makeMonitorRaw(streams.In)
-	if err != nil {
+	var restoreRaw func()
+	uiActive := false
+	enterUI := func() error {
+		restore, rawErr := makeMonitorRaw(streams.In)
+		if rawErr != nil {
+			return rawErr
+		}
+		restoreRaw = restore
+		fmt.Fprint(streams.Out, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
+		uiActive = true
+		return nil
+	}
+	leaveUI := func() {
+		if !uiActive {
+			return
+		}
+		restoreRaw()
+		fmt.Fprint(streams.Out, "\x1b[?25h\x1b[0m\x1b[?1049l")
+		uiActive = false
+	}
+	if err := enterUI(); err != nil {
 		return err
 	}
-	defer restore()
-	fmt.Fprint(streams.Out, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
-	defer fmt.Fprint(streams.Out, "\x1b[?25h\x1b[0m\x1b[?1049l")
+	defer leaveUI()
 
-	keys := make(chan monitorKey, 8)
-	go readMonitorKeys(streams.In, keys)
+	keyEvents := make(chan monitorKeyEvent)
+	go readMonitorKeyEvents(streams.In, keyEvents)
 	mutations := make(chan monitorMutationResult, 1)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -214,75 +241,109 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 				render(false)
 				flash = ""
 			}
-		case key := <-keys:
-			if confirmation != nil {
-				pending := confirmation
-				confirmation = nil
-				if key == monitorConfirm {
-					beginMutation(pending.key)
-				} else {
-					flash = localized(opts.Language, "operation cancelled", "操作已取消")
-					render(false)
-					flash = ""
-				}
-				continue
-			}
-			switch key {
-			case monitorQuit:
-				return nil
-			case monitorEscape:
-				if detail {
-					detail = false
-					logs = nil
-				} else {
-					return nil
-				}
-			case monitorBack:
-				if detail {
-					detail = false
-					logs = nil
-				}
-			case monitorUp:
-				if !detail && selected > 0 {
-					selected--
-				}
-			case monitorDown:
-				if !detail && selected+1 < len(rows) {
-					selected++
-				}
-			case monitorEnterDetail:
-				if !detail && len(rows) > 0 {
-					detail = true
-				}
-			case monitorStart:
-				beginMutation(key)
-				continue
-			case monitorStop, monitorRestart:
-				if transition != nil {
-					flash = transition.label + " " + transition.name + " is already in progress"
-					break
-				}
-				if len(rows) > 0 {
-					_, _, planErr := monitorMutationPlan(key, rows[selected])
-					if planErr != nil {
-						flash = planErr.Error()
+		case event := <-keyEvents:
+			key := event.key
+			var keyErr error
+			quit := func() bool {
+				defer close(event.resume)
+				if confirmation != nil {
+					pending := confirmation
+					confirmation = nil
+					if key == monitorConfirm {
+						if pending.system && pending.persistent && pending.key == monitorStop {
+							row := rows[selected]
+							command, label, planErr := monitorMutationPlan(pending.key, row)
+							if planErr != nil {
+								flash = planErr.Error()
+								return false
+							}
+							transition = &monitorTransition{name: row.connection.Metadata.Name, label: label}
+							leaveUI()
+							fmt.Fprintln(streams.Err, localized(opts.Language,
+								"Disabling the system background service; administrator authorization may be required…",
+								"正在解除系统后台服务；可能需要管理员授权…"))
+							result := executeMonitorMutationInteractive(monitorCtx, command, row, streams, opts)
+							if enterErr := enterUI(); enterErr != nil {
+								keyErr = enterErr
+								return true
+							}
+							mutations <- result
+						} else {
+							beginMutation(pending.key)
+						}
 					} else {
-						confirmation = &monitorConfirmation{
-							key: key, name: rows[selected].connection.Metadata.Name,
-							persistent: key == monitorStop && rows[selected].state.Mode == service.ModePersistent,
+						flash = localized(opts.Language, "operation cancelled", "操作已取消")
+						render(false)
+						flash = ""
+					}
+					return false
+				}
+				switch key {
+				case monitorQuit:
+					return true
+				case monitorEscape:
+					if detail {
+						detail = false
+						logs = nil
+					} else {
+						return true
+					}
+				case monitorBack:
+					if detail {
+						detail = false
+						logs = nil
+					}
+				case monitorUp:
+					if !detail && selected > 0 {
+						selected--
+					}
+				case monitorDown:
+					if !detail && selected+1 < len(rows) {
+						selected++
+					}
+				case monitorEnterDetail:
+					if !detail && len(rows) > 0 {
+						detail = true
+					}
+				case monitorStart:
+					beginMutation(key)
+					return false
+				case monitorStop, monitorRestart:
+					if transition != nil {
+						flash = transition.label + " " + transition.name + " is already in progress"
+						break
+					}
+					if len(rows) > 0 {
+						_, _, planErr := monitorMutationPlan(key, rows[selected])
+						if planErr != nil {
+							flash = planErr.Error()
+						} else {
+							confirmation = &monitorConfirmation{
+								key: key, name: rows[selected].connection.Metadata.Name,
+								persistent: key == monitorStop && rows[selected].state.Mode == service.ModePersistent,
+								system: key == monitorStop && rows[selected].state.Mode == service.ModePersistent &&
+									statusScopeKnown(rows[selected].state) && rows[selected].state.Scope == service.ScopeSystem,
+							}
 						}
 					}
 				}
-			}
-			if detail && key == monitorEnterDetail {
-				if err := refresh(); err != nil {
-					flash = err.Error()
+				if detail && key == monitorEnterDetail {
+					if err := refresh(); err != nil {
+						flash = err.Error()
+						render(false)
+						flash = ""
+					}
+				} else {
 					render(false)
 					flash = ""
 				}
-			} else {
-				render(false)
-				flash = ""
+				return false
+			}()
+			if keyErr != nil {
+				return keyErr
+			}
+			if quit {
+				return nil
 			}
 		}
 	}
@@ -299,6 +360,109 @@ func makeMonitorRaw(input io.Reader) (func(), error) {
 		return nil, fmt.Errorf("enter monitor terminal mode: %w", err)
 	}
 	return func() { _ = term.Restore(fd, previous) }, nil
+}
+
+// readMonitorKeyEvents pauses after delivering every key until the UI has
+// finished handling it. On a real terminal this guarantees that no monitor
+// reader is consuming password input while a system-scope disable temporarily
+// hands the terminal to sudo.
+func readMonitorKeyEvents(input io.Reader, output chan<- monitorKeyEvent) {
+	if file, ok := input.(*os.File); ok {
+		readMonitorTerminalKeyEvents(file, output)
+		return
+	}
+	keys := make(chan monitorKey)
+	go readMonitorKeys(input, keys)
+	for key := range keys {
+		resume := make(chan struct{})
+		output <- monitorKeyEvent{key: key, resume: resume}
+		<-resume
+	}
+}
+
+func readMonitorTerminalKeyEvents(input *os.File, output chan<- monitorKeyEvent) {
+	for {
+		value, ok := readMonitorTerminalByte(input, -1)
+		if !ok {
+			return
+		}
+		key := monitorKeyForByte(value)
+		if value == 0x1b {
+			key = monitorEscape
+			if next, nextOK := readMonitorTerminalByte(input, monitorEscapeDelay); nextOK {
+				if next == '[' {
+					if direction, directionOK := readMonitorTerminalByte(input, monitorEscapeDelay); directionOK {
+						switch direction {
+						case 'A':
+							key = monitorUp
+						case 'B':
+							key = monitorDown
+						case 'C':
+							key = monitorEnterDetail
+						case 'D':
+							key = monitorBack
+						default:
+							key = monitorCancel
+						}
+					}
+				} else {
+					key = monitorEscape
+				}
+			}
+		}
+		resume := make(chan struct{})
+		output <- monitorKeyEvent{key: key, resume: resume}
+		<-resume
+	}
+}
+
+func readMonitorTerminalByte(input *os.File, timeout time.Duration) (byte, bool) {
+	timeoutMS := -1
+	if timeout >= 0 {
+		timeoutMS = int(timeout / time.Millisecond)
+		if timeoutMS < 1 {
+			timeoutMS = 1
+		}
+	}
+	for {
+		descriptors := []unix.PollFd{{Fd: int32(input.Fd()), Events: unix.POLLIN}}
+		ready, err := unix.Poll(descriptors, timeoutMS)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || ready == 0 || descriptors[0].Revents&(unix.POLLIN|unix.POLLHUP) == 0 {
+			return 0, false
+		}
+		buffer := []byte{0}
+		if count, readErr := input.Read(buffer); count == 1 {
+			return buffer[0], true
+		} else if readErr != nil {
+			return 0, false
+		}
+	}
+}
+
+func monitorKeyForByte(value byte) monitorKey {
+	switch value {
+	case 'k':
+		return monitorUp
+	case 'j':
+		return monitorDown
+	case '\r', '\n':
+		return monitorEnterDetail
+	case 's':
+		return monitorStart
+	case 'x':
+		return monitorStop
+	case 'r':
+		return monitorRestart
+	case 'y', 'Y':
+		return monitorConfirm
+	case 'q', 3:
+		return monitorQuit
+	default:
+		return monitorCancel
+	}
 }
 
 func readMonitorKeys(input io.Reader, output chan<- monitorKey) {
@@ -369,26 +533,7 @@ func readMonitorByte(input <-chan byte, timeout time.Duration) (byte, bool, bool
 }
 
 func emitMonitorKey(value byte, output chan<- monitorKey) {
-	switch value {
-	case 'k':
-		output <- monitorUp
-	case 'j':
-		output <- monitorDown
-	case '\r', '\n':
-		output <- monitorEnterDetail
-	case 's':
-		output <- monitorStart
-	case 'x':
-		output <- monitorStop
-	case 'r':
-		output <- monitorRestart
-	case 'y', 'Y':
-		output <- monitorConfirm
-	case 'q', 3:
-		output <- monitorQuit
-	default:
-		output <- monitorCancel
-	}
+	output <- monitorKeyForByte(value)
 }
 
 func collectMonitorRows(ctx context.Context, group string, opts options) ([]statusRow, error) {
@@ -406,7 +551,8 @@ func collectMonitorRows(ctx context.Context, group string, opts options) ([]stat
 	results := collectStatusResults(ctx, adapter, records, targets, config.Path(), defaultStatusObservationBudget())
 	for index, result := range results {
 		if result.Error != nil {
-			return nil, errors.New(result.Error.Message)
+			rows = append(rows, monitorFailureRow(targets[index], result.Error, opts.Language))
+			continue
 		}
 		if result.State != nil {
 			rows = append(rows, statusRow{connection: targets[index], state: *result.State})
@@ -414,6 +560,19 @@ func collectMonitorRows(ctx context.Context, group string, opts options) ([]stat
 	}
 	sortStatusRows(rows)
 	return rows, nil
+}
+
+func monitorFailureRow(connection core.Connection, failure *serviceItemError, lang language) statusRow {
+	message := localized(lang, "Could not collect status: ", "无法读取状态：") + failure.Message
+	return statusRow{connection: connection, state: service.State{
+		Connection: connection.Metadata.Name, ServiceState: service.ServiceUnknown,
+		Mode: service.ModeUnknown, ProcessState: service.ProcessUnknown, Health: service.HealthUnknown,
+		ConsistencyState: service.ConsistencyBlocked, ObservedAt: time.Now().UTC(),
+		Conditions: []core.Condition{{
+			Code: failure.Code, Severity: "error", Connection: connection.Metadata.Name,
+			Message: message, Actions: append([]core.Action(nil), failure.Actions...),
+		}},
+	}}
 }
 
 func collectMonitorLogs(ctx context.Context, row statusRow, opts options) ([]string, error) {
@@ -648,6 +807,15 @@ func renderMonitorTable(rows []statusRow, selected, start, end, width int, color
 	if width < 82 {
 		columns = []tableColumn{columns[0], columns[1], columns[5], columns[6], columns[7]}
 	}
+	if width < 40 {
+		columns = []tableColumn{
+			{header: localized(lang, "NAME", "名称"), max: 8, value: func(row statusRow) string { return row.connection.Metadata.Name }},
+			{header: localized(lang, "ST", "态"), max: 2, value: func(row statusRow) string { return displayStatusRow(row, lang).glyph }},
+			{header: "PID", max: 5, value: statusPID},
+			{header: localized(lang, "UP", "时长"), max: 5, value: statusUptime},
+			{header: localized(lang, "RST", "重启"), max: 4, value: statusRestarts},
+		}
+	}
 	widths := make([]int, len(columns))
 	for index, column := range columns {
 		widths[index] = visibleWidth(column.header)
@@ -798,11 +966,31 @@ func monitorMutationPlan(key monitorKey, row statusRow) (command, transition str
 }
 
 func executeMonitorMutation(ctx context.Context, command string, row statusRow, opts options) monitorMutationResult {
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	terminal := false
+	return executeMonitorMutationWithIO(ctx, command, row, IO{Err: &stderr, Terminal: &terminal}, opts, &stderr)
+}
+
+func executeMonitorMutationInteractive(ctx context.Context, command string, row statusRow, streams IO, opts options) monitorMutationResult {
+	terminal := true
+	return executeMonitorMutationWithIO(ctx, command, row, IO{
+		In: streams.In, Err: streams.Err, Terminal: &terminal,
+	}, opts, nil)
+}
+
+func executeMonitorMutationWithIO(
+	ctx context.Context,
+	command string,
+	row statusRow,
+	streams IO,
+	opts options,
+	capturedErr *bytes.Buffer,
+) monitorMutationResult {
+	var stdout bytes.Buffer
+	streams.Out = &stdout
 	internalOpts := opts
 	internalOpts.JSON = true
-	err := serviceCommand(ctx, command, []string{row.connection.Metadata.Name}, IO{Out: &stdout, Err: &stderr, Terminal: &terminal}, internalOpts)
+	err := serviceCommand(ctx, command, []string{row.connection.Metadata.Name}, streams, internalOpts)
 	var response struct {
 		Outcome string `json:"outcome"`
 		Results []struct {
@@ -811,7 +999,10 @@ func executeMonitorMutation(ctx context.Context, command string, row statusRow, 
 	}
 	decodeErr := json.Unmarshal(stdout.Bytes(), &response)
 	if err != nil {
-		message := strings.TrimSpace(stderr.String())
+		message := ""
+		if capturedErr != nil {
+			message = strings.TrimSpace(capturedErr.String())
+		}
 		if message == "" && decodeErr == nil && len(response.Results) > 0 && response.Results[0].Error != nil {
 			message = response.Results[0].Error.Message
 		}
@@ -893,6 +1084,11 @@ func monitorConfirmationText(confirmation monitorConfirmation, lang language) st
 			" 重启“%s”？连接会短暂中断，自动启动设置不变。按 y 确认，其他任意键取消"), confirmation.name)
 	}
 	if confirmation.persistent {
+		if confirmation.system {
+			return fmt.Sprintf(localized(lang,
+				" Stop %q and turn off autostart? Administrator authorization follows to remove the system service. y confirms; any other key cancels",
+				" 停止“%s”并关闭自动启动？接下来需要管理员授权以解除系统服务。按 y 确认，其他任意键取消"), confirmation.name)
+		}
 		return fmt.Sprintf(localized(lang,
 			" Stop %q and turn off autostart? The native service manager will not restore it automatically. y confirms; any other key cancels",
 			" 停止“%s”并关闭自动启动？以后不会由原生服务管理器自动恢复。按 y 确认，其他任意键取消"), confirmation.name)

@@ -368,7 +368,6 @@ var allowedSSHOptions = map[string]struct{}{
 	"rekeylimit":                   {},
 	"requiredrsasize":              {},
 	"sendenv":                      {},
-	"setenv":                       {},
 	"updatehostkeys":               {},
 	"verifyhostkeydns":             {},
 }

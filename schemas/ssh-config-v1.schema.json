@@ -15,7 +15,11 @@
       "type": "array",
       "uniqueItems": true,
       "description": "OpenSSH Key=Value options accepted by Tunlite's conservative safe-option allowlist; Driver validation is authoritative.",
-      "items": { "type": "string", "pattern": "^[^-\\r\\n\\u0000][^=\\r\\n\\u0000]*=.+$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[^-\\r\\n\\u0000][^=\\r\\n\\u0000]*=.+$",
+        "not": { "pattern": "^[Ss][Ee][Tt][Ee][Nn][Vv]=" }
+      }
     },
     "forwards": {
       "type": "array",

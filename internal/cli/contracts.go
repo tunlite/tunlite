@@ -38,6 +38,9 @@ func schema(args []string, streams IO, opts options) error {
 		return usageError(fmt.Sprintf("unknown schema %q (connection, connection-list, ssh, cli, service-state)", name))
 	}
 	if output == "-" {
+		if opts.DryRun {
+			return usageError("schema --dry-run requires --output <file>")
+		}
 		if opts.JSON {
 			return usageError("--json cannot be combined with --output -")
 		}
@@ -59,6 +62,9 @@ func schema(args []string, streams IO, opts options) error {
 			return err
 		}
 		return renderSchemaWrite(streams, opts, "applied", name, absolute)
+	}
+	if opts.DryRun {
+		return usageError("schema --dry-run requires --output <file>")
 	}
 	if opts.JSON {
 		return writeResponse(streams.Out, map[string]any{
@@ -219,7 +225,7 @@ func capabilities(args []string, streams IO, opts options) error {
 			"setClearFields": []string{"identity", "jump", "options"},
 			"capabilities":   []string{"access", "publish", "socks", "foreground", "persistent", "multiForward", "inspect", "check", "diagnose"},
 		}},
-		"exitCodes": map[string]int{"success": 0, "error": 1, "invalidArguments": 2, "notFound": 3, "authenticationFailed": 4, "partial": 5},
+		"exitCodes": map[string]int{"success": 0, "error": 1, "invalidArguments": 2, "notFound": 3, "interactionRequired": 4, "partial": 5},
 		"schemas":   schemas.Names,
 	}
 	if opts.JSON {
@@ -310,6 +316,33 @@ func commandHelp(command string, streams IO, opts options) error {
 			fmt.Fprintln(streams.Out, "Scope: new services default to user; existing services keep their scope unless --scope is set. Check capabilities for system support. Before a change enters or leaves system scope, an interactive terminal requests administrator authorization once through sudo; --non-interactive only uses pre-authorized access.")
 		}
 	}
+	if command == "set" {
+		if isChinese(opts.Language) {
+			fmt.Fprintln(streams.Out, "行为：")
+			fmt.Fprintln(streams.Out, "  - 传入任意 -L/-R/-D 时，会用本次参数整体替换现有转发列表；不传则保持不变。")
+			fmt.Fprintln(streams.Out, "  - 传入任意 -o 时，会用本次参数整体替换现有 SSH 选项；--clear options 会清空它们。")
+			fmt.Fprintln(streams.Out, "  - 如果连接正在临时或长期后台运行，执行配置变更可能导致短暂重启。")
+		} else {
+			fmt.Fprintln(streams.Out, "Behavior:")
+			fmt.Fprintln(streams.Out, "  - Supplying any -L/-R/-D replaces the entire forwarding list with the values in this command; omitting them leaves it unchanged.")
+			fmt.Fprintln(streams.Out, "  - Supplying any -o replaces the entire SSH options list; --clear options empties it.")
+			fmt.Fprintln(streams.Out, "  - Execution changes may briefly restart a connection that is running in temporary or persistent background mode.")
+		}
+	}
+	if command == "unmanage" {
+		if isChinese(opts.Language) {
+			fmt.Fprintln(streams.Out, "影响：只移除 Tunlite 的声明和管理记录。原生后台服务保持安装，当前运行状态和自动启动设置不变。")
+		} else {
+			fmt.Fprintln(streams.Out, "Effect: removes only Tunlite's declaration and management record. The native service remains installed; its current running state and autostart setting stay unchanged.")
+		}
+	}
+	if command == "rename" {
+		if isChinese(opts.Language) {
+			fmt.Fprintln(streams.Out, "影响：只更改用户看到的 Connection 名称。底层 serviceKey、unitName 和原生服务标识保持不变，因此正在运行的连接不会中断。")
+		} else {
+			fmt.Fprintln(streams.Out, "Effect: changes only the user-facing Connection name. The underlying serviceKey, unitName, and native identity stay unchanged, so a running connection is not interrupted.")
+		}
+	}
 	return nil
 }
 
@@ -350,6 +383,9 @@ func commandUsage(command string) string {
 
 func containsHelpFlag(args []string) bool {
 	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
 		if arg == "--help" || arg == "-h" {
 			return true
 		}

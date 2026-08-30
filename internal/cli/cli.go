@@ -36,17 +36,22 @@ type IO struct {
 	// detects both from the attached files and respects NO_COLOR.
 	Color    *bool
 	Terminal *bool
+	// PromptTerminal optionally overrides whether stdin and stderr form a
+	// visible interactive prompt. It is separate from Terminal because monitor
+	// renders on stdout while selection/password prompts are written to stderr.
+	PromptTerminal *bool
 }
 
 type options struct {
-	JSON                bool
-	NonInteractive      bool
-	DryRun              bool
-	Language            language
-	serviceAdapter      func() (service.Adapter, error)
-	lifecycleBudget     *lifecycleObservationBudget
-	lifecycleObserver   *lifecycleObserver
-	privilegeAuthorizer privilegeAuthorizer
+	JSON                   bool
+	NonInteractive         bool
+	DryRun                 bool
+	Language               language
+	serviceAdapter         func() (service.Adapter, error)
+	lifecycleBudget        *lifecycleObservationBudget
+	lifecycleObserver      *lifecycleObserver
+	privilegeAuthorizer    privilegeAuthorizer
+	systemReplacementBatch map[string]bool
 }
 
 type exitError struct {
@@ -85,6 +90,7 @@ func runContextWithOptions(ctx context.Context, args []string, streams IO, overr
 	opts.serviceAdapter = overrides.serviceAdapter
 	opts.lifecycleBudget = overrides.lifecycleBudget
 	opts.privilegeAuthorizer = overrides.privilegeAuthorizer
+	opts.systemReplacementBatch = overrides.systemReplacementBatch
 	if opts.privilegeAuthorizer == nil {
 		opts.privilegeAuthorizer = newSudoPrivilegeAuthorizer()
 	}
@@ -94,13 +100,15 @@ func runContextWithOptions(ctx context.Context, args []string, streams IO, overr
 	if len(cleaned) == 0 {
 		return renderError(streams, opts, usageError("usage: tunlite <command> (run `tunlite help` for commands)"))
 	}
+	if err := validateGlobalOptionSupport(cleaned, opts); err != nil {
+		return renderError(streams, opts, err)
+	}
 	if cleaned[0] != "help" && containsHelpFlag(cleaned[1:]) {
 		if err := commandHelp(cleaned[0], streams, opts); err != nil {
 			return renderError(streams, opts, err)
 		}
 		return 0
 	}
-	renderCommandProgress(streams, opts, cleaned)
 	switch cleaned[0] {
 	case "help", "--help", "-h":
 		err = help(cleaned[1:], streams, opts)
@@ -188,6 +196,7 @@ func run(ctx context.Context, args []string, streams IO, opts options) error {
 	if flags.NArg() != 0 {
 		return usageError("usage: tunlite run <name>")
 	}
+	renderCommandProgress(streams, opts, append([]string{"run", args[0]}, args[1:]...))
 	return runNamed(ctx, args[0], streams, opts)
 }
 
@@ -302,8 +311,8 @@ func executeConnection(ctx context.Context, connection core.Connection, streams 
 	}
 	if opts.JSON {
 		_ = writeResponse(streams.Out, map[string]any{
-			"outcome": "starting", "connection": connection.Metadata.Name,
-			"plan": executionPlan,
+			"outcome": "starting", "command": "run", "connection": connection.Metadata.Name,
+			"stream": "execution", "plan": executionPlan,
 		})
 	} else {
 		fmt.Fprintf(streams.Err, "starting %s via %s\n", connection.Metadata.Name, executionPlan.Exec.Program)
@@ -354,8 +363,16 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 	cleaned := make([]string, 0, len(args))
 	opts := options{Language: languageEnglish}
 	explicitLanguage := ""
+	languageSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			// Everything after -- belongs to the command or Driver. In
+			// particular, an SSH target named like a global option must never be
+			// consumed by this parser.
+			cleaned = append(cleaned, args[i:]...)
+			break
+		}
 		switch arg {
 		case "--json":
 			opts.JSON = true
@@ -366,16 +383,24 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 		default:
 			switch {
 			case arg == "--lang":
+				if languageSet {
+					return cleaned, opts, errors.New("--lang may only be specified once")
+				}
 				if i+1 >= len(args) {
 					return cleaned, opts, errors.New("--lang requires en or zh-CN")
 				}
 				i++
 				explicitLanguage = args[i]
 			case strings.HasPrefix(arg, "--lang="):
+				if languageSet {
+					return cleaned, opts, errors.New("--lang may only be specified once")
+				}
 				explicitLanguage = strings.TrimPrefix(arg, "--lang=")
 			default:
 				cleaned = append(cleaned, arg)
+				continue
 			}
+			languageSet = true
 		}
 	}
 	lang, err := resolveLanguage(explicitLanguage)
@@ -384,6 +409,33 @@ func extractGlobalOptions(args []string) ([]string, options, error) {
 	}
 	opts.Language = lang
 	return cleaned, opts, nil
+}
+
+func validateGlobalOptionSupport(args []string, opts options) error {
+	if len(args) == 0 || !opts.DryRun {
+		return nil
+	}
+	command := args[0]
+	if command == "--help" || command == "-h" {
+		command = "help"
+	}
+	if command == "--version" || command == "-v" {
+		command = "version"
+	}
+	// A command help request is itself a read-only help operation, even when
+	// the named command normally supports planning.
+	if command != "help" && containsHelpFlag(args[1:]) {
+		command = "help"
+	}
+	unsupported := map[string]bool{
+		"capabilities": true, "check": true, "doctor": true, "help": true,
+		"list": true, "logs": true, "monitor": true, "status": true,
+		"validate": true, "version": true,
+	}
+	if unsupported[command] {
+		return usageError(fmt.Sprintf("%s does not support --dry-run", command))
+	}
+	return nil
 }
 
 func renderError(streams IO, opts options, err error) int {
@@ -398,6 +450,9 @@ func renderError(streams IO, opts options, err error) int {
 		kind = typed.kind
 	} else {
 		kind = serviceOperationErrorCode(err, kind)
+	}
+	if kind == "privilege_required" || kind == "interaction_required" {
+		code = 4
 	}
 	if opts.JSON {
 		riskLevel := "low"
@@ -435,6 +490,10 @@ func renderError(streams IO, opts options, err error) int {
 
 func usageError(message string) error {
 	return &exitError{code: 2, kind: "invalid_arguments", message: message}
+}
+
+func interactionRequiredError(message string) error {
+	return &exitError{code: 4, kind: "interaction_required", message: message}
 }
 
 func notFoundError(message string) error {

@@ -105,6 +105,59 @@ type scopeReadOnlyPreflighter interface {
 	CheckScopeTransition(context.Context, Reference, Artifact) error
 }
 
+type privilegedDisablePreflighter interface {
+	PreflightDisable(context.Context, Reference) error
+}
+
+type definitionReplacer interface {
+	CheckDefinitionReplace(context.Context, Reference, Artifact) error
+	PreflightDefinitionReplace(context.Context, Reference, Artifact) error
+	StageDefinitionReplace(context.Context, Reference, Artifact, string, func(context.Context, Reference) error) (ScopeTransition, error)
+}
+
+func CheckDefinitionReplace(ctx context.Context, adapter Adapter, source Reference, target Artifact) error {
+	replacer, ok := adapter.(definitionReplacer)
+	if !ok {
+		return &UnsupportedScopeError{Adapter: adapter.Name(), Scope: source.Scope}
+	}
+	return replacer.CheckDefinitionReplace(ctx, source, target)
+}
+
+func PreflightDefinitionReplace(ctx context.Context, adapter Adapter, source Reference, target Artifact) error {
+	replacer, ok := adapter.(definitionReplacer)
+	if !ok {
+		return &UnsupportedScopeError{Adapter: adapter.Name(), Scope: source.Scope}
+	}
+	return replacer.PreflightDefinitionReplace(ctx, source, target)
+}
+
+func StageDefinitionReplace(
+	ctx context.Context,
+	adapter Adapter,
+	source Reference,
+	target Artifact,
+	mode string,
+	verify func(context.Context, Reference) error,
+) (ScopeTransition, error) {
+	replacer, ok := adapter.(definitionReplacer)
+	if !ok {
+		return nil, &UnsupportedScopeError{Adapter: adapter.Name(), Scope: source.Scope}
+	}
+	return replacer.StageDefinitionReplace(ctx, source, target, mode, verify)
+}
+
+// PreflightDisable verifies that an already-authorized system disable can run
+// before the adapter mutates registration or its root-owned artifact.
+func PreflightDisable(ctx context.Context, adapter Adapter, reference Reference) error {
+	if NormalizeScope(reference.Scope) != ScopeSystem {
+		return nil
+	}
+	if preflighter, ok := adapter.(privilegedDisablePreflighter); ok {
+		return preflighter.PreflightDisable(ctx, reference)
+	}
+	return fmt.Errorf("%s cannot safely preflight system service disable", adapter.Name())
+}
+
 // CheckScopeInstall performs only read-only identity and conflict checks. It is
 // suitable for dry-run: implementations must not authorize or mutate native
 // service state.

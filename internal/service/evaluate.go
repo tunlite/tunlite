@@ -46,6 +46,14 @@ func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Art
 		state.ServiceState = ServiceRegistered
 	} else {
 		state.ServiceState = ServiceAbsent
+		// A disabled system service intentionally has no root-owned definition.
+		// The retained Record is the local system-scope intent used by enable to
+		// reconstruct and register it again.
+		if NormalizeScope(record.Scope) == ScopeSystem && record.Mode == ModeStopped && record.ArtifactPath == "" &&
+			observation.ProcessState == ProcessInactive && !observation.AutoStart {
+			state.ConsistencyState = ConsistencyConsistent
+			return state
+		}
 		state.ConsistencyState = ConsistencyMissing
 		state.Conditions = append(state.Conditions, stateCondition(record.Connection, "service_artifact_missing", "error",
 			"the native service definition is missing",

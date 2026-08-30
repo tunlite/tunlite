@@ -73,12 +73,14 @@ type Record struct {
 }
 
 type Reference struct {
-	Connection   string
-	Adapter      string
-	Scope        Scope
-	UnitName     string
-	ArtifactPath string
-	LogPaths     []string
+	Connection     string
+	Adapter        string
+	Scope          Scope
+	UnitName       string
+	ArtifactPath   string
+	LogPaths       []string
+	PlanDigest     string
+	BaselineDigest string
 }
 
 func (r Record) Reference() Reference {
@@ -89,6 +91,7 @@ func (r Record) Reference() Reference {
 	return Reference{
 		Connection: serviceKey, Adapter: r.Adapter, Scope: NormalizeScope(r.Scope), UnitName: r.UnitName,
 		ArtifactPath: r.ArtifactPath, LogPaths: append([]string(nil), r.LogPaths...),
+		PlanDigest: r.PlanDigest, BaselineDigest: r.BaselineDigest,
 	}
 }
 
@@ -108,6 +111,7 @@ func (a Artifact) Reference() Reference {
 	return Reference{
 		Connection: a.Connection, Adapter: a.Adapter, Scope: NormalizeScope(a.Scope), UnitName: a.UnitName,
 		ArtifactPath: a.Path, LogPaths: append([]string(nil), a.LogPaths...),
+		PlanDigest: a.PlanDigest, BaselineDigest: ContentDigest(a.Content),
 	}
 }
 
@@ -142,6 +146,7 @@ type State struct {
 }
 
 type Streams struct {
+	In  io.Reader
 	Out io.Writer
 	Err io.Writer
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -177,6 +178,43 @@ func (f *scopedFakeServiceAdapter) PreflightScopeInstall(context.Context, servic
 
 func (f *scopedFakeServiceAdapter) PreflightScopeTransition(context.Context, service.Reference, service.Artifact) error {
 	return f.preflight()
+}
+
+func (f *scopedFakeServiceAdapter) PreflightDisable(context.Context, service.Reference) error {
+	return f.preflight()
+}
+
+func (f *scopedFakeServiceAdapter) CheckDefinitionReplace(_ context.Context, source service.Reference, target service.Artifact) error {
+	f.readOnlyChecks++
+	if service.NormalizeScope(source.Scope) != service.ScopeSystem || service.NormalizeScope(target.Scope) != service.ScopeSystem ||
+		source.UnitName != target.UnitName {
+		return errors.New("invalid fake system definition replacement")
+	}
+	return nil
+}
+
+func (f *scopedFakeServiceAdapter) PreflightDefinitionReplace(context.Context, service.Reference, service.Artifact) error {
+	return f.preflight()
+}
+
+func (f *scopedFakeServiceAdapter) StageDefinitionReplace(_ context.Context, _ service.Reference, target service.Artifact, _ string, _ func(context.Context, service.Reference) error) (service.ScopeTransition, error) {
+	if err := f.fail("enable"); err != nil {
+		return nil, err
+	}
+	return f.stage(target)
+}
+
+func (f *scopedFakeServiceAdapter) Disable(ctx context.Context, reference service.Reference) error {
+	if err := f.fakeServiceAdapter.Disable(ctx, reference); err != nil {
+		return err
+	}
+	if service.NormalizeScope(reference.Scope) == service.ScopeSystem {
+		delete(f.artifacts, reference.Connection)
+		f.observed[reference.Connection] = service.Observation{
+			Scope: service.ScopeSystem, ProcessState: service.ProcessInactive, Platform: map[string]any{},
+		}
+	}
+	return nil
 }
 
 func (f *scopedFakeServiceAdapter) stage(target service.Artifact) (service.ScopeTransition, error) {
@@ -454,7 +492,7 @@ func TestNonInteractiveScopePrivilegeFailureUsesStableCodeAndDoesNotStage(t *tes
 	invoke := useFakeServiceAdapter(t, adapter)
 	_, _, _ = invoke(t, "add", "db", "-D", "1080", "me@example.com")
 	code, out, _ := invoke(t, "enable", "db", "--scope", "system", "--json", "--non-interactive")
-	if code == 0 || !strings.Contains(out, `"code":"privilege_required"`) || adapter.stageCalls != 0 {
+	if code != 4 || !strings.Contains(out, `"code":"privilege_required"`) || adapter.stageCalls != 0 {
 		t.Fatalf("enable exit=%d out=%s stage=%d", code, out, adapter.stageCalls)
 	}
 }
@@ -515,7 +553,7 @@ func TestInteractiveScopeBatchNthPrivilegedPreflightFailurePerformsZeroWrites(t 
 		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
 		privilegeAuthorizer: authorizer,
 	})
-	if code == 0 || authorizer.calls != 1 || adapter.preflightCalls != 2 || adapter.stageCalls != 0 ||
+	if code != 4 || authorizer.calls != 1 || adapter.preflightCalls != 2 || adapter.stageCalls != 0 ||
 		strings.Count(out.String(), `"code":"privilege_required"`) != 2 {
 		t.Fatalf("exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls,
 			adapter.preflightCalls, adapter.stageCalls, out.String())
@@ -569,7 +607,7 @@ func TestScopeAuthorizationFailureIsTypedAndStartsNoMigration(t *testing.T) {
 		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
 		privilegeAuthorizer: authorizer,
 	})
-	if code == 0 || authorizer.calls != 1 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 ||
+	if code != 4 || authorizer.calls != 1 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 ||
 		strings.Count(out.String(), `"code":"privilege_required"`) != 2 {
 		t.Fatalf("exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls, adapter.preflightCalls, adapter.stageCalls, out.String())
 	}
@@ -623,7 +661,7 @@ func TestScopeAuthorizationNoTTYFailsFastWithTypedJSON(t *testing.T) {
 		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
 		privilegeAuthorizer: sudoPrivilegeAuthorizer{runner: runner},
 	})
-	if code == 0 || runner.calls != 0 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 || stderr.Len() != 0 ||
+	if code != 4 || runner.calls != 0 || adapter.preflightCalls != 0 || adapter.stageCalls != 0 || stderr.Len() != 0 ||
 		!strings.Contains(out.String(), `"code":"privilege_required"`) || !strings.Contains(out.String(), "interactive terminal") {
 		t.Fatalf("exit=%d runner=%d preflight=%d stage=%d out=%s err=%s", code, runner.calls,
 			adapter.preflightCalls, adapter.stageCalls, out.String(), stderr.String())
@@ -895,7 +933,7 @@ func TestInteractiveScopeMigrationShowsImpactAndIntermediateProgress(t *testing.
 	if code != 0 {
 		t.Fatalf("enable exit=%d out=%s err=%s", code, out.String(), stderr.String())
 	}
-	for _, expected := range []string{`Moving "db" from USER scope to SYSTEM scope`, "Target service is healthy", "scope change complete"} {
+	for _, expected := range []string{`Moving "db" from USER scope to SYSTEM scope`, "Target process is stable", "scope change complete"} {
 		if !strings.Contains(stderr.String(), expected) {
 			t.Fatalf("progress missing %q: %s", expected, stderr.String())
 		}
@@ -1043,7 +1081,7 @@ func TestUnsupportedRecordScopeIsRejectedByEveryCLIPathWithoutMutation(t *testin
 			}
 			artifactBefore := adapter.artifacts["db"]
 			observationBefore := adapter.observed["db"]
-			callsBefore := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls), adapter.inspectCallCount()}
+			callsBefore := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls)}
 
 			code, out, stderr := invoke(t, test.args...)
 			if test.name == "status" {
@@ -1060,7 +1098,7 @@ func TestUnsupportedRecordScopeIsRejectedByEveryCLIPathWithoutMutation(t *testin
 			if _, exists, _ := records.Load("renamed"); exists {
 				t.Fatalf("%s copied an unsupported record", test.name)
 			}
-			callsAfter := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls), adapter.inspectCallCount()}
+			callsAfter := []int{len(adapter.materializeCalls), len(adapter.startCalls), len(adapter.stopCalls), len(adapter.enableCalls), len(adapter.disableCalls), len(adapter.restartCalls), len(adapter.removeCalls)}
 			if !reflect.DeepEqual(callsAfter, callsBefore) || !reflect.DeepEqual(adapter.artifacts["db"], artifactBefore) || !reflect.DeepEqual(adapter.observed["db"], observationBefore) {
 				t.Fatalf("%s mutated native state: calls=%v want=%v", test.name, callsAfter, callsBefore)
 			}
@@ -1130,8 +1168,11 @@ func TestSystemScopeOrphanIsVisibleBlockedAndResolvedInPlace(t *testing.T) {
 		t.Fatalf("resolve exit=%d out=%s err=%s", code, out, stderr)
 	}
 	record, exists, err := records.Load("db")
-	if err != nil || !exists || record.Scope != service.ScopeSystem || record.ArtifactPath != artifact.Path || adapter.artifacts["db"].Scope != service.ScopeSystem {
-		t.Fatalf("resolve did not adopt system orphan in place: record=%#v exists=%t err=%v artifact=%#v", record, exists, err, adapter.artifacts["db"])
+	if err != nil || !exists || record.Scope != service.ScopeSystem || record.ArtifactPath != "" {
+		t.Fatalf("resolve did not preserve stopped system intent: record=%#v exists=%t err=%v", record, exists, err)
+	}
+	if _, remains := adapter.artifacts["db"]; remains {
+		t.Fatal("resolve retained a root artifact for stopped system intent")
 	}
 }
 
@@ -1579,6 +1620,374 @@ func TestLifecycleCommandMatrix(t *testing.T) {
 	}
 }
 
+func TestSystemLifecycleUsesPersistentOnlyAndPreservesScopeIntent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	authorizer := &fakePrivilegeAuthorizer{}
+	invoke := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
+		code := runContextWithOptions(context.Background(), args, IO{Out: &out, Err: io.Discard}, options{
+			serviceAdapter:  func() (service.Adapter, error) { return adapter, nil },
+			lifecycleBudget: &budget, privilegeAuthorizer: authorizer,
+		})
+		return code, out.String()
+	}
+	if code, out := invoke("add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s", code, out)
+	}
+	if code, out := invoke("enable", "db", "--scope", "system", "--json"); code != 0 {
+		t.Fatalf("system enable exit=%d out=%s", code, out)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists || record.Scope != service.ScopeSystem || record.Mode != service.ModePersistent {
+		t.Fatalf("system record=%#v exists=%t err=%v", record, exists, err)
+	}
+	startCalls, stopCalls := len(adapter.startCalls), len(adapter.stopCalls)
+	if code, out := invoke("start", "db", "--json"); code == 0 || !strings.Contains(out, `"code":"persistent_connection"`) {
+		t.Fatalf("system persistent start exit=%d out=%s", code, out)
+	}
+	if code, out := invoke("stop", "db", "--json"); code == 0 || !strings.Contains(out, `"code":"persistent_connection"`) {
+		t.Fatalf("system persistent stop exit=%d out=%s", code, out)
+	}
+	if len(adapter.startCalls) != startCalls || len(adapter.stopCalls) != stopCalls {
+		t.Fatal("system persistent start/stop reached temporary adapter methods")
+	}
+	authorizedBeforeRestart := authorizer.calls
+	if code, out := invoke("restart", "db", "--json"); code != 0 {
+		t.Fatalf("system restart exit=%d out=%s", code, out)
+	}
+	if authorizer.calls != authorizedBeforeRestart || len(adapter.restartCalls) != 1 {
+		t.Fatalf("system restart auth=%d want=%d restarts=%v", authorizer.calls, authorizedBeforeRestart, adapter.restartCalls)
+	}
+	recordAfterRestart, _, _ := records.Load("db")
+	if !reflect.DeepEqual(recordAfterRestart, record) {
+		t.Fatalf("restart changed lifecycle record: got=%#v want=%#v", recordAfterRestart, record)
+	}
+	if code, out := invoke("disable", "db", "--json"); code != 0 {
+		t.Fatalf("system disable exit=%d out=%s", code, out)
+	}
+	disabled, exists, err := records.Load("db")
+	if err != nil || !exists || disabled.Scope != service.ScopeSystem || disabled.Mode != service.ModeStopped || disabled.ArtifactPath != "" {
+		t.Fatalf("disabled record=%#v exists=%t err=%v", disabled, exists, err)
+	}
+	if _, exists := adapter.artifacts["db"]; exists {
+		t.Fatal("system disable retained fake root artifact")
+	}
+	if code, out := invoke("start", "db", "--json"); code == 0 || !strings.Contains(out, `"code":"system_scope_requires_enable"`) {
+		t.Fatalf("disabled system start exit=%d out=%s", code, out)
+	}
+	if code, out := invoke("enable", "db", "--json"); code != 0 {
+		t.Fatalf("system re-enable exit=%d out=%s", code, out)
+	}
+	reenabled, _, _ := records.Load("db")
+	if reenabled.Scope != service.ScopeSystem || reenabled.Mode != service.ModePersistent || reenabled.ArtifactPath == "" {
+		t.Fatalf("reenabled record=%#v", reenabled)
+	}
+	if code, out := invoke("disable", "db", "--json"); code != 0 {
+		t.Fatalf("second system disable exit=%d out=%s", code, out)
+	}
+	authorizedBeforeRemove := authorizer.calls
+	removeCalls := len(adapter.removeCalls)
+	if code, out := invoke("remove", "db", "--json"); code != 0 {
+		t.Fatalf("system remove exit=%d out=%s", code, out)
+	}
+	if authorizer.calls != authorizedBeforeRemove || len(adapter.removeCalls) != removeCalls {
+		t.Fatalf("system remove used privileged/native removal: auth=%d/%d removes=%d/%d", authorizer.calls, authorizedBeforeRemove, len(adapter.removeCalls), removeCalls)
+	}
+	if _, exists, err := records.Load("db"); err != nil || exists {
+		t.Fatalf("system remove retained record: exists=%t err=%v", exists, err)
+	}
+}
+
+func TestDisableStoppedSystemServiceRemovesResidualRootArtifact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	authorizer := &fakePrivilegeAuthorizer{}
+	terminal := true
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := runContextWithOptions(context.Background(), args, IO{Out: &out, Err: io.Discard, Terminal: &terminal}, options{
+			serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+			privilegeAuthorizer: authorizer,
+		})
+		return code, out.String()
+	}
+	if code, out := run("add", "db", "-D", "1080", "--json", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s", code, out)
+	}
+	if code, out := run("enable", "db", "--scope", "system", "--json"); code != 0 {
+		t.Fatalf("enable exit=%d out=%s", code, out)
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := records.Load("db")
+	if err != nil || !exists {
+		t.Fatalf("record exists=%t err=%v", exists, err)
+	}
+	record.Mode = service.ModeStopped
+	if err := records.Write(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	observation := adapter.observed["db"]
+	observation.Installed = true
+	observation.AutoStart = false
+	observation.ProcessState = service.ProcessInactive
+	adapter.observed["db"] = observation
+	authorizer.calls = 0
+	adapter.preflightCalls = 0
+
+	code, out := run("disable", "db", "--json")
+	if code != 0 || authorizer.calls != 1 || adapter.preflightCalls != 1 {
+		t.Fatalf("disable exit=%d auth=%d preflight=%d out=%s", code, authorizer.calls, adapter.preflightCalls, out)
+	}
+	if _, exists := adapter.artifacts["db"]; exists {
+		t.Fatal("disable retained the residual system artifact")
+	}
+	disabled, exists, err := records.Load("db")
+	if err != nil || !exists || disabled.Scope != service.ScopeSystem || disabled.Mode != service.ModeStopped || disabled.ArtifactPath != "" {
+		t.Fatalf("disabled record=%+v exists=%t err=%v", disabled, exists, err)
+	}
+	config, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, connection := configstore.Find(&document, "db"); connection == nil {
+		t.Fatal("disable removed the connection declaration")
+	}
+}
+
+func prepareSystemImportReplacement(t *testing.T, home string, adapter *scopedFakeServiceAdapter) (string, configstore.Document) {
+	t.Helper()
+	invoke := useFakeServiceAdapter(t, adapter)
+	for index, name := range []string{"one", "two"} {
+		port := strconv.Itoa(1081 + index)
+		if code, out, stderr := invoke(t, "add", name, "-D", port, "--json", "me@example.com"); code != 0 {
+			t.Fatalf("add %s exit=%d out=%s err=%s", name, code, out, stderr)
+		}
+		if code, out, stderr := invoke(t, "enable", name, "--scope", "system", "--json", "--non-interactive"); code != 0 {
+			t.Fatalf("enable %s exit=%d out=%s err=%s", name, code, out, stderr)
+		}
+	}
+	target, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := target.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDocument := configstore.Empty()
+	for _, connection := range before.Items {
+		changed := cloneConnection(connection)
+		config, err := sshdriver.DecodeConfig(changed.Spec.Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.Forwards[0].SrcPort += 100
+		changed.Spec.Config, err = json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceDocument.Items = append(sourceDocument.Items, changed)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "system-import.json")
+	if err := configstore.New(sourcePath).Write(context.Background(), sourceDocument, false); err != nil {
+		t.Fatal(err)
+	}
+	adapter.preflightCalls = 0
+	adapter.stageCalls = 0
+	adapter.readOnlyChecks = 0
+	return sourcePath, before
+}
+
+func runSystemImportReplacement(t *testing.T, sourcePath string, adapter *scopedFakeServiceAdapter, authorizer *fakePrivilegeAuthorizer) (int, string) {
+	t.Helper()
+	terminal := true
+	var out bytes.Buffer
+	code := runContextWithOptions(context.Background(), []string{"import", sourcePath, "--force", "--json"}, IO{
+		Out: &out, Err: io.Discard, Terminal: &terminal,
+	}, options{
+		serviceAdapter:      func() (service.Adapter, error) { return adapter, nil },
+		privilegeAuthorizer: authorizer,
+	})
+	return code, out.String()
+}
+
+func TestImportSystemReplacementsAuthorizesBatchOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	sourcePath, before := prepareSystemImportReplacement(t, home, adapter)
+	authorizer := &fakePrivilegeAuthorizer{}
+
+	code, out := runSystemImportReplacement(t, sourcePath, adapter, authorizer)
+	if code != 0 || authorizer.calls != 1 || authorizer.request.connections != 2 || adapter.stageCalls != 2 {
+		t.Fatalf("import exit=%d auth=%d connections=%d stage=%d out=%s", code, authorizer.calls,
+			authorizer.request.connections, adapter.stageCalls, out)
+	}
+	target, _ := connectionStore(options{})
+	after, err := target.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two"} {
+		_, oldConnection := configstore.Find(&before, name)
+		_, newConnection := configstore.Find(&after, name)
+		if oldConnection == nil || newConnection == nil || connectionsEqual(*oldConnection, *newConnection) {
+			t.Fatalf("connection %s was not replaced: old=%+v new=%+v", name, oldConnection, newConnection)
+		}
+	}
+}
+
+func TestImportSystemReplacementPreflightFailurePerformsZeroWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	sourcePath, beforeDocument := prepareSystemImportReplacement(t, home, adapter)
+	records, _ := serviceRecordStore()
+	beforeRecords := map[string]service.Record{}
+	beforeArtifacts := map[string]service.Artifact{}
+	for _, name := range []string{"one", "two"} {
+		beforeRecords[name], _, _ = records.Load(name)
+		beforeArtifacts[name] = adapter.artifacts[name]
+	}
+	adapter.failPreflight = 2
+	adapter.preflightErr = &service.PrivilegeError{Operation: "second system replacement preflight", Cause: errors.New("authorization cache unavailable")}
+	authorizer := &fakePrivilegeAuthorizer{}
+
+	code, out := runSystemImportReplacement(t, sourcePath, adapter, authorizer)
+	if code != 4 || authorizer.calls != 1 || adapter.preflightCalls != 2 || adapter.stageCalls != 0 {
+		t.Fatalf("import exit=%d auth=%d preflight=%d stage=%d out=%s", code, authorizer.calls,
+			adapter.preflightCalls, adapter.stageCalls, out)
+	}
+	target, _ := connectionStore(options{})
+	afterDocument, err := target.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterDocument, beforeDocument) {
+		t.Fatalf("preflight failure changed declarations: before=%+v after=%+v", beforeDocument, afterDocument)
+	}
+	for _, name := range []string{"one", "two"} {
+		record, _, _ := records.Load(name)
+		if !reflect.DeepEqual(record, beforeRecords[name]) || !reflect.DeepEqual(adapter.artifacts[name], beforeArtifacts[name]) {
+			t.Fatalf("preflight failure changed %s: record=%+v artifact=%+v", name, record, adapter.artifacts[name])
+		}
+	}
+}
+
+func TestImportSystemReplacementRuntimeFailureIsPartial(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := &scopedFakeServiceAdapter{fakeServiceAdapter: newFakeServiceAdapter(filepath.Join(home, "native"))}
+	sourcePath, beforeDocument := prepareSystemImportReplacement(t, home, adapter)
+	records, _ := serviceRecordStore()
+	beforeOne, _, _ := records.Load("one")
+	beforeTwo, _, _ := records.Load("two")
+	adapter.failStage = 2
+	authorizer := &fakePrivilegeAuthorizer{}
+
+	code, out := runSystemImportReplacement(t, sourcePath, adapter, authorizer)
+	if code != exitPartial || authorizer.calls != 1 || adapter.stageCalls != 2 || !strings.Contains(out, `"outcome":"partial"`) {
+		t.Fatalf("import exit=%d auth=%d stage=%d out=%s", code, authorizer.calls, adapter.stageCalls, out)
+	}
+	target, _ := connectionStore(options{})
+	afterDocument, err := target.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, beforeOneConnection := configstore.Find(&beforeDocument, "one")
+	_, beforeTwoConnection := configstore.Find(&beforeDocument, "two")
+	_, afterOneConnection := configstore.Find(&afterDocument, "one")
+	_, afterTwoConnection := configstore.Find(&afterDocument, "two")
+	if connectionsEqual(*beforeOneConnection, *afterOneConnection) || !connectionsEqual(*beforeTwoConnection, *afterTwoConnection) {
+		t.Fatalf("unexpected partial declarations: before=%+v after=%+v", beforeDocument, afterDocument)
+	}
+	afterOne, _, _ := records.Load("one")
+	afterTwo, _, _ := records.Load("two")
+	if reflect.DeepEqual(afterOne, beforeOne) || !reflect.DeepEqual(afterTwo, beforeTwo) {
+		t.Fatalf("unexpected partial records: one before=%+v after=%+v two before=%+v after=%+v", beforeOne, afterOne, beforeTwo, afterTwo)
+	}
+}
+
+func TestImportForceWithoutServiceManagerAddsAndUpdatesForegroundOnlyConnection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	sourcePath := filepath.Join(t.TempDir(), "foreground-import.json")
+	writeSource := func(port int, force bool) {
+		document := configstore.Empty()
+		document.Items = append(document.Items, core.Connection{
+			ConfigVersion: core.ConfigVersion,
+			Kind:          core.Kind,
+			Metadata:      core.Metadata{Name: "db"},
+			Spec: core.ConnectionSpec{Driver: sshdriver.ID, Config: json.RawMessage(fmt.Sprintf(
+				`{"host":"me@example.com","port":22,"forwards":[{"type":"dynamic","bind":"127.0.0.1","srcPort":%d}]}`,
+				port,
+			))},
+		})
+		if err := configstore.New(sourcePath).Write(context.Background(), document, force); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapterCalls := 0
+	runImport := func() (int, string) {
+		var out bytes.Buffer
+		code := runContextWithOptions(context.Background(), []string{"import", sourcePath, "--force", "--json"}, IO{
+			Out: &out, Err: io.Discard,
+		}, options{serviceAdapter: func() (service.Adapter, error) {
+			adapterCalls++
+			return nil, errors.New("no native service manager")
+		}})
+		return code, out.String()
+	}
+
+	writeSource(1080, false)
+	code, out := runImport()
+	if code != 0 || !strings.Contains(out, `"outcome":"added"`) || !strings.Contains(out, `"code":"foreground_only"`) || adapterCalls != 1 {
+		t.Fatalf("add import exit=%d adapter=%d out=%s", code, adapterCalls, out)
+	}
+	writeSource(1081, true)
+	code, out = runImport()
+	if code != 0 || !strings.Contains(out, `"outcome":"updated"`) || !strings.Contains(out, `"code":"foreground_only"`) || adapterCalls != 2 {
+		t.Fatalf("update import exit=%d adapter=%d out=%s", code, adapterCalls, out)
+	}
+	target, err := connectionStore(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := target.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, connection := configstore.Find(&document, "db")
+	if connection == nil {
+		t.Fatalf("foreground-only update was not persisted: %+v", connection)
+	}
+	config, err := sshdriver.DecodeConfig(connection.Spec.Config)
+	if err != nil || len(config.Forwards) != 1 || config.Forwards[0].SrcPort != 1081 {
+		t.Fatalf("foreground-only update was not persisted: config=%+v err=%v", config, err)
+	}
+}
+
 func TestAllServiceAndOwnershipDryRunsAreReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
@@ -1886,6 +2295,20 @@ func TestFollowingLogsJSONEmitsNDJSONRecords(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("logs exit=%d out=%s err=%s", code, out, stderr)
 	}
+	decoder := json.NewDecoder(strings.NewReader(out))
+	var header struct {
+		ProtocolVersion int    `json:"protocolVersion"`
+		Outcome         string `json:"outcome"`
+		Command         string `json:"command"`
+		Connection      string `json:"connection"`
+		Stream          string `json:"stream"`
+	}
+	if err := decoder.Decode(&header); err != nil {
+		t.Fatalf("invalid NDJSON stream header: %v\n%s", err, out)
+	}
+	if header.ProtocolVersion != ProtocolVersion || header.Outcome != "starting" || header.Command != "logs" || header.Connection != "db" || header.Stream != "logs" {
+		t.Fatalf("unexpected stream header: %#v", header)
+	}
 	var record struct {
 		ProtocolVersion int    `json:"protocolVersion"`
 		Outcome         string `json:"outcome"`
@@ -1893,11 +2316,37 @@ func TestFollowingLogsJSONEmitsNDJSONRecords(t *testing.T) {
 		Stream          string `json:"stream"`
 		Line            string `json:"line"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &record); err != nil {
+	if err := decoder.Decode(&record); err != nil {
 		t.Fatalf("invalid NDJSON record: %v\n%s", err, out)
 	}
 	if record.ProtocolVersion != ProtocolVersion || record.Outcome != "log" || record.Connection != "db" || record.Stream != "stdout" || !strings.Contains(record.Line, "provider log") {
 		t.Fatalf("unexpected log record: %#v", record)
+	}
+}
+
+func TestSnapshotLogsJSONPreservesSourceStream(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	adapter := newFakeServiceAdapter(filepath.Join(home, "native"))
+	invoke := useFakeServiceAdapter(t, adapter)
+	if code, out, stderr := invoke(t, "add", "db", "-D", "1080", "me@example.com"); code != 0 {
+		t.Fatalf("add exit=%d out=%s err=%s", code, out, stderr)
+	}
+	code, out, stderr := invoke(t, "logs", "db", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("logs exit=%d out=%s err=%s", code, out, stderr)
+	}
+	var response struct {
+		Command string      `json:"command"`
+		Stream  string      `json:"stream"`
+		Logs    []logRecord `json:"logs"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Command != "logs" || response.Stream != "snapshot" || len(response.Logs) != 1 || response.Logs[0].Stream != "stdout" {
+		t.Fatalf("unexpected log snapshot: %#v", response)
 	}
 }
 
@@ -2389,8 +2838,9 @@ func TestManageRemovesBindingWhenConfigWriteFails(t *testing.T) {
 	}
 	var restore func() error
 	var hookErr error
+	targetDiscoverCall := adapter.discoverCalls + 2
 	adapter.discoverHook = func(call int) {
-		if call == 2 {
+		if call == targetDiscoverCall {
 			restore, hookErr = replaceDirectoryWithBlocker(filepath.Join(home, "config"))
 		}
 	}
