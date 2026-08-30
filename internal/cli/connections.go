@@ -725,6 +725,7 @@ func renderConnectionMutationWithConditions(streams IO, opts options, operation,
 	if conditions == nil {
 		conditions = []condition{}
 	}
+	conditions = deduplicateConditions(conditions)
 	if opts.JSON {
 		return writeResponse(streams.Out, map[string]any{
 			"outcome":    outcome,
@@ -754,6 +755,31 @@ func renderConnectionMutationWithConditions(streams IO, opts options, operation,
 		fmt.Fprintf(streams.Err, "%s%s\n", localized(opts.Language, "warning: ", "警告："), localizedMutationCondition(item, opts.Language))
 	}
 	return nil
+}
+
+func deduplicateConditions(conditions []condition) []condition {
+	if len(conditions) < 2 {
+		return conditions
+	}
+	result := make([]condition, 0, len(conditions))
+	seen := make(map[string]struct{}, len(conditions))
+	for _, item := range conditions {
+		identity, err := json.Marshal(item)
+		if err != nil {
+			// An action payload that cannot be represented in the public response
+			// cannot be compared safely. Preserve it rather than risk hiding a
+			// distinct condition.
+			result = append(result, item)
+			continue
+		}
+		key := string(identity)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, item)
+	}
+	return result
 }
 
 func localizedMutationCondition(item condition, lang language) string {
