@@ -1335,12 +1335,6 @@ func (f *fakeServiceAdapter) Inspect(_ context.Context, reference service.Refere
 	return service.Observation{Scope: service.NormalizeScope(reference.Scope), ProcessState: service.ProcessInactive, Platform: map[string]any{}}, nil
 }
 
-func (f *fakeServiceAdapter) inspectCallCount() int {
-	f.discoverMu.Lock()
-	defer f.discoverMu.Unlock()
-	return len(f.inspectCalls)
-}
-
 func (f *fakeServiceAdapter) Logs(ctx context.Context, reference service.Reference, _ int, follow bool, streams service.Streams) error {
 	if streams.Out != nil {
 		_, _ = io.WriteString(streams.Out, reference.Connection+": provider log\n")
@@ -1354,6 +1348,113 @@ func (f *fakeServiceAdapter) Logs(ctx context.Context, reference service.Referen
 		}
 	}
 	return nil
+}
+
+func TestHumanLifecycleResultPrioritizesPendingTransitionOverDrift(t *testing.T) {
+	state := service.State{
+		Connection:       "db",
+		ServiceState:     service.ServiceRegistered,
+		Mode:             service.ModePersistent,
+		Scope:            service.ScopeSystem,
+		ProcessState:     service.ProcessRunning,
+		Health:           service.HealthHealthy,
+		ConsistencyState: service.ConsistencyDrifted,
+		Conditions: []core.Condition{{
+			Code: "service_mode_drifted", Severity: "warning", Message: "native service mode is background but Tunlite recorded persistent",
+		}},
+	}
+	result := serviceItemResult{Connection: "db", Outcome: "starting", State: &state}
+
+	tests := []struct {
+		name      string
+		operation string
+		language  language
+		want      string
+		reject    string
+	}{
+		{name: "English enable", operation: "enable", language: languageEnglish, want: "starting", reject: "needs attention"},
+		{name: "Chinese migration", operation: "enable", language: languageChinese, want: "启动中", reject: "需要处理"},
+		{name: "English restart", operation: "restart", language: languageEnglish, want: "restarting", reject: "needs attention"},
+		{name: "Chinese restart", operation: "restart", language: languageChinese, want: "重启中", reject: "需要处理"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := renderServiceResults(IO{Out: &output, Err: &bytes.Buffer{}}, options{Language: test.language}, test.operation, []serviceItemResult{result}); err != nil {
+				t.Fatal(err)
+			}
+			if text := output.String(); !strings.Contains(text, test.want) || strings.Contains(text, test.reject) {
+				t.Fatalf("human result=%q want %q without %q", text, test.want, test.reject)
+			}
+		})
+	}
+
+	completed := result
+	completed.Outcome = "succeeded"
+	var output bytes.Buffer
+	if err := renderServiceResults(IO{Out: &output, Err: &bytes.Buffer{}}, options{}, "enable", []serviceItemResult{completed}); err != nil {
+		t.Fatal(err)
+	}
+	if text := output.String(); !strings.Contains(text, "needs attention") || strings.Contains(text, "starting") {
+		t.Fatalf("completed drift must remain visible: %q", text)
+	}
+}
+
+func TestLifecycleTransitionDoesNotChangeJSONResult(t *testing.T) {
+	state := service.State{
+		Connection: "db", ServiceState: service.ServiceRegistered, Mode: service.ModePersistent,
+		Scope: service.ScopeSystem, ProcessState: service.ProcessStarting, Health: service.HealthUnknown,
+		ConsistencyState: service.ConsistencyDrifted,
+	}
+	result := serviceItemResult{Connection: "db", Outcome: "starting", State: &state}
+	var output bytes.Buffer
+	if err := renderServiceResults(IO{Out: &output, Err: &bytes.Buffer{}}, options{JSON: true}, "enable", []serviceItemResult{result}); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Outcome string              `json:"outcome"`
+		Results []serviceItemResult `json:"results"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("decode %q: %v", output.String(), err)
+	}
+	if response.Outcome != "starting" || len(response.Results) != 1 || response.Results[0].Outcome != "starting" ||
+		response.Results[0].State == nil || response.Results[0].State.ConsistencyState != service.ConsistencyDrifted {
+		t.Fatalf("JSON lifecycle result changed: %#v", response)
+	}
+	if strings.Contains(output.String(), `"transition"`) {
+		t.Fatalf("human-only transition leaked into JSON: %s", output.String())
+	}
+}
+
+func TestTerminalLifecycleCompletionProgressUsesOperationAwareTransition(t *testing.T) {
+	terminal := true
+	tests := []struct {
+		name      string
+		operation string
+		language  language
+		want      string
+	}{
+		{name: "English start", operation: "start", language: languageEnglish, want: "[1/1] \"db\" starting.\n"},
+		{name: "Chinese enable", operation: "enable", language: languageChinese, want: "[1/1] “db”启动中。\n"},
+		{name: "English restart", operation: "restart", language: languageEnglish, want: "[1/1] \"db\" restarting.\n"},
+		{name: "Chinese restart", operation: "restart", language: languageChinese, want: "[1/1] “db”重启中。\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			renderServiceCompletionProgress(IO{Err: &stderr, Terminal: &terminal}, options{Language: test.language}, 1, 1, test.operation, "db", "starting")
+			if got := stderr.String(); got != test.want {
+				t.Fatalf("completion progress=%q want=%q", got, test.want)
+			}
+		})
+	}
+
+	var stderr bytes.Buffer
+	renderServiceCompletionProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, 1, 1, "restart", "db", "starting")
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON completion emitted human progress: %q", stderr.String())
+	}
 }
 
 func (f *fakeServiceAdapter) Discover(_ context.Context) ([]service.Candidate, error) {

@@ -257,15 +257,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			fmt.Sprintf("%s %q…", strings.ToUpper(command[:1])+command[1:], connection.Metadata.Name),
 			fmt.Sprintf("正在对“%s”执行 %s…", connection.Metadata.Name, command))
 		completeProgress := func(outcome string) {
-			chineseOutcome := map[string]string{
-				"applied": "已完成", "planned": "预演完成", "starting": "启动中", "failed": "失败", "succeeded": "已完成",
-			}[outcome]
-			if chineseOutcome == "" {
-				chineseOutcome = outcome
-			}
-			renderBatchProgress(streams, opts, batchCurrent, total,
-				fmt.Sprintf("%q %s.", connection.Metadata.Name, outcome),
-				fmt.Sprintf("“%s”%s。", connection.Metadata.Name, chineseOutcome))
+			renderServiceCompletionProgress(streams, opts, batchCurrent, total, command, connection.Metadata.Name, outcome)
 		}
 		release := func() {}
 		if !opts.DryRun {
@@ -1585,7 +1577,7 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 				continue
 			}
 			if result.State != nil {
-				row := statusRow{state: *result.State}
+				row := statusRow{state: *result.State, transition: serviceResultTransition(operation, result.Outcome)}
 				style := displayStatusRow(row, opts.Language)
 				if isChinese(opts.Language) {
 					fmt.Fprintf(streams.Out, "%s  %s  运行位置：%s  自动启动：%s  范围：%s\n",
@@ -1611,6 +1603,37 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 		return renderedExit(1)
 	}
 	return nil
+}
+
+func serviceResultTransition(operation, outcome string) string {
+	if outcome != "starting" {
+		return ""
+	}
+	switch operation {
+	case "start", "enable":
+		return "starting"
+	case "restart":
+		return "restarting"
+	default:
+		return ""
+	}
+}
+
+func renderServiceCompletionProgress(streams IO, opts options, current, total int, operation, connection, outcome string) {
+	displayOutcome := outcome
+	if transition := serviceResultTransition(operation, outcome); transition != "" {
+		displayOutcome = transition
+	}
+	chineseOutcome := map[string]string{
+		"applied": "已完成", "planned": "预演完成", "starting": "启动中", "restarting": "重启中",
+		"failed": "失败", "succeeded": "已完成",
+	}[displayOutcome]
+	if chineseOutcome == "" {
+		chineseOutcome = displayOutcome
+	}
+	renderBatchProgress(streams, opts, current, total,
+		fmt.Sprintf("%q %s.", connection, displayOutcome),
+		fmt.Sprintf("“%s”%s。", connection, chineseOutcome))
 }
 
 func serviceLogs(ctx context.Context, args []string, streams IO, opts options) error {
