@@ -110,6 +110,14 @@ without destructive contract drift and the hardware validation in
   24.04 PID 1 systemd Docker E2E also passed; Apple Silicon hardware and non-container
   Linux remain unverified before stable `v1.0.0`.
 
+### Fixed
+
+- Generated launchd plists now write an explicit `Program` equal to
+  `ProgramArguments[0]`. This avoids a macOS launchd edge case in which a newly
+  bootstrapped job can remain at `xpcproxy` with `execs = 0`; while that transitional
+  state is observed, Tunlite reports `starting` rather than incorrectly reporting the
+  Connection as running.
+
 ### Deferred
 
 - Webhook connection alerts are intentionally deferred while v1 restores the core
