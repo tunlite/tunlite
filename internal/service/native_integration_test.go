@@ -15,6 +15,18 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
 
+const nativeServiceProviderHelperEnvironment = "TUNLITE_NATIVE_SERVICE_PROVIDER_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(nativeServiceProviderHelperEnvironment) == "1" {
+		fmt.Fprintln(os.Stdout, "tunlite-native-stdout")
+		fmt.Fprintln(os.Stderr, "tunlite-native-stderr")
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestRealNativeServiceLifecycle(t *testing.T) {
 	if os.Getenv("TUNLITE_REAL_SERVICE") != "1" {
 		t.Skip("set TUNLITE_REAL_SERVICE=1 to run the real native-service integration test")
@@ -27,10 +39,9 @@ func TestRealNativeServiceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := "it-native-v3"
-	provider := createNativeServiceProvider(t)
 	executionPlan := plan.ExecutionPlan{
 		Mode:      plan.ModeDirect,
-		Exec:      plan.Exec{Program: provider, Args: []string{}, Environment: map[string]string{}},
+		Exec:      nativeServiceProviderExec(t),
 		Lifecycle: plan.Lifecycle{Restart: "always", RestartDelaySeconds: 1, StopTimeoutSeconds: 3},
 		Endpoints: []plan.Endpoint{}, HealthChecks: []plan.HealthCheck{}, Redactions: []plan.Redaction{},
 	}
@@ -96,38 +107,32 @@ func TestRealNativeServiceLifecycle(t *testing.T) {
 	}
 }
 
-func createNativeServiceProvider(t *testing.T) string {
+func nativeServiceProviderExec(t *testing.T) plan.Exec {
 	t.Helper()
-	destinationDir := t.TempDir()
-	var err error
-	if runtime.GOOS == "darwin" {
-		destinationDir, err = os.UserCacheDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(destinationDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	destination, err := os.CreateTemp(destinationDir, "tunlite-native-provider-*")
+	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	destinationPath := filepath.Clean(destination.Name())
-	t.Cleanup(func() { _ = os.Remove(destinationPath) })
-	if _, err := destination.WriteString("#!/bin/sh\necho tunlite-native-stdout\necho tunlite-native-stderr >&2\nexec /bin/sleep 30\n"); err != nil {
-		_ = destination.Close()
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := destination.Chmod(0o700); err != nil {
-		_ = destination.Close()
-		t.Fatal(err)
+	executable = filepath.Clean(executable)
+	info, err := os.Stat(executable)
+	if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("native test provider requires executable %s: info=%v err=%v", executable, info, err)
 	}
-	if err := destination.Close(); err != nil {
-		t.Fatal(err)
+	// Use the already-running native test executable as the provider. A cache
+	// shebang script can leave launchd's xpcproxy unable to exec even though
+	// launchctl already exposes the proxy PID.
+	return plan.Exec{
+		Program: executable,
+		Args: []string{
+			"-test.run=^TestNativeServiceProviderProcess$",
+			"-test.count=1",
+		},
+		Environment: map[string]string{nativeServiceProviderHelperEnvironment: "1"},
 	}
-	return destinationPath
 }
 
 func waitForProcessState(t *testing.T, ctx context.Context, adapter Adapter, reference Reference, expected string) Observation {
