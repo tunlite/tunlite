@@ -125,11 +125,15 @@ exported as part of the portable Connection.
 - `user` needs no administrator access. On macOS, `system` maps to a launchd
   LaunchDaemon and requires administrator authorization. Linux currently supports
   systemd user services only and reports system scope as unsupported.
-- Tunlite never reads or prompts for an administrator password, including in an
-  interactive terminal. Establish authorization outside Tunlite, then retry.
-  `--non-interactive` additionally guarantees it never waits for input. System-scope automation must
-  arrange authorization outside Tunlite so its non-interactive privilege check can
-  succeed; otherwise the command fails with `privilege_required`.
+- In an interactive terminal, Tunlite explains the privileged change and runs one
+  `sudo -v` after every read-only batch check succeeds and before the first write.
+  `sudo` owns the password prompt; Tunlite does not read or store the password.
+  If no interactive terminal is available, the command fails quickly with
+  `privilege_required` and explains how to retry.
+- `--non-interactive` never prompts or runs interactive authorization. System-scope
+  automation must pre-authorize access that Tunlite's exact `sudo -n -- ...`
+  platform commands can use; otherwise it returns `privilege_required`.
+- `--dry-run` performs read-only planning without authorization or native-service writes.
 
 An interactive migration shows its source, destination, privileged impact, and
 progress. `--json` keeps stdout machine-only and reports stable per-item outcomes.

@@ -115,9 +115,12 @@ Service Record 和原生服务产物中，不会写入可导出、可迁移的 C
 - `tunlite enable <name> --scope user|system` 显式选择或迁移范围，不增加单独的 `migrate` 命令。
 - `user` 不需要管理员权限。macOS 的 `system` 对应 launchd LaunchDaemon，需要管理员
   授权；Linux 当前只支持 systemd 用户服务，system Scope 会明确返回不支持。
-- Tunlite 即使在人工终端中也不会读取或询问管理员密码；请在 Tunlite 外部建立授权后重试。
-  `--non-interactive` 进一步保证绝不等待输入。自动化使用 system Scope 时必须在外部预先
-  准备可供非交互提权检查使用的授权，否则稳定返回 `privilege_required`。
+- 在交互式终端中，Tunlite 会先说明权限影响；整批只读检查全部通过后、第一次写入前，
+  只执行一次 `sudo -v`。密码提示和读取完全由 `sudo` 负责，Tunlite 不读取也不保存密码。
+  没有可交互终端时会快速返回 `privilege_required`，并提示如何重试。
+- `--non-interactive` 绝不提示或调用交互授权。自动化使用 system Scope 时必须预置授权，
+  供平台层精确的 `sudo -n -- ...` 命令使用；否则稳定返回 `privilege_required`。
+- `--dry-run` 只做只读规划，不请求授权，也不写入原生服务。
 
 人工终端迁移会显示来源、目标、权限影响和执行进度；`--json` 的 stdout 始终保持纯机器输出，
 并逐项返回稳定结果。

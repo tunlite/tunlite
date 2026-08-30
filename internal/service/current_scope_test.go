@@ -9,7 +9,7 @@ import (
 
 func TestCurrentLaunchdSystemOnlyCapabilitiesAreExplicit(t *testing.T) {
 	runner := &fakeRunner{run: func(command string, args []string) ([]byte, error) {
-		if command != "launchctl" || len(args) != 2 || args[0] != "print" {
+		if command != launchctlProgram || len(args) != 2 || args[0] != "print" {
 			return nil, errors.New("unexpected probe")
 		}
 		if slices.Equal(args, []string{"print", "system"}) {
@@ -17,8 +17,11 @@ func TestCurrentLaunchdSystemOnlyCapabilitiesAreExplicit(t *testing.T) {
 		}
 		return nil, errors.New("gui domain unavailable")
 	}}
-	adapter, err := newCurrent("darwin", t.TempDir(), runner, func(string) (string, error) {
-		return "/bin/launchctl", nil
+	adapter, err := newCurrent("darwin", t.TempDir(), runner, func(command string) (string, error) {
+		if command != launchctlProgram {
+			return "", errors.New("launchctl lookup did not use absolute path")
+		}
+		return launchctlProgram, nil
 	}, func() (*user.User, error) {
 		return &user.User{Username: "alice"}, nil
 	}, 501)
@@ -33,8 +36,11 @@ func TestCurrentLaunchdSystemOnlyCapabilitiesAreExplicit(t *testing.T) {
 
 func TestCurrentLaunchdDoesNotAdvertiseSystemWithoutSafeUser(t *testing.T) {
 	runner := &fakeRunner{run: func(string, []string) ([]byte, error) { return nil, nil }}
-	adapter, err := newCurrent("darwin", t.TempDir(), runner, func(string) (string, error) {
-		return "/bin/launchctl", nil
+	adapter, err := newCurrent("darwin", t.TempDir(), runner, func(command string) (string, error) {
+		if command != launchctlProgram {
+			return "", errors.New("launchctl lookup did not use absolute path")
+		}
+		return launchctlProgram, nil
 	}, func() (*user.User, error) {
 		return nil, errors.New("identity unavailable")
 	}, 501)

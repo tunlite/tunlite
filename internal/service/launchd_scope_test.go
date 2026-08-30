@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,7 +29,10 @@ func newLaunchdScopeRunner(t *testing.T) *launchdScopeRunner {
 }
 
 func (r *launchdScopeRunner) execute(command string, args []string) ([]byte, error) {
-	if command == "sudo" {
+	if filepath.Base(command) == "sudo" && command != MacOSSudoProgram {
+		return nil, fmt.Errorf("sudo must use trusted absolute path, got %q", command)
+	}
+	if command == MacOSSudoProgram {
 		if len(args) < 3 || args[0] != "-n" || args[1] != "--" {
 			return nil, errors.New("unsafe sudo invocation")
 		}
@@ -53,7 +57,7 @@ func (r *launchdScopeRunner) execute(command string, args []string) ([]byte, err
 		}
 		return nil, errors.New("unexpected privileged command")
 	}
-	if command == "launchctl" {
+	if command == launchctlProgram {
 		return r.launchctl(args)
 	}
 	return nil, nil
@@ -185,11 +189,14 @@ func TestLaunchdSystemInstallUsesNonInteractiveSingleCommandAndRollsBack(t *test
 	}
 	var installArgs []string
 	for _, call := range runner.calls {
-		if call.command == "sudo" && slices.Contains(call.args, "/usr/bin/install") {
+		if call.command == MacOSSudoProgram && slices.Contains(call.args, installProgram) {
 			installArgs = call.args
 		}
-		if call.command == "sudo" && (len(call.args) < 2 || call.args[0] != "-n" || call.args[1] != "--") {
+		if call.command == MacOSSudoProgram && (len(call.args) < 2 || call.args[0] != "-n" || call.args[1] != "--") {
 			t.Fatalf("interactive sudo call: %#v", call)
+		}
+		if call.command == MacOSSudoProgram && (len(call.args) < 3 || !filepath.IsAbs(call.args[2])) {
+			t.Fatalf("sudo inner command was not absolute: %#v", call)
 		}
 	}
 	joined := strings.Join(installArgs, " ")
@@ -349,7 +356,7 @@ func TestLaunchdDiscoveryUsesDirectoryScopeForUserNameAndDemandValidation(t *tes
 func TestLaunchdPrivilegeFailureIsTypedAndNeverPrompts(t *testing.T) {
 	runner := newLaunchdScopeRunner(t)
 	runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
-		if command == "sudo" {
+		if command == MacOSSudoProgram {
 			return nil, errors.New("a password is required")
 		}
 		return runner.execute(command, args)
@@ -363,7 +370,7 @@ func TestLaunchdPrivilegeFailureIsTypedAndNeverPrompts(t *testing.T) {
 	}
 	var sudoCall *runnerCall
 	for index := range runner.calls {
-		if runner.calls[index].command == "sudo" {
+		if runner.calls[index].command == MacOSSudoProgram {
 			sudoCall = &runner.calls[index]
 			break
 		}
@@ -557,7 +564,7 @@ func TestLaunchdReadOnlyScopeCheckNeverInvokesSudo(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, call := range runner.calls {
-		if call.command == "sudo" {
+		if call.command == MacOSSudoProgram {
 			t.Fatalf("read-only check invoked sudo: %#v", call)
 		}
 	}
@@ -582,7 +589,7 @@ func TestLaunchdReadOnlyPreflightFindsCustomFilenameWithSameLabel(t *testing.T) 
 		t.Fatalf("custom-filename static identity error=%T %v", err, err)
 	}
 	for _, call := range runner.calls {
-		if call.command == "sudo" {
+		if call.command == MacOSSudoProgram {
 			t.Fatalf("read-only custom identity check invoked sudo: %#v", call)
 		}
 	}

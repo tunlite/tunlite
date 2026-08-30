@@ -474,9 +474,11 @@ Scope 和原 Mode。任何目标不支持、权限不可用或计划冲突都必
 预检通过后的每个 Connection 独立提交并自行回滚；后项运行时失败返回 partial 和逐项结果，
 不再次中断并迁回已经成功的前项。
 
-`system` 属于管理员授权能力。人工调用可以通过系统既有授权机制完成，但 Tunlite 不读取
-密码；`--non-interactive` 只使用外部预置、可由 `sudo -n` 验证的授权，不能等待终端输入。
-缺少授权返回稳定 `privilege_required`。Connection export/import 永远不携带 Scope。
+`system` 属于管理员授权能力。人工交互终端在整批只读检查成功后、首次写入前只执行一次
+非 shell 的 `sudo -v`；密码提示、读取和缓存属于 `sudo`，Tunlite 不读取或保存密码。
+无 TTY 时快速失败。`--non-interactive` 不调用交互授权，只使用外部预置、可由平台层
+`sudo -n -- ...` 验证的授权；缺少授权返回稳定 `privilege_required`。`--dry-run` 不授权、
+不写入。Connection export/import 永远不携带 Scope。
 
 处于 `foreground` 时，当前 `run` 调用者拥有进程生命周期。`start`、`stop`、
 `enable`、`disable`、`restart`、`set`、`rename`、`unmanage` 和 `remove` 必须拒绝；

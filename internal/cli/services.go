@@ -78,6 +78,13 @@ type serviceItemResult struct {
 	Detailed    bool                   `json:"-"`
 }
 
+type scopePreflightOperation struct {
+	requiresAdministrator bool
+	from                  string
+	to                    service.Scope
+	preflight             func() error
+}
+
 func serviceCommand(ctx context.Context, command string, args []string, streams IO, opts options) error {
 	selection, err := parseServiceSelection(command, args)
 	if err != nil {
@@ -113,6 +120,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			return renderServiceResults(streams, opts, command, results)
 		}
 		var preflightErr error
+		preflights := make([]scopePreflightOperation, 0, len(targets))
 		for _, connection := range targets {
 			if records.RunActive(connection.Metadata.Name) {
 				preflightErr = errors.New("connection is running in the foreground; stop that run before changing its service scope")
@@ -130,11 +138,16 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 					break
 				}
 				if preflightErr = unboundNativeIdentityConflict(ctx, adapter, targetArtifact); preflightErr == nil {
-					if opts.DryRun {
-						preflightErr = service.CheckScopeInstall(ctx, adapter, targetArtifact)
-					} else {
-						preflightErr = service.PreflightScopeInstall(ctx, adapter, targetArtifact)
-					}
+					preflightErr = service.CheckScopeInstall(ctx, adapter, targetArtifact)
+				}
+				if preflightErr == nil {
+					artifact := targetArtifact
+					preflights = append(preflights, scopePreflightOperation{
+						requiresAdministrator: service.NormalizeScope(artifact.Scope) == service.ScopeSystem,
+						from:                  "absent",
+						to:                    service.NormalizeScope(artifact.Scope),
+						preflight:             func() error { return service.PreflightScopeInstall(ctx, adapter, artifact) },
+					})
 				}
 			} else {
 				if ownerErr := ensureDeclarationOwner(record, config.Path()); ownerErr != nil {
@@ -158,14 +171,50 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 					preflightErr = buildErr
 					break
 				}
-				if opts.DryRun {
-					preflightErr = service.CheckScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
-				} else {
-					preflightErr = service.PreflightScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
+				preflightErr = service.CheckScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
+				if preflightErr == nil {
+					source := record.Reference()
+					artifact := targetArtifact
+					preflights = append(preflights, scopePreflightOperation{
+						requiresAdministrator: service.NormalizeScope(source.Scope) == service.ScopeSystem ||
+							service.NormalizeScope(artifact.Scope) == service.ScopeSystem,
+						from:      string(service.NormalizeScope(source.Scope)),
+						to:        service.NormalizeScope(artifact.Scope),
+						preflight: func() error { return service.PreflightScopeTransition(ctx, adapter, source, artifact) },
+					})
 				}
 			}
 			if preflightErr != nil {
 				break
+			}
+		}
+		if preflightErr == nil && !opts.DryRun {
+			requiresAdministrator := false
+			request := privilegeRequest{}
+			for _, operation := range preflights {
+				requiresAdministrator = requiresAdministrator || operation.requiresAdministrator
+				if !operation.requiresAdministrator {
+					continue
+				}
+				request.connections++
+				switch {
+				case operation.from == string(service.ScopeUser) && operation.to == service.ScopeSystem:
+					request.userToSystem++
+				case operation.from == string(service.ScopeSystem) && operation.to == service.ScopeUser:
+					request.systemToUser++
+				case operation.from == "absent" && operation.to == service.ScopeSystem:
+					request.installsToSystem++
+				}
+			}
+			if requiresAdministrator && !opts.NonInteractive {
+				preflightErr = opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, request)
+			}
+			if preflightErr == nil {
+				for _, operation := range preflights {
+					if preflightErr = operation.preflight(); preflightErr != nil {
+						break
+					}
+				}
 			}
 		}
 		if preflightErr != nil {
@@ -846,17 +895,11 @@ func renderScopeChangeProgress(streams IO, opts options, connection, from string
 			} else {
 				fmt.Fprintf(streams.Err, "正在把“%s”从 %s 范围迁移到 %s 范围…\n", connection, fromLabel, toLabel)
 			}
-			if from == string(service.ScopeSystem) || to == service.ScopeSystem {
-				fmt.Fprintln(streams.Err, "这会更改原生服务的管理范围，需要管理员授权；Tunlite 不会等待或读取密码。")
-			}
 		} else {
 			if from == "absent" {
 				fmt.Fprintf(streams.Err, "Installing %q in %s scope…\n", connection, toLabel)
 			} else {
 				fmt.Fprintf(streams.Err, "Moving %q from %s scope to %s scope…\n", connection, fromLabel, toLabel)
-			}
-			if from == string(service.ScopeSystem) || to == service.ScopeSystem {
-				fmt.Fprintln(streams.Err, "This changes native service ownership and requires administrator authorization; Tunlite never waits for or reads a password.")
 			}
 		}
 	case "target_ready":

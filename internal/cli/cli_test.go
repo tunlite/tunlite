@@ -190,6 +190,9 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 	if elevation := scope["nonInteractiveElevation"]; elevation != "external" && elevation != "unsupported" {
 		t.Fatalf("unexpected non-interactive elevation contract: %#v", scope)
 	}
+	if elevation := scope["interactiveElevation"]; elevation != "sudo-v" && elevation != "unsupported" {
+		t.Fatalf("unexpected interactive elevation contract: %#v", scope)
+	}
 	supported, ok := scope["supported"].([]any)
 	if !ok || len(supported) == 0 || supported[0] != "user" {
 		t.Fatalf("user service scope is not reported: %#v", scope)
@@ -216,8 +219,8 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 }
 
 func TestCapabilitiesReportMissingNativeServiceManager(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		t.Skip("this assertion covers platforms with a native service adapter")
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux resolves systemctl through PATH; macOS intentionally pins /bin/launchctl")
 	}
 	t.Setenv("PATH", t.TempDir())
 	code, out, stderr := invoke(t, "capabilities", "--json")
@@ -250,7 +253,7 @@ func TestEnableHelpDocumentsScopeWithoutPlatformOverclaim(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", args, code, out, stderr)
 		}
-		for _, expected := range []string{"--scope user|system", "capabilities"} {
+		for _, expected := range []string{"--scope user|system", "capabilities", "sudo", "--non-interactive"} {
 			if !strings.Contains(out, expected) {
 				t.Fatalf("args=%v missing %q: %s", args, expected, out)
 			}

@@ -18,6 +18,13 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/plan"
 )
 
+const (
+	launchctlProgram = "/bin/launchctl"
+	installProgram   = "/usr/bin/install"
+	removeProgram    = "/bin/rm"
+	trueProgram      = "/usr/bin/true"
+)
+
 type Launchd struct {
 	agentDir              string
 	daemonDir             string
@@ -394,8 +401,8 @@ func (l *Launchd) installSystemArtifact(ctx context.Context, destination string,
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	_, err = l.runner.Run(ctx, "sudo", []string{
-		"-n", "--", "/usr/bin/install", "-S", "-o", "root", "-g", "wheel", "-m", "0644", temporaryPath, destination,
+	_, err = l.runner.Run(ctx, MacOSSudoProgram, []string{
+		"-n", "--", installProgram, "-S", "-o", "root", "-g", "wheel", "-m", "0644", temporaryPath, destination,
 	}, Streams{})
 	if err != nil {
 		return &PrivilegeError{Operation: "install system launchd service", Cause: err}
@@ -410,7 +417,7 @@ func (l *Launchd) removeArtifact(ctx context.Context, artifact Artifact) error {
 	if err := l.validateSystemArtifact(artifact); err != nil {
 		return err
 	}
-	_, err := l.runner.Run(ctx, "sudo", []string{"-n", "--", "/bin/rm", "-f", artifact.Path}, Streams{})
+	_, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", removeProgram, "-f", artifact.Path}, Streams{})
 	if err != nil {
 		return &PrivilegeError{Operation: "remove system launchd service", Cause: err}
 	}
@@ -553,7 +560,7 @@ func (l *Launchd) PreflightScopeInstall(ctx context.Context, target Artifact) er
 		return err
 	}
 	if target.Scope == ScopeSystem {
-		if _, err := l.runner.Run(ctx, "sudo", []string{"-n", "--", "/usr/bin/true"}, Streams{}); err != nil {
+		if _, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", trueProgram}, Streams{}); err != nil {
 			return &PrivilegeError{Operation: "preflight system launchd installation", Cause: err}
 		}
 	}
@@ -619,7 +626,7 @@ func (l *Launchd) PreflightScopeTransition(ctx context.Context, sourceReference 
 		return err
 	}
 	if NormalizeScope(sourceReference.Scope) == ScopeSystem || target.Scope == ScopeSystem {
-		if _, err := l.runner.Run(ctx, "sudo", []string{"-n", "--", "/usr/bin/true"}, Streams{}); err != nil {
+		if _, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", trueProgram}, Streams{}); err != nil {
 			return &PrivilegeError{Operation: "preflight system launchd migration", Cause: err}
 		}
 	}
@@ -1636,15 +1643,15 @@ func decodePlistValue(decoder *xml.Decoder, start xml.StartElement) (any, error)
 }
 
 func (l *Launchd) run(ctx context.Context, args ...string) ([]byte, error) {
-	return l.runner.Run(ctx, "launchctl", args, Streams{})
+	return l.runner.Run(ctx, launchctlProgram, args, Streams{})
 }
 
 func (l *Launchd) runMutation(ctx context.Context, scope Scope, args ...string) ([]byte, error) {
 	if NormalizeScope(scope) == ScopeUser {
 		return l.run(ctx, args...)
 	}
-	commandArgs := append([]string{"-n", "--", "/bin/launchctl"}, args...)
-	output, err := l.runner.Run(ctx, "sudo", commandArgs, Streams{})
+	commandArgs := append([]string{"-n", "--", launchctlProgram}, args...)
+	output, err := l.runner.Run(ctx, MacOSSudoProgram, commandArgs, Streams{})
 	if err != nil {
 		return output, &PrivilegeError{Operation: "manage system launchd service", Cause: err}
 	}

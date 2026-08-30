@@ -26,8 +26,10 @@ Go 测试、协议、交叉编译和打包由项目维护者完成，不转嫁�
 每个 Connection 声明只有一份，Scope 不进入导出配置。`enable` 对新服务默认 user，
 已有 Record 未传 `--scope` 时保留原范围；显式使用 `--scope user|system` 才选择或迁移。
 macOS system Scope 对应 LaunchDaemon，需要管理员授权；Linux system Scope 稳定返回
-`scope_unsupported`。`--non-interactive` 不等待密码，外部未预置可供 `sudo -n` 使用的
-授权时返回 `privilege_required`。
+`scope_unsupported`。人工交互终端会在整批只读检查成功后、首次写入前执行一次
+`sudo -v`；密码提示由 `sudo` 自己显示，Tunlite 不读取或保存密码。没有交互终端时快速
+返回 `privilege_required`。`--non-interactive` 不提示也不调用交互授权，只使用外部预置、
+可供平台层 `sudo -n -- ...` 使用的授权；`--dry-run` 不授权、不写入。
 
 V1 继续提供彩色状态表格、`status <name>` 详情、`doctor` 诊断和前台实时
 `tunlite monitor`。Monitor 使用类似 `top` 的全屏布局，标题显示当前 Tunlite 版本，
