@@ -133,6 +133,13 @@ start/enable -> OS Service Adapter -> Provider
 
 两条路径不能各自实现一套 SSH 参数生成或风险判断。
 
+Application Use Case 负责跨 Store 与 Adapter 的事务编排：它决定何时提交或回滚 Connection
+和 Service Record。Adapter 只管理平台原生产物与进程，绝不能读写 Connection Store 或
+Service Record Store。system disable 由 Application 在一次授权事务中调用 Adapter 完成
+停止、解除注册和 root artifact 删除，验证成功后再提交保留 system Scope 意图的用户态
+Record；remove 则在确认 stopped/disabled 后调用 Adapter 清理剩余平台产物，再由 Application
+删除用户态 Record/Connection。
+
 ## 5. 模块边界和依赖方向
 
 目标 Go 包结构：
@@ -281,12 +288,13 @@ serviceKey
 adapter
 scope
 mode
-artifactPath / unitName / logPaths
+artifactPath? / unitName / logPaths
 planDigest / baselineDigest
 declarationPath / origin
 ```
 
-它的用途是快速定位已接管的原生服务并保存一致性基线，避免每次命令都扫描
+`artifactPath` 允许为空：system disable 成功后 root-owned artifact 必须不存在，但 Record
+仍保留 system Scope 意图，供后续 enable 重建。Record 的用途是快速定位已接管的原生服务并保存一致性基线，避免每次命令都扫描
 全部系统服务。它不是一份隐藏的第二配置：Provider 意图必须能从 Connection 重新生成。
 
 内部 `recordRevision` 可以独立演进，不能被宣传成第五种公共产品版本。
@@ -350,9 +358,10 @@ Adapter 最小能力：
 | `Capabilities` | 如实报告注册、后台、长期运行、日志、发现，以及 user/system Scope 能力 |
 | `Build` | 把 ExecutionPlan 编译成平台原生产物 |
 | `Materialize` | 原子写入默认停止的服务定义 |
-| `Remove` | 停止并删除 Tunlite 受管服务定义 |
-| `Start/Stop/Restart` | 操作临时后台实例，或保持当前长期模式重启 |
-| `Enable/Disable` | 原子进入或退出 persistent 模式 |
+| `Remove` | 只在已 stopped/disabled 后删除剩余平台原生产物；不读写 Record/Connection，也不代替 Disable 解除 system 注册 |
+| `Start/Stop` | 只操作 temporary background |
+| `Restart` | 保持模式重启 temporary background、user persistent 或 system persistent |
+| `Enable/Disable` | 原子进入或退出 persistent；system Disable 负责停止、解除注册并删除 root-owned artifact |
 | `Inspect` | 返回安装、自动启动、进程、产物和平台观测 |
 | `Logs` | 读取确定的原生日志源 |
 | `Discover` | 显式枚举可接管候选 |
@@ -363,14 +372,21 @@ Adapter 最小能力：
 所有 Adapter 必须通过同一套契约测试：原子生成、幂等操作、状态转换、失败回滚、日志、
 候选发现、不中断接管和交还后独立运行。
 
+Adapter 成功只证明平台步骤完成；Application 事务负责随后提交或回滚 Record/Connection。
+system disable 必须保证 bootout/disable 与 root artifact 删除同成同败，并把“artifact 已删除”
+返回给 Application；user disable 可以保留用户态可重建 artifact。system remove 必须先证明
+未注册且 root artifact 已不存在，此后只需 Application 删除用户态 Record/Connection，整个
+remove 的 sudo 调用数为 0。
+
 平台约束：
 
 - systemd 当前只使用用户级 unit，不假设所有 Linux 都有可用的 `systemctl --user`，也不
   宣称 Linux system Scope 已实现。
 - launchd 默认使用用户 LaunchAgent；只有显式 `enable --scope system` 才能迁移为
-  LaunchDaemon。CLI 在全部只读批量预检通过后、首次写入前，可在人工交互终端执行一次
-  非 shell 的 `sudo -v`；密码交互完全归 `sudo`，Tunlite 不读取或保存密码。Adapter 写入
-  `/Library/LaunchDaemons` 和操作 system domain 时仍必须逐次使用精确的 `sudo -n -- ...`。
+  LaunchDaemon。CLI 在全部只读批量预检通过后、首次真实 root 写入前，可在人工交互终端
+  执行一次非 shell 的 `sudo -v`；密码交互完全归 `sudo`，Tunlite 不读取或保存密码。只有
+  system persistent 的注册、解除注册和执行计划变化所需的 LaunchDaemon 原子替换，才逐次
+  使用精确的 `sudo -n -- ...`；读取、temporary start/stop 和 restart 不得因此提权。
 - 没有合格 Adapter 的平台只支持 `run`，后台命令返回结构化“不支持”。
 - Windows 支持只能在 Task Scheduler Adapter 完成真实 Windows 验证后宣布。
 
@@ -394,7 +410,7 @@ Adapter 最小能力：
 | `start` | stopped | background | 不开启自动启动 |
 | `stop` | background | stopped | persistent 必须拒绝并提示 disable |
 | `enable` | stopped/background | persistent | stopped 会启动；background 不重启地转长期 |
-| `disable` | persistent | stopped | 同时取消自动启动并停止 |
+| `disable` | persistent | stopped | 同时取消自动启动并停止；system 还要删除 root artifact，保留用户态 Record/Scope 意图 |
 | `restart` | background/persistent | 保持原模式 | 不改变自动启动语义 |
 | `remove` | stopped | 不存在 | 先安全删除服务，再删除声明 |
 
@@ -417,14 +433,40 @@ Scope 与 Mode 正交：Mode 回答“当前怎样运行”，Scope 回答“原
   `persistent`、稳定观测目标、原子更新 Record、删除源服务。成功后 Mode 必须是
   `persistent`；任一步失败才补偿回原 Scope 和原 Mode。无法完整补偿时返回高风险
   `recovery_blocked`，不能把两个可能活跃的定义伪装成普通迁移失败。
-- 进入或离开 `system` 需要管理员权限。交互终端在整批只读检查成功后、首次写入前只验证
-  一次授权；无 TTY 时快速失败。`--non-interactive` 不调用交互授权，只允许外部预置、
-  可由 `sudo -n` 验证的授权；缺少授权稳定返回 `privilege_required`。`--dry-run` 不授权。
+- 进入或离开 `system`、以及原子替换 system persistent 配置需要管理员权限。交互终端在
+  整批只读检查成功后、首次 root 写入前只验证一次授权；无 TTY 时快速失败。
+  `--non-interactive` 不调用交互授权，只允许外部预置、可由 `sudo -n` 验证的授权；缺少
+  授权稳定返回 `privilege_required`。`--dry-run` 不授权。只读操作和 restart 不进入此门。
 - Connection 声明只有一份且不含 Scope。Scope 只存在于本机 Record、Artifact、State 和
   Capability，export/import 不复制系统归属。
 
 `foreground` 由仍存活的运行锁观测，不写入 Service Record。系统原生进程状态始终来自
 Adapter，而不是 Tunlite 保存的 PID。
+
+### 10.2 macOS system persistent restart
+
+system persistent 的 restart 不修改 root-owned LaunchDaemon 定义，也不改变注册状态，因此
+不得通过特权 service-manager mutation 实现。Adapter 必须按以下顺序执行：
+
+```text
+Inspect system job
+  → 读取 PID、UserName、原生 identity
+  → 验证 UserName 是当前非 root 用户
+  → 验证 PID 对应预期 Provider、Connection 和 identity，防止 PID 重用
+  → 验证原生定义与 Record/ExecutionPlan baseline consistent，未漂移
+  → 验证 KeepAlive 已启用，且其条件会拉起同一预期 Provider/Connection
+  → 当前用户直接终止 Provider
+  → 等待已有 KeepAlive 拉起不同 PID
+  → 等待进程与健康状态收敛
+```
+
+所有读取和验证必须在终止前完成。PID/归属无法证明、目标由 root/其他用户运行、原生定义
+drifted/missing/blocked、KeepAlive 未启用或无法证明会拉起预期 Provider 时，必须零变更退出。
+该路径禁止 system `bootout`、`bootstrap`、`kickstart`，禁止 sudo，也禁止在验证或收敛失败
+后使用 sudo fallback。终止后 KeepAlive 未拉起或新实例未在预算内收敛时，命令返回明确失败；
+不得误杀身份不明的进程，也不得伪报成功。
+temporary background 和 user persistent 使用各自非特权 Adapter 路径，但同样保持 Mode、
+Autostart 与 Scope。
 
 ## 11. 五维状态模型
 
@@ -742,6 +784,11 @@ Core version、未来 Desktop version、`configVersion`、`protocolVersion` 和 
    和 manage/unmanage/resolve。
 8. **规模与故障测试：** 100 Connection 状态预算、服务管理器超时、部分失败、进程终止、
    CLI 二进制删除后服务存活。
+
+system 生命周期还必须单独证明：disable 在一个授权事务中停止、解除注册并删除 root artifact，
+失败时完整回滚，成功后 Connection/用户态 Record/system Scope 意图仍在；随后 remove 零 sudo、
+只删用户态 Record/Connection。restart 只有在身份、原生定义 consistent、KeepAlive 已启用且
+会拉起预期 Provider 全部可证明时才终止，任一前置失败都保持 PID、服务和文件零变化。
 
 V1 Preview 发布必须满足：
 

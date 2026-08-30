@@ -301,8 +301,9 @@ OS Service Adapter 是核心内部的受信任 Go 接口，不是 Driver，也�
 |---|---|
 | `Capabilities` | 报告注册、后台运行、自动启动、日志和发现能力 |
 | `Materialize` | 把 `ExecutionPlan` 原子生成为默认禁用的原生服务定义 |
-| `Remove` | 停止并删除原生服务定义 |
-| `Start / Stop / Restart` | 实现临时后台运行模式及其当前进程控制 |
+| `Remove` | 只在 stopped/disabled 后删除平台原生产物；不删除 Connection/Record，也不代替 Disable 解除 system 注册 |
+| `Start / Stop` | 只操作 temporary background |
+| `Restart` | 保持模式重启 temporary background、user persistent 或 system persistent |
 | `Enable / Disable` | 原子进入或退出长期运行模式 |
 | `Inspect` | 返回服务注册、自动启动、进程和平台原生状态 |
 | `Logs` | 从平台原生日志源读取日志 |
@@ -445,11 +446,14 @@ enable/restart、launchd 的加载策略与 KeepAlive 等不同机制实现上�
 - `stop`：只允许把 `background` 变成 `stopped`。对 `persistent` 必须拒绝并提示
   使用 `disable`，避免制造“现在停止、以后又出现”的隐藏组合。
 - `enable`：从 `stopped` 或 `background` 进入 `persistent`，并确保现在已经运行。
-- `disable`：把 `persistent` 变成 `stopped`，同时停止当前进程并取消以后自动启动。
+- `disable`：把 `persistent` 变成 `stopped`，同时停止当前进程并取消以后自动启动。system
+  必须在同一已授权事务中 bootout/disable 并删除 root-owned LaunchDaemon artifact，保留
+  Connection、用户态 Record 和 system Scope 意图；user 可保留用户态可重建 artifact。
 - `restart`：只允许重启正在运行的 `background` 或 `persistent`；对 `stopped` 拒绝，
   不能把 `restart` 偷偷解释成 `start`。
-- `remove`：只允许删除 `stopped` Connection；删除原生服务和声明，但不删除 Driver
-  的远程资源。
+- `remove`：只允许删除 `stopped` Connection。system 必须已由 disable 清除 root artifact，
+  remove 随后只删除用户态 Record 和 Connection，零 sudo；user 可一并删除剩余用户态
+  artifact。两者都不删除 Driver 的远程资源。
 
 重复执行已经满足目标的操作必须幂等成功，不能启动重复进程。`run` 与后台服务使用
 同一 Connection 时必须持有互斥运行锁；已经存在前台或后台实例时，另一个启动动作
@@ -474,11 +478,28 @@ Scope 和原 Mode。任何目标不支持、权限不可用或计划冲突都必
 预检通过后的每个 Connection 独立提交并自行回滚；后项运行时失败返回 partial 和逐项结果，
 不再次中断并迁回已经成功的前项。
 
-`system` 属于管理员授权能力。人工交互终端在整批只读检查成功后、首次写入前只执行一次
-非 shell 的 `sudo -v`；密码提示、读取和缓存属于 `sudo`，Tunlite 不读取或保存密码。
-无 TTY 时快速失败。`--non-interactive` 不调用交互授权，只使用外部预置、可由平台层
+macOS 的管理员授权边界只包括 system persistent 的注册、解除注册，以及执行计划变化时
+对 LaunchDaemon 的原子替换。人工交互终端在整批只读检查成功后、首次真实 root 写入前只
+执行一次非 shell 的 `sudo -v`；密码提示、读取和缓存属于 `sudo`，Tunlite 不读取或保存
+密码。无 TTY 时快速失败。`--non-interactive` 不调用交互授权，只使用外部预置、可由平台层
 `sudo -n -- ...` 验证的授权；缺少授权返回稳定 `privilege_required`。`--dry-run` 不授权、
 不写入。Connection export/import 永远不携带 Scope。
+
+system disable 的解除注册事务必须在这一次已有 root 授权内完成停止、bootout/disable 和
+root-owned LaunchDaemon artifact 删除；成功后保留 Connection、用户态 Service Record 和
+其中的 system Scope 意图，但 artifactPath 必须反映 artifact 已不存在。任一步失败都回滚到
+原 persistent 状态，不能留下“已停止但 root artifact 仍注册”的半状态。之后的 remove 只
+编排用户态 Record/Connection 删除，不再触碰 system domain，因此 sudo 调用数必须为 0。
+
+`start` 和 `stop` 只操作当前用户的 temporary background，不通过 system LaunchDaemon 表达，
+因此不授权。`restart` 对 temporary background、user persistent 和 system persistent 都保持
+Mode、Autostart 与 Scope；system persistent 也不请求 sudo。macOS Adapter 必须先从 system
+job 取得 PID、`UserName` 和原生 identity，证明它是当前非 root 用户的预期 Provider，再由
+Record/ExecutionPlan baseline 验证原生定义 consistent、未漂移，并证明 KeepAlive 已启用且
+其条件会拉起同一预期 Provider/Connection。只有全部验证通过，当前用户才终止该进程，随后
+等待 KeepAlive 拉起不同 PID 及进程和健康状态收敛。任一终止前验证失败必须零变更退出。该
+路径禁止 system `bootout`、`bootstrap`、`kickstart` 和 sudo fallback；终止后未能拉起或
+收敛时明确失败。
 
 处于 `foreground` 时，当前 `run` 调用者拥有进程生命周期。`start`、`stop`、
 `enable`、`disable`、`restart`、`set`、`rename`、`unmanage` 和 `remove` 必须拒绝；
@@ -1110,7 +1131,7 @@ V1 Preview 的公共命令面向 Connection，而不是绑定 SSH。下表是完
 | `list` | `tunlite list [--group group]` | 按 Group 分段列出 Tunlite 已管理的 Connection，不扫描未管理的系统服务；未设置归属的进入“未分组”。保留；它回答“我管理了什么”。 |
 | `set` | `tunlite set <name> <Driver patch args>` | 先从声明确定 Driver，再由该 Driver 解析补丁；修改声明并在同一事务中联动原生服务。SSH 字段用可重复的 `--clear <field>` 显式清除，field 只能是 `identity`、`jump` 或 `options`；未知字段、重复清除和同字段设置+清除均拒绝。禁止用 `set` 更换 Driver。 |
 | `rename` | `tunlite rename <name> <new-name>` | 原子修改 Connection 身份及其服务绑定。保留；不能退化成复制后删除。 |
-| `remove` | `tunlite remove <name>` | 只允许删除已停止且不再持久启用的 Connection，同时删除其原生服务定义。保留完整词，不提供 `rm` 公共别名。 |
+| `remove` | `tunlite remove <name>` | 只允许删除已停止且不再持久启用的 Connection。system 必须已由 disable 删除 root-owned artifact，remove 只删用户态 Record/Connection，零 sudo；user 可同时删剩余的用户态可重建 artifact。保留完整词，不提供 `rm` 公共别名。 |
 
 Core 只解析名称、`--driver`、Group 与全局机器参数，其余 argv 保序交给选中的 Driver。
 SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `host` 或 `user@host`。Preview 的
@@ -1124,18 +1145,19 @@ SSH 接受受限的原生 `-p/-i/-J/-L/-R/-D/-o` 与唯一 `host` 或 `user@host
 | 命令 | 语法 | 长期语义与当前判断 |
 | --- | --- | --- |
 | `run` | `tunlite run <name>` | 在当前终端前台运行已有 Connection；退出即停止，不创建临时匿名配置。保留。 |
-| `start` | `tunlite start <name> \| --group group \| --all` | 通过已有原生服务在后台运行，但不设置自动启动。保留。 |
+| `start` | `tunlite start <name> \| --group group \| --all` | 创建当前用户的 temporary background，但不设置自动启动、不注册 system LaunchDaemon、不请求 sudo。保留。 |
 | `stop` | `tunlite stop <name> \| --group group \| --all` | 把临时后台运行变为停止；对后台长期运行明确拒绝并提示使用 `disable`，避免“现在停了、下次登录又出现”的隐藏状态。保留。 |
-| `restart` | `tunlite restart <name> \| --group group \| --all` | 重新启动后台进程，不改变是否持久启用。保留；这是高频运维动作，不强迫用户组合两条命令。 |
+| `restart` | `tunlite restart <name> \| --group group \| --all` | 支持 temporary background、user persistent 和 system persistent，不改变 Mode、Autostart 或 Scope；system 仅在身份/定义一致性/KeepAlive 拉起条件全部验证通过后受控终止 Provider，任一前置失败零变更，零 sudo。保留。 |
 | `enable` | `tunlite enable (<name> \| --group group \| --all) [--scope user\|system]` | 设置自动启动并确保现在运行；新服务默认 user，未传 Scope 时保留已有范围，显式不同值执行可回滚迁移。macOS system 需要管理员授权；Linux system 尚未实现。保留。 |
-| `disable` | `tunlite disable <name> \| --group group \| --all` | 把后台长期运行变为停止：同时停止当前进程并取消以后自动启动；对临时后台运行提示使用 `stop`。保留。 |
+| `disable` | `tunlite disable <name> \| --group group \| --all` | 把后台长期运行变为停止并保留 Connection。user 无 sudo且可保留可重建 artifact；system 在授权事务中停止、解除注册并删除 root-owned LaunchDaemon artifact，保留用户态 Record 和 system Scope 意图。对临时后台运行提示使用 `stop`。保留。 |
 | `status` | `tunlite status [<name> \| --group group \| --all]` | 读取声明、服务、进程、健康和一致性状态；无目标时按 Group 查看全部。保留，作为脚本和 Agent 的状态入口。 |
 | `logs` | `tunlite logs <name> [--lines N] [--follow]` | 通过原生服务适配器查看一条 Connection 的历史或实时日志。保留。 |
-| `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局，按 Group 分区显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；停止和重启需要 `y` 二次确认，其他键取消，启动直接执行。不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
+| `monitor` | `tunlite monitor [--group group] [--interval seconds]` | 唯一交互式实时总览；采用类似 `top` 的全屏布局，按 Group 分区显示版本、状态统计、对齐表格、详情和日志。`Enter`/右键进入详情，`Esc`/左键返回，最外层 `Esc` 退出；`x` 对 temporary 映射 stop、对 persistent 映射 disable 并使用更强确认，`r` 支持全部运行模式并确认，system `r` 无密码。只有 system disable 等真实 root 操作才退出 raw mode授权。不支持 `--json`，自动化使用 `status --json`。保留，不再增加 `watch`。 |
 
 四种标准模式继续存在于机器契约，但人类界面使用“状态 / 运行位置 / 自动启动 / 范围”表达。
-原生服务定义从 `add` 起就存在；`start` 和 `enable` 的差异只在自动启动意图，不在是否
-“注册过”。`enable` / `disable` 必须保留：删除两个动词并不会删除自动启动概念，反而会
+原生服务定义从 `add` 起按当前 user 默认范围生成；system disable 会删除 root-owned artifact，
+需要再次 enable 时从 Connection 和保留的 Record 意图重建。`start` 和 `enable` 的差异只在
+自动启动意图，不在是否“注册过”。`enable` / `disable` 必须保留：删除两个动词并不会删除自动启动概念，反而会
 让 `start` 同时承担临时启动和修改长期意图，让 `stop` 产生难以发现的长期副作用，并且
 失去“只关闭自动启动”的对称表达。它们也与原生服务管理工具和 0.10.3 用户心智一致。
 任何可能等待 SSH、原生服务管理器或批量状态采集的人工终端操作，都必须在进入等待前
@@ -1470,8 +1492,8 @@ V1 不提供 `purge` 或其他彻底清理命令。需要彻底清理时，用�
 - Linux/systemd 用户服务是后台能力的参考实现，但不能宣称所有 Linux 都提供
   systemd 或可用的 `systemctl --user`；Linux system Scope 未实现，Capability 必须明确。
 - macOS/launchd 用户 LaunchAgent 是默认的一等支持范围；显式 `enable --scope system`
-  可以迁移为 LaunchDaemon。Intel 与 Apple Silicon 使用同一语义，系统范围需要管理员
-  授权且不得在非交互模式等待密码。
+  可以迁移为 LaunchDaemon。Intel 与 Apple Silicon 使用同一语义；system 注册、解除注册
+  和配置原子替换需要管理员授权且不得在非交互模式等待密码，读取和 restart 不授权。
 - v1 首发平台是 Linux 和 macOS。Windows 不进入首发支持矩阵，原因是 Task Scheduler
   Adapter 和真实 Windows 验证不在本次交付范围，而不是把 GUI 当作某个平台
   是否获得核心支持的前置条件。
