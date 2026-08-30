@@ -1988,6 +1988,52 @@ func TestImportForceWithoutServiceManagerAddsAndUpdatesForegroundOnlyConnection(
 	}
 }
 
+func TestSetWithoutServiceManagerReportsForegroundOnlyOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUNLITE_HOME", home)
+	setTestSSH(t)
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := runContextWithOptions(context.Background(), args, IO{Out: &out, Err: io.Discard}, options{
+			serviceAdapter: func() (service.Adapter, error) {
+				return nil, errors.New("no native service manager")
+			},
+		})
+		return code, out.String()
+	}
+	if code, out := run("add", "no-manager", "-D", "1080", "me@example.com", "--json"); code != 0 {
+		t.Fatalf("add exit=%d out=%s", code, out)
+	}
+	code, out := run("set", "no-manager", "-p", "2222", "--json", "--non-interactive")
+	if code != 0 {
+		t.Fatalf("set exit=%d out=%s", code, out)
+	}
+	var response struct {
+		Conditions []condition `json:"conditions"`
+	}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Conditions) != 1 || response.Conditions[0].Code != "foreground_only" || response.Conditions[0].Connection != "no-manager" {
+		t.Fatalf("conditions=%+v out=%s", response.Conditions, out)
+	}
+}
+
+func TestConditionDeduplicationPreservesDistinctStableIdentities(t *testing.T) {
+	base := condition{
+		Code: "endpoint_conflict", Severity: "warning", Connection: "db", Driver: sshdriver.ID,
+		Message: "endpoint conflict", Actions: []core.Action{{Type: "change_forward", Parameters: map[string]any{"endpoint": "L:127.0.0.1:1080"}}},
+	}
+	differentMessage := base
+	differentMessage.Message = "different endpoint conflict"
+	differentAction := base
+	differentAction.Actions = []core.Action{{Type: "change_forward", Parameters: map[string]any{"endpoint": "L:127.0.0.1:1081"}}}
+	got := deduplicateConditions([]condition{base, base, differentMessage, differentAction})
+	if len(got) != 3 || !reflect.DeepEqual(got, []condition{base, differentMessage, differentAction}) {
+		t.Fatalf("deduplicated conditions=%+v", got)
+	}
+}
+
 func TestAllServiceAndOwnershipDryRunsAreReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
