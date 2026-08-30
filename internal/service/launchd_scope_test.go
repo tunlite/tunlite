@@ -17,6 +17,7 @@ type launchdScopeRunner struct {
 	fakeRunner
 	loaded        map[string]bool
 	disabled      map[string]bool
+	stageCounter  int
 	failKickstart bool
 	failBootstrap bool
 	failBootout   string
@@ -40,13 +41,39 @@ func (r *launchdScopeRunner) execute(command string, args []string) ([]byte, err
 		switch args[2] {
 		case "/usr/bin/true":
 			return nil, nil
+		case mktempProgram:
+			r.stageCounter++
+			template := args[3]
+			staged := strings.TrimSuffix(template, "XXXXXXXX") + fmt.Sprintf("%08d", r.stageCounter)
+			file, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				return nil, err
+			}
+			if err := file.Close(); err != nil {
+				return nil, err
+			}
+			return []byte(staged + "\n"), nil
+		case ddProgram:
+			var destination string
+			for _, argument := range args[3:] {
+				if strings.HasPrefix(argument, "of=") {
+					destination = strings.TrimPrefix(argument, "of=")
+				}
+			}
+			if destination == "" {
+				return nil, errors.New("dd output is missing")
+			}
+			return nil, os.WriteFile(destination, append([]byte(nil), r.fakeRunner.input...), 0o600)
 		case "/usr/bin/install":
 			source, destination := args[len(args)-2], args[len(args)-1]
-			if source != stdinPath {
-				return nil, fmt.Errorf("system install source must be %s, got %s", stdinPath, source)
+			if filepath.Dir(source) != filepath.Dir(destination) || source == destination {
+				return nil, fmt.Errorf("system install source is not a separate daemon-directory stage: %s", source)
 			}
-			raw := append([]byte(nil), r.fakeRunner.input...)
-			err := os.WriteFile(destination, raw, 0o644)
+			raw, err := os.ReadFile(source)
+			if err != nil {
+				return nil, err
+			}
+			err = os.WriteFile(destination, raw, 0o644)
 			return nil, err
 		case "/bin/rm":
 			err := os.Remove(args[len(args)-1])
@@ -422,7 +449,7 @@ func TestLaunchdRejectsForgedSystemRecordIdentityBeforeSudoOrProcessMutation(t *
 	}
 }
 
-func TestLaunchdSystemInstallStreamsExactDefinitionThroughStdin(t *testing.T) {
+func TestLaunchdSystemInstallUsesRootDaemonDirectoryStage(t *testing.T) {
 	runner := newLaunchdScopeRunner(t)
 	adapter, _, _ := newScopedLaunchd(t, runner)
 	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
@@ -440,18 +467,51 @@ func TestLaunchdSystemInstallStreamsExactDefinitionThroughStdin(t *testing.T) {
 	if err != nil || !bytes.Equal(raw, artifact.Content) {
 		t.Fatalf("stdin install changed definition bytes: err=%v", err)
 	}
-	found := false
+	var staged string
+	sequence := make([]string, 0, 5)
 	for _, call := range runner.calls {
-		if call.command != MacOSSudoProgram || !slices.Contains(call.args, installProgram) {
+		if call.command == syncProgram {
+			sequence = append(sequence, "sync")
+			if len(call.args) != 0 {
+				t.Fatalf("sync received unexpected arguments: %#v", call.args)
+			}
 			continue
 		}
-		found = true
-		if len(call.args) < 2 || call.args[len(call.args)-2] != stdinPath || call.args[len(call.args)-1] != artifact.Path {
-			t.Fatalf("unsafe system install arguments: %#v", call.args)
+		if call.command != MacOSSudoProgram || len(call.args) < 3 {
+			continue
+		}
+		switch call.args[2] {
+		case mktempProgram:
+			sequence = append(sequence, "mktemp")
+			if len(call.args) != 4 || filepath.Dir(call.args[3]) != filepath.Dir(artifact.Path) {
+				t.Fatalf("unsafe mktemp arguments: %#v", call.args)
+			}
+		case ddProgram:
+			sequence = append(sequence, "dd")
+			for _, argument := range call.args[3:] {
+				if strings.HasPrefix(argument, "of=") {
+					staged = strings.TrimPrefix(argument, "of=")
+				}
+			}
+			if staged == "" || filepath.Dir(staged) != filepath.Dir(artifact.Path) || !slices.Contains(call.args, "conv=fsync") {
+				t.Fatalf("unsafe staged write arguments: %#v", call.args)
+			}
+		case installProgram:
+			sequence = append(sequence, "install")
+			if len(call.args) < 2 || call.args[len(call.args)-2] != staged || call.args[len(call.args)-1] != artifact.Path {
+				t.Fatalf("unsafe system install arguments: %#v", call.args)
+			}
+		case removeProgram:
+			if call.args[len(call.args)-1] == staged {
+				sequence = append(sequence, "cleanup")
+			}
 		}
 	}
-	if !found {
-		t.Fatal("system install did not use the privileged install program")
+	if !slices.Equal(sequence, []string{"mktemp", "dd", "install", "sync", "cleanup"}) {
+		t.Fatalf("privileged stage sequence=%v calls=%#v", sequence, runner.calls)
+	}
+	if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root staging file remains after success: %v", err)
 	}
 }
 
@@ -485,7 +545,7 @@ func TestLaunchdSystemBuildUsesDaemonPathAndNonRootUser(t *testing.T) {
 	}
 }
 
-func TestLaunchdSystemInstallUsesNonInteractiveSingleCommandAndRollsBack(t *testing.T) {
+func TestLaunchdSystemInstallUsesOnlyNonInteractiveAbsoluteCommandsAndRollsBack(t *testing.T) {
 	runner := newLaunchdScopeRunner(t)
 	adapter, _, _ := newScopedLaunchd(t, runner)
 	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
@@ -504,6 +564,7 @@ func TestLaunchdSystemInstallUsesNonInteractiveSingleCommandAndRollsBack(t *test
 		t.Fatalf("installed artifact mismatch: err=%v", err)
 	}
 	var installArgs []string
+	privilegedPrograms := make([]string, 0, 4)
 	for _, call := range runner.calls {
 		if call.command == MacOSSudoProgram && slices.Contains(call.args, installProgram) {
 			installArgs = call.args
@@ -514,11 +575,22 @@ func TestLaunchdSystemInstallUsesNonInteractiveSingleCommandAndRollsBack(t *test
 		if call.command == MacOSSudoProgram && (len(call.args) < 3 || !filepath.IsAbs(call.args[2])) {
 			t.Fatalf("sudo inner command was not absolute: %#v", call)
 		}
+		if call.command == MacOSSudoProgram {
+			privilegedPrograms = append(privilegedPrograms, call.args[2])
+			if slices.Contains(call.args, "/dev/stdin") {
+				t.Fatalf("system install reused unsupported /dev/stdin source: %#v", call.args)
+			}
+		}
 	}
 	joined := strings.Join(installArgs, " ")
 	for _, expected := range []string{"/usr/bin/install -S", "-o root", "-g wheel", "-m 0644"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("install command missing %q: %v", expected, installArgs)
+		}
+	}
+	for _, expected := range []string{mktempProgram, ddProgram, installProgram, removeProgram} {
+		if !slices.Contains(privilegedPrograms, expected) {
+			t.Fatalf("privileged transaction omitted %s: %v", expected, privilegedPrograms)
 		}
 	}
 
@@ -531,6 +603,461 @@ func TestLaunchdSystemInstallUsesNonInteractiveSingleCommandAndRollsBack(t *test
 	}
 	if _, err := os.Stat(rollbackArtifact.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed install left system artifact: %v", err)
+	}
+}
+
+func TestLaunchdSystemInstallRejectsUnsafeStageOutputBeforeWriting(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	baseExecute := runner.execute
+	runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+		if command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram {
+			return []byte("/tmp/user-controlled-stage\n"), nil
+		}
+		return baseExecute(command, args)
+	}
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "unsafe-stage", testPlan())
+	if _, _, err := adapter.install(context.Background(), artifact); err == nil || !strings.Contains(err.Error(), "unsafe privileged launchd staging path") {
+		t.Fatalf("unsafe mktemp output error=%v", err)
+	}
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram && len(call.args) >= 3 && slices.Contains([]string{ddProgram, installProgram}, call.args[2]) {
+			t.Fatalf("unsafe stage output reached a privileged write: %#v", call)
+		}
+	}
+}
+
+func TestLaunchdSystemInstallCleansRootStageAfterWriteOrInstallFailure(t *testing.T) {
+	for _, failedProgram := range []string{ddProgram, installProgram} {
+		t.Run(filepath.Base(failedProgram), func(t *testing.T) {
+			runner := newLaunchdScopeRunner(t)
+			baseExecute := runner.execute
+			runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+				if command == MacOSSudoProgram && len(args) >= 3 && args[2] == failedProgram {
+					return nil, errors.New("injected privileged stage failure")
+				}
+				return baseExecute(command, args)
+			}
+			adapter, _, daemons := newScopedLaunchd(t, runner)
+			artifact, _ := adapter.BuildScoped(ScopeSystem, "stage-failure", testPlan())
+			if _, _, err := adapter.install(context.Background(), artifact); err == nil {
+				t.Fatal("injected system install failure unexpectedly succeeded")
+			}
+			if _, err := os.Lstat(artifact.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed transaction left destination: %v", err)
+			}
+			entries, err := os.ReadDir(daemons)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Name(), ".tunlite.") {
+					t.Fatalf("failed transaction left staging file %q", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestLaunchdSystemStageCleanupFailureRollsBackDestinationAndReportsStage(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	baseExecute := runner.execute
+	runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+		if command == MacOSSudoProgram && len(args) >= 3 && args[2] == removeProgram &&
+			strings.HasPrefix(filepath.Base(args[len(args)-1]), ".") {
+			return nil, errors.New("injected stage cleanup failure")
+		}
+		return baseExecute(command, args)
+	}
+	adapter, _, daemons := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "cleanup-failure", testPlan())
+	if _, err := StageScopeInstall(context.Background(), adapter, artifact, ModePersistent, nil); err == nil {
+		t.Fatal("stage cleanup failure unexpectedly succeeded")
+	} else if !strings.Contains(err.Error(), filepath.Base(artifact.Path)+".tunlite.") {
+		t.Fatalf("stage cleanup error omitted the exact recovery path: %v", err)
+	}
+	if _, err := os.Lstat(artifact.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage cleanup failure retained the loadable destination: %v", err)
+	}
+	entries, err := os.ReadDir(daemons)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages := 0
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tunlite.") {
+			stages++
+		}
+	}
+	if stages != 1 {
+		t.Fatalf("cleanup failure retained %d stage files, want one diagnosed root-owned stage", stages)
+	}
+}
+
+func TestLaunchdMaterializeCompensatesPostRenameFailures(t *testing.T) {
+	for _, failure := range []string{"sync", "stage-cleanup"} {
+		for _, existed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existed=%t", failure, existed), func(t *testing.T) {
+				runner := newLaunchdScopeRunner(t)
+				baseExecute := runner.execute
+				injected := false
+				runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+					if failure == "sync" && command == syncProgram && !injected {
+						injected = true
+						return nil, errors.New("injected post-rename sync failure")
+					}
+					if failure == "stage-cleanup" && command == MacOSSudoProgram && len(args) >= 3 &&
+						args[2] == removeProgram && strings.HasPrefix(filepath.Base(args[len(args)-1]), ".") && !injected {
+						injected = true
+						return nil, errors.New("injected post-rename stage cleanup failure")
+					}
+					return baseExecute(command, args)
+				}
+				adapter, _, daemons := newScopedLaunchd(t, runner)
+				oldArtifact, _ := adapter.BuildScoped(ScopeSystem, "materialize-compensation", testPlan())
+				newPlan := testPlan()
+				newPlan.Exec.Args = append(newPlan.Exec.Args, "--replacement")
+				artifact, _ := adapter.BuildScoped(ScopeSystem, "materialize-compensation", newPlan)
+				if existed {
+					if err := os.WriteFile(artifact.Path, oldArtifact.Content, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := adapter.Materialize(context.Background(), artifact); err == nil {
+					t.Fatal("post-rename failure unexpectedly succeeded")
+				}
+				current, err := os.ReadFile(artifact.Path)
+				if existed {
+					if err != nil || !bytes.Equal(current, oldArtifact.Content) {
+						t.Fatalf("previous definition was not restored: err=%v", err)
+					}
+				} else if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("prior-absent definition was not removed: err=%v", err)
+				}
+				entries, err := os.ReadDir(daemons)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stages := 0
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".") {
+						stages++
+					}
+				}
+				wantStages := 0
+				if failure == "stage-cleanup" {
+					wantStages = 1
+				}
+				if stages != wantStages {
+					t.Fatalf("staging residues=%d want=%d", stages, wantStages)
+				}
+			})
+		}
+	}
+}
+
+func TestLaunchdMaterializeRefusesToOverwriteThirdStateDuringRecovery(t *testing.T) {
+	for _, existed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existed=%t", existed), func(t *testing.T) {
+			runner := newLaunchdScopeRunner(t)
+			baseExecute := runner.execute
+			var destination string
+			corrupted := []byte("root-authored third state\n")
+			injected := false
+			runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+				output, err := baseExecute(command, args)
+				if command == MacOSSudoProgram && len(args) >= 3 && args[2] == installProgram {
+					destination = args[len(args)-1]
+				}
+				if command == syncProgram && !injected {
+					injected = true
+					if writeErr := os.WriteFile(destination, corrupted, 0o644); writeErr != nil {
+						return nil, writeErr
+					}
+				}
+				return output, err
+			}
+			adapter, _, _ := newScopedLaunchd(t, runner)
+			oldArtifact, _ := adapter.BuildScoped(ScopeSystem, "materialize-third-state", testPlan())
+			newPlan := testPlan()
+			newPlan.Exec.Args = append(newPlan.Exec.Args, "--replacement")
+			artifact, _ := adapter.BuildScoped(ScopeSystem, "materialize-third-state", newPlan)
+			if existed {
+				if err := os.WriteFile(artifact.Path, oldArtifact.Content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := adapter.Materialize(context.Background(), artifact)
+			var blocked *RecoveryBlockedError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("third state did not block recovery: %T %v", err, err)
+			}
+			current, readErr := os.ReadFile(artifact.Path)
+			if readErr != nil || !bytes.Equal(current, corrupted) {
+				t.Fatalf("third state was overwritten: content=%q err=%v", current, readErr)
+			}
+		})
+	}
+}
+
+func TestLaunchdCanceledInstallCleansStageBeforeAnyPrivilegedWrite(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, daemons := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "canceled-stage", testPlan())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := adapter.install(ctx, artifact); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled install error=%v", err)
+	}
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram && len(call.args) >= 3 && slices.Contains([]string{ddProgram, installProgram}, call.args[2]) {
+			t.Fatalf("canceled install reached privileged write: %#v", call)
+		}
+	}
+	entries, err := os.ReadDir(daemons)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("canceled install retained daemon-directory entries: %v", entries)
+	}
+}
+
+func TestLaunchdMktempOutputWithErrorStillCleansValidatedStage(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	baseExecute := runner.execute
+	runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+		output, err := baseExecute(command, args)
+		if command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram && err == nil {
+			return output, errors.New("injected mktemp post-create failure")
+		}
+		return output, err
+	}
+	adapter, _, daemons := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "mktemp-error", testPlan())
+	if _, _, err := adapter.install(context.Background(), artifact); err == nil {
+		t.Fatal("mktemp output+error unexpectedly succeeded")
+	}
+	entries, err := os.ReadDir(daemons)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("mktemp output+error retained daemon-directory entries: %v", entries)
+	}
+}
+
+func TestLaunchdMktempIgnoresStderrWarningWhenStdoutPathIsValid(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	baseExecute := runner.execute
+	runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+		output, err := baseExecute(command, args)
+		if command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram && err == nil {
+			return append(append([]byte(nil), output...), []byte("mktemp warning on stderr\n")...), nil
+		}
+		return output, err
+	}
+	runner.fakeRunner.streamOutput = func(command string, args []string, output []byte) []byte {
+		if command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram {
+			if newline := bytes.IndexByte(output, '\n'); newline >= 0 {
+				return output[:newline+1]
+			}
+		}
+		return output
+	}
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "mktemp-warning", testPlan())
+	if _, _, err := adapter.install(context.Background(), artifact); err != nil {
+		t.Fatalf("stderr warning polluted validated mktemp stdout: %v", err)
+	}
+	installed, err := os.ReadFile(artifact.Path)
+	if err != nil || !bytes.Equal(installed, artifact.Content) {
+		t.Fatalf("installed bytes after warning: err=%v", err)
+	}
+}
+
+func TestLaunchdCancellationWaitsForRootMutationThenCompensates(t *testing.T) {
+	for _, delayedProgram := range []string{ddProgram, installProgram} {
+		for _, existed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existed=%t", filepath.Base(delayedProgram), existed), func(t *testing.T) {
+				runner := newLaunchdScopeRunner(t)
+				baseExecute := runner.execute
+				started := make(chan struct{})
+				release := make(chan struct{})
+				triggered := false
+				runner.fakeRunner.runContext = func(commandCtx context.Context, command string, args []string) ([]byte, error) {
+					if command == MacOSSudoProgram && len(args) >= 3 && args[2] == delayedProgram && !triggered {
+						triggered = true
+						close(started)
+						select {
+						case <-release:
+							return baseExecute(command, args)
+						case <-commandCtx.Done():
+							go func() {
+								<-release
+								_, _ = baseExecute(command, args)
+							}()
+							return nil, commandCtx.Err()
+						}
+					}
+					return baseExecute(command, args)
+				}
+				adapter, _, daemons := newScopedLaunchd(t, runner)
+				oldArtifact, _ := adapter.BuildScoped(ScopeSystem, "cancel-root-mutation", testPlan())
+				newPlan := testPlan()
+				newPlan.Exec.Args = append(newPlan.Exec.Args, "--replacement")
+				artifact, _ := adapter.BuildScoped(ScopeSystem, "cancel-root-mutation", newPlan)
+				if existed {
+					if err := os.WriteFile(artifact.Path, oldArtifact.Content, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				result := make(chan error, 1)
+				go func() { result <- adapter.Materialize(ctx, artifact) }()
+				<-started
+				cancel()
+				select {
+				case err := <-result:
+					t.Fatalf("Materialize returned before root mutation ended: %v", err)
+				case <-time.After(20 * time.Millisecond):
+				}
+				close(release)
+				err := <-result
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled Materialize error=%v", err)
+				}
+				assertState := func() {
+					current, readErr := os.ReadFile(artifact.Path)
+					if existed {
+						if readErr != nil || !bytes.Equal(current, oldArtifact.Content) {
+							t.Fatalf("previous definition not restored: err=%v", readErr)
+						}
+					} else if !errors.Is(readErr, os.ErrNotExist) {
+						t.Fatalf("prior-absent definition remains: err=%v", readErr)
+					}
+				}
+				assertState()
+				time.Sleep(20 * time.Millisecond)
+				assertState()
+				entries, err := os.ReadDir(daemons)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".") {
+						t.Fatalf("canceled mutation retained stage %q", entry.Name())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestLaunchdSystemInstallRejectsWritableDaemonDirectoryBeforeSudo(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, daemons := newScopedLaunchd(t, runner)
+	if err := os.Chmod(daemons, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "writable-directory", testPlan())
+	if _, _, err := adapter.install(context.Background(), artifact); err == nil || !strings.Contains(err.Error(), "group/world writable") {
+		t.Fatalf("writable daemon directory error=%v", err)
+	}
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram {
+			t.Fatalf("writable daemon directory reached sudo: %#v", call)
+		}
+	}
+}
+
+func TestLaunchdSystemInstallRejectsLinkedOrReplacedStageBeforeInstall(t *testing.T) {
+	for _, mutation := range []string{"hardlink", "replace-after-write"} {
+		t.Run(mutation, func(t *testing.T) {
+			runner := newLaunchdScopeRunner(t)
+			baseExecute := runner.execute
+			runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
+				output, err := baseExecute(command, args)
+				if err != nil {
+					return output, err
+				}
+				if mutation == "hardlink" && command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram {
+					stage := strings.TrimSuffix(string(output), "\n")
+					if linkErr := os.Link(stage, stage+".link"); linkErr != nil {
+						return nil, linkErr
+					}
+				}
+				if mutation == "replace-after-write" && command == MacOSSudoProgram && len(args) >= 3 && args[2] == ddProgram {
+					var stage string
+					for _, argument := range args[3:] {
+						if strings.HasPrefix(argument, "of=") {
+							stage = strings.TrimPrefix(argument, "of=")
+						}
+					}
+					content, readErr := os.ReadFile(stage)
+					if readErr != nil {
+						return nil, readErr
+					}
+					if removeErr := os.Remove(stage); removeErr != nil {
+						return nil, removeErr
+					}
+					if writeErr := os.WriteFile(stage, content, 0o600); writeErr != nil {
+						return nil, writeErr
+					}
+				}
+				return output, nil
+			}
+			adapter, _, _ := newScopedLaunchd(t, runner)
+			artifact, _ := adapter.BuildScoped(ScopeSystem, "unsafe-stage-identity", testPlan())
+			if _, _, err := adapter.install(context.Background(), artifact); err == nil {
+				t.Fatalf("%s stage mutation unexpectedly succeeded", mutation)
+			}
+			for _, call := range runner.calls {
+				if call.command == MacOSSudoProgram && len(call.args) >= 3 && call.args[2] == installProgram {
+					t.Fatalf("%s stage mutation reached install: %#v", mutation, call)
+				}
+			}
+		})
+	}
+}
+
+func TestLaunchdSystemInstallRefusesExistingSymlinkBeforeSudo(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, _ := adapter.BuildScoped(ScopeSystem, "symlink", testPlan())
+	target := filepath.Join(t.TempDir(), "target.plist")
+	if err := os.WriteFile(target, artifact.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, artifact.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := adapter.install(context.Background(), artifact); err == nil || !strings.Contains(err.Error(), "regular non-symlink") {
+		t.Fatalf("symlink install error=%v", err)
+	}
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram {
+			t.Fatalf("untrusted existing definition reached sudo: %#v", call)
+		}
+	}
+}
+
+func TestValidateLaunchdStagingPathRejectsUntrustedOutput(t *testing.T) {
+	destination := "/Library/LaunchDaemons/dev.tunlite.connection.db.plist"
+	valid := "/Library/LaunchDaemons/.dev.tunlite.connection.db.plist.tunlite.Ab12Cd34\n"
+	if got, err := validateLaunchdStagingPath(destination, []byte(valid)); err != nil || got != strings.TrimSuffix(valid, "\n") {
+		t.Fatalf("valid staging path=%q err=%v", got, err)
+	}
+	for _, output := range []string{
+		"/tmp/.dev.tunlite.connection.db.plist.tunlite.Ab12Cd34\n",
+		"/Library/LaunchDaemons/../LaunchDaemons/.dev.tunlite.connection.db.plist.tunlite.Ab12Cd34\n",
+		"/Library/LaunchDaemons/.other.tunlite.Ab12Cd34\n",
+		"/Library/LaunchDaemons/.dev.tunlite.connection.db.plist.tunlite.short\n",
+		valid + "extra\n",
+	} {
+		if got, err := validateLaunchdStagingPath(destination, []byte(output)); err == nil {
+			t.Fatalf("unsafe staging output accepted as %q: %q", got, output)
+		}
 	}
 }
 

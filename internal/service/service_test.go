@@ -23,12 +23,14 @@ type runnerCall struct {
 }
 
 type fakeRunner struct {
-	calls []runnerCall
-	run   func(string, []string) ([]byte, error)
-	input []byte
+	calls        []runnerCall
+	run          func(string, []string) ([]byte, error)
+	runContext   func(context.Context, string, []string) ([]byte, error)
+	streamOutput func(string, []string, []byte) []byte
+	input        []byte
 }
 
-func (f *fakeRunner) Run(_ context.Context, command string, args []string, streams Streams) ([]byte, error) {
+func (f *fakeRunner) Run(ctx context.Context, command string, args []string, streams Streams) ([]byte, error) {
 	f.calls = append(f.calls, runnerCall{command: command, args: append([]string(nil), args...)})
 	f.input = nil
 	if streams.In != nil {
@@ -36,11 +38,17 @@ func (f *fakeRunner) Run(_ context.Context, command string, args []string, strea
 	}
 	var output []byte
 	var err error
-	if f.run != nil {
+	if f.runContext != nil {
+		output, err = f.runContext(ctx, command, args)
+	} else if f.run != nil {
 		output, err = f.run(command, args)
 	}
 	if streams.Out != nil {
-		_, _ = streams.Out.Write(output)
+		streamOutput := output
+		if f.streamOutput != nil {
+			streamOutput = f.streamOutput(command, args, output)
+		}
+		_, _ = streams.Out.Write(streamOutput)
 	}
 	return output, err
 }
