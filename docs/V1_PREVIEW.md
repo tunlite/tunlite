@@ -180,6 +180,32 @@ Release E2E 门禁只在 macOS 上运行：默认本地调用会构建并校验�
 background → persistent 不重启，以及 SSH 进程崩溃后的自动恢复。测试使用固定专用标签，
 执行前必须确认该标签未被占用，结束后移除 plist 和进程。
 
+真实 LaunchDaemon 门禁必须由人在专用 macOS 真机的交互终端显式开启，Intel 与 Apple
+Silicon 共用同一个脚本：
+
+```bash
+TUNLITE_REAL_SYSTEM_E2E=1 scripts/test-macos-system-e2e.sh v1.0.0-preview.1
+# 复用已经校验过、准备发布的产物：
+TUNLITE_REAL_SYSTEM_E2E=1 scripts/test-macos-system-e2e.sh v1.0.0-preview.1 dist
+```
+
+脚本只使用 `it-system-e2e-*` 隔离身份和临时 `TUNLITE_HOME`，明确排除端口 19999；它只
+覆盖成功生命周期：USER→SYSTEM、root-owned plist、system domain、真实 `-L` 流量、
+system `set`、`restart`、`disable` 和 `remove`。SYSTEM→USER、权限缺失、目标冲突和迁移
+回滚仍由自动故障注入测试与另行人工矩阵覆盖，不能把本脚本单独视为完整 system Scope
+验收。
+
+无 sudo 调用的硬证明来源是 Launchd 单测
+`TestLaunchdSystemRestartUsesVerifiedNonPrivilegedKeepAliveReplacement`：Runner 遇到
+`MacOSSudoProgram` 会立即失败，并断言 system restart 只经过受校验的
+`launchctl print`、`ps` 和 `kill` 路径。真机脚本提供
+的是补充的无凭证**行为门禁**：先执行 `sudo -k`，确认 `sudo -n` 无可用 timestamp，再以
+关闭 stdin、`--non-interactive` 和硬超时运行命令，并在完成后再次确认 timestamp 仍不可用、
+stderr 没有密码提示。因为产品使用绝对 `/usr/bin/sudo`，普通 PATH wrapper 不能可靠拦截
+调用；该行为门禁也不能排除只针对 install/rm 等命令配置的 command-specific NOPASSWD，
+因此不得把它表述成完整系统调用审计。失败清理绝不从 trap 请求密码；如果 root artifact
+无法无交互移除，脚本会保留诊断目录并打印精确人工恢复命令。
+
 Linux Docker E2E 使用 Ubuntu 24.04、PID 1 systemd、lingering systemd user manager 和真实
 OpenSSH。它验证 `-L`、`-R`、`-D` 流量，background → persistent 不换 PID，SSH 被
 `SIGKILL` 后由 systemd 恢复，移走 CLI 后连接不断流、在 CLI 仍缺失时重启容器仍自动
