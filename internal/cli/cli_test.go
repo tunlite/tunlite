@@ -81,6 +81,20 @@ func TestRunDoesNotBlockAcceptedPublishDeclaration(t *testing.T) {
 	if strings.Contains(out, "approval_required") || !strings.Contains(out, `"outcome":"starting"`) || !strings.Contains(out, `"outcome":"stopped"`) {
 		t.Fatalf("run was blocked or omitted lifecycle events: %s", out)
 	}
+	decoder := json.NewDecoder(strings.NewReader(out))
+	var first struct {
+		ProtocolVersion int    `json:"protocolVersion"`
+		Outcome         string `json:"outcome"`
+		Command         string `json:"command"`
+		Connection      string `json:"connection"`
+		Stream          string `json:"stream"`
+	}
+	if err := decoder.Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if first.ProtocolVersion != ProtocolVersion || first.Outcome != "starting" || first.Command != "run" || first.Connection != "publish" || first.Stream != "execution" {
+		t.Fatalf("unexpected run stream header: %#v", first)
+	}
 }
 
 func TestRunDryRunReportsPublicListenRisk(t *testing.T) {

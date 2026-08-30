@@ -139,6 +139,7 @@ func TestValidateSSHOptionsUsesConservativeAllowlist(t *testing.T) {
 	}
 
 	rejected := []string{
+		"SetEnv=TOKEN=secret", "setenv=TOKEN=secret",
 		"ProxyCommand=helper %h %p", "LocalCommand=touch /tmp/pwned", "PermitLocalCommand=yes",
 		"RemoteCommand=uname", "KnownHostsCommand=helper", "Include=other.conf",
 		"LocalForward=8080 localhost:80", "RemoteForward=9000 localhost:80", "DynamicForward=1080",

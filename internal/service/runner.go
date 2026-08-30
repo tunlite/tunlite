@@ -26,6 +26,7 @@ func (e *CommandError) Unwrap() error { return e.Err }
 func (ExecRunner) Run(ctx context.Context, command string, args []string, streams Streams) ([]byte, error) {
 	process := exec.CommandContext(ctx, command, args...)
 	var stdout, stderr bytes.Buffer
+	process.Stdin = streams.In
 	process.Stdout = &stdout
 	process.Stderr = &stderr
 	if streams.Out != nil {

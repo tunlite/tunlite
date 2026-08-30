@@ -59,6 +59,16 @@ func streamsAreInteractive(streams IO) bool {
 	return readerIsTerminal(streams.In) && writerIsTerminal(streams.Out)
 }
 
+func streamsCanPromptOnStderr(streams IO) bool {
+	if streams.PromptTerminal != nil {
+		return *streams.PromptTerminal
+	}
+	if streams.Terminal != nil {
+		return *streams.Terminal
+	}
+	return readerIsTerminal(streams.In) && writerIsTerminal(streams.Err)
+}
+
 func writerIsTerminal(writer io.Writer) bool {
 	file, ok := writer.(*os.File)
 	return ok && term.IsTerminal(int(file.Fd()))
@@ -93,9 +103,11 @@ func displayState(value service.State, lang language) stateStyle {
 	case value.ProcessState == service.ProcessRunning && value.Health == service.HealthHealthy:
 		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
 	case value.ProcessState == service.ProcessRunning:
-		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
+		return stateStyle{glyph: "●", color: ansiYellow, label: localized(lang, "running · health unverified", "运行中 · 健康未验证")}
 	case value.Mode == service.ModeForeground:
-		return stateStyle{glyph: "●", color: ansiGreen, label: localized(lang, "running", "正常运行")}
+		return stateStyle{glyph: "●", color: ansiYellow, label: localized(lang, "running · health unverified", "运行中 · 健康未验证")}
+	case value.ProcessState == service.ProcessUnknown:
+		return stateStyle{glyph: "?", color: ansiYellow, label: localized(lang, "unknown", "状态未知")}
 	default:
 		return stateStyle{glyph: "○", color: ansiDim, label: localized(lang, "stopped", "已停止")}
 	}
@@ -289,16 +301,45 @@ func statusAutostart(row statusRow, lang language) string {
 	if row.state.Mode == service.ModePersistent {
 		return localized(lang, "yes", "是")
 	}
-	return localized(lang, "no", "否")
+	switch row.state.Mode {
+	case service.ModeStopped, service.ModeForeground, service.ModeBackground:
+		return localized(lang, "no", "否")
+	default:
+		return localized(lang, "—", "未知")
+	}
 }
 
 func statusScope(row statusRow, lang language) string {
+	if !statusScopeKnown(row.state) {
+		return localized(lang, "—", "未知")
+	}
 	switch service.NormalizeScope(row.state.Scope) {
 	case service.ScopeSystem:
 		return localized(lang, "SYSTEM", "系统")
 	default:
 		return localized(lang, "USER", "用户")
 	}
+}
+
+// State.scope remains user/system in protocol v1. Human output must not turn
+// the protocol's historical zero-value fallback into evidence that a native
+// service actually exists in USER scope.
+func statusScopeKnown(state service.State) bool {
+	if state.Scope != service.ScopeUser && state.Scope != service.ScopeSystem {
+		return false
+	}
+	if state.ServiceState == service.ServiceRegistered {
+		return true
+	}
+	for _, condition := range state.Conditions {
+		switch condition.Code {
+		case "status_observation_timeout", "service_missing", "foreground_only", "execution_plan_blocked":
+			return false
+		case "service_artifact_missing", "scope_unsupported", "scope_conflict", "scope_mismatch":
+			return true
+		}
+	}
+	return state.Adapter != "" && state.Mode != service.ModeUnknown && state.ServiceState != service.ServiceUnsupported
 }
 
 func statusPID(row statusRow) string {
@@ -332,7 +373,7 @@ func statusUptime(row statusRow) string {
 
 func statusRestarts(row statusRow) string {
 	if row.state.Platform == nil {
-		return "0"
+		return "—"
 	}
 	if value := fmt.Sprint(row.state.Platform["restarts"]); value != "" && value != "<nil>" {
 		return value
@@ -343,7 +384,7 @@ func statusRestarts(row statusRow) string {
 			return strconv.Itoa(count - 1)
 		}
 	}
-	return "0"
+	return "—"
 }
 
 func formatDuration(value time.Duration) string {
@@ -366,12 +407,21 @@ func renderStatusDetail(row statusRow, color bool, lang language) []string {
 	style := displayStatusRow(row, lang)
 	lines := []string{row.connection.Metadata.Name}
 	appendRow := func(label, value, shade string) {
-		lines = append(lines, "  "+fitCell(label, 12)+" "+colorize(value, shade, color))
+		lines = append(lines, "  "+fitCell(label, 18)+" "+colorize(value, shade, color))
 	}
 	appendRow(localized(lang, "state", "状态"), style.glyph+" "+style.label, style.color)
+	appendRow(localized(lang, "service", "后台服务"), localizedServiceState(row.state.ServiceState, lang), "")
+	appendRow(localized(lang, "process", "进程"), localizedProcessState(row.state.ProcessState, lang), "")
+	appendRow(localized(lang, "health", "健康检查"), localizedHealth(row.state.Health, lang), "")
+	appendRow(localized(lang, "consistency", "一致性"), localizedConsistency(row.state.ConsistencyState, lang), "")
+	appendRow(localized(lang, "desired mode", "期望运行方式"), localizedMode(row.state.Mode, lang), "")
+	appendRow(localized(lang, "actual mode", "实际运行方式"), localizedMode(statusActualMode(row.state), lang), "")
 	appendRow(localized(lang, "runs as", "运行位置"), statusRunsAs(row, lang), "")
 	appendRow(localized(lang, "autostart", "自动启动"), statusAutostart(row, lang), "")
 	appendRow(localized(lang, "scope", "范围"), statusScope(row, lang), "")
+	appendRow(localized(lang, "native identity", "原生服务标识"), statusPlatformValue(row, "nativeIdentity"), "")
+	appendRow(localized(lang, "service key", "Service Key"), statusPlatformValue(row, "serviceKey"), "")
+	appendRow(localized(lang, "unit name", "Unit 名称"), statusPlatformValue(row, "unitName"), "")
 	appendRow("PID", statusPID(row), "")
 	appendRow(localized(lang, "up", "已运行"), statusUptime(row), "")
 	appendRow(localized(lang, "restarts", "重启次数"), statusRestarts(row), "")
@@ -409,6 +459,106 @@ func renderStatusDetail(row statusRow, color bool, lang language) []string {
 		appendRow(condition.Severity, condition.Message, shade)
 	}
 	return lines
+}
+
+func statusPlatformValue(row statusRow, key string) string {
+	if row.state.Platform == nil {
+		return "—"
+	}
+	value := fmt.Sprint(row.state.Platform[key])
+	if value == "" || value == "<nil>" {
+		return "—"
+	}
+	return value
+}
+
+func statusActualMode(state service.State) string {
+	for _, condition := range state.Conditions {
+		if condition.Code != "service_mode_drifted" {
+			continue
+		}
+		const prefix = "native service mode is "
+		if start := strings.Index(condition.Message, prefix); start >= 0 {
+			value := condition.Message[start+len(prefix):]
+			if end := strings.Index(value, " but "); end > 0 {
+				return value[:end]
+			}
+		}
+	}
+	if state.ConsistencyState == service.ConsistencyBlocked || state.ProcessState == service.ProcessUnknown {
+		return service.ModeUnknown
+	}
+	if state.ServiceState == service.ServiceAbsent {
+		return service.ModeStopped
+	}
+	return state.Mode
+}
+
+func localizedServiceState(value string, lang language) string {
+	switch value {
+	case service.ServiceRegistered:
+		return localized(lang, "registered", "已注册")
+	case service.ServiceAbsent:
+		return localized(lang, "absent", "未注册")
+	case service.ServiceUnsupported:
+		return localized(lang, "unsupported", "不支持")
+	default:
+		return localized(lang, "unknown", "未知")
+	}
+}
+
+func localizedProcessState(value string, lang language) string {
+	switch value {
+	case service.ProcessInactive:
+		return localized(lang, "inactive", "未运行")
+	case service.ProcessStarting:
+		return localized(lang, "starting", "启动中")
+	case service.ProcessRunning:
+		return localized(lang, "running", "运行中")
+	case service.ProcessFailed:
+		return localized(lang, "failed", "运行失败")
+	default:
+		return localized(lang, "unknown", "未知")
+	}
+}
+
+func localizedHealth(value string, lang language) string {
+	switch value {
+	case service.HealthHealthy:
+		return localized(lang, "healthy", "已验证正常")
+	case service.HealthUnhealthy:
+		return localized(lang, "unhealthy", "验证失败")
+	default:
+		return localized(lang, "unverified", "未验证")
+	}
+}
+
+func localizedConsistency(value string, lang language) string {
+	switch value {
+	case service.ConsistencyConsistent:
+		return localized(lang, "consistent", "一致")
+	case service.ConsistencyDrifted:
+		return localized(lang, "drifted", "已漂移")
+	case service.ConsistencyMissing:
+		return localized(lang, "missing", "缺失")
+	default:
+		return localized(lang, "blocked", "无法确认")
+	}
+}
+
+func localizedMode(value string, lang language) string {
+	switch value {
+	case service.ModeStopped:
+		return localized(lang, "stopped", "已停止")
+	case service.ModeForeground:
+		return localized(lang, "foreground", "当前终端")
+	case service.ModeBackground:
+		return localized(lang, "temporary background", "临时后台")
+	case service.ModePersistent:
+		return localized(lang, "persistent", "长期后台（自动启动）")
+	default:
+		return localized(lang, "unknown", "未知")
+	}
 }
 
 func localizedForwardType(value string, lang language) string {

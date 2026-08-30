@@ -15,6 +15,7 @@ import (
 	"github.com/yuanyuanzijin/tunlite/internal/configstore"
 	"github.com/yuanyuanzijin/tunlite/internal/core"
 	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
+	"github.com/yuanyuanzijin/tunlite/internal/service"
 )
 
 const exitPartial = 5
@@ -78,6 +79,9 @@ func exportConnections(ctx context.Context, args []string, streams IO, opts opti
 	}
 	if flags.NArg() != 0 {
 		return usageError(fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " ")))
+	}
+	if opts.DryRun && (output == "" || output == "-") {
+		return usageError("export --dry-run requires --output <file>")
 	}
 	store, err := connectionStore(opts)
 	if err != nil {
@@ -150,6 +154,9 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 		}
 		return err
 	}
+	renderStageProgress(streams, opts,
+		fmt.Sprintf("Reading and validating import file %s…", sourcePath),
+		fmt.Sprintf("正在读取并校验导入文件 %s…", sourcePath))
 	source, sourceFormat, sourceConditions, err := loadImportDocument(sourcePath)
 	if err != nil {
 		return err
@@ -168,6 +175,7 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 	if err != nil {
 		return err
 	}
+	renderCommandProgress(streams, opts, []string{"import", sourcePath})
 	results := make([]itemResult, 0, len(source.Items))
 	if opts.DryRun {
 		document, err := target.Load()
@@ -210,6 +218,13 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 		}
 		return renderImportResult(streams, opts, sourcePath, sourceFormat, sourceConditions, results)
 	}
+	approvedSystemReplacements, err := preflightImportSystemReplacements(ctx, source, target, force, streams, opts)
+	if err != nil {
+		return err
+	}
+	if len(approvedSystemReplacements) > 0 {
+		opts.systemReplacementBatch = approvedSystemReplacements
+	}
 	for _, imported := range source.Items {
 		name := imported.Metadata.Name
 		if err := validateKnownDriver(imported); err != nil {
@@ -236,12 +251,13 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 			if existing == nil {
 				mutation, err = stageNewConnectionService(ctx, copy, target.Path(), opts)
 			} else {
-				mutation, err = stageUpdatedConnectionService(ctx, cloneConnection(*existing), copy, target.Path(), opts)
+				mutation, err = stageUpdatedConnectionService(ctx, cloneConnection(*existing), copy, target.Path(), opts, streams)
 			}
 			if err != nil {
-				results = append(results, failedImportItem(name, "service_update_failed", err))
+				results = append(results, failedImportItem(name, serviceOperationErrorCode(err, "service_update_failed"), err))
 				continue
 			}
+			sourceConditions = append(sourceConditions, mutation.conditions...)
 		}
 		applyErr := target.Update(ctx, func(current *configstore.Document) error {
 			currentIndex, currentExisting := configstore.Find(current, name)
@@ -309,6 +325,118 @@ func importConnections(ctx context.Context, args []string, streams IO, opts opti
 		results = append(results, itemResult{Connection: name, Outcome: outcome})
 	}
 	return renderImportResult(streams, opts, sourcePath, sourceFormat, sourceConditions, results)
+}
+
+type plannedSystemReplacement struct {
+	name      string
+	reference service.Reference
+	artifact  service.Artifact
+}
+
+type systemReplacementCandidate struct {
+	existing core.Connection
+	imported core.Connection
+	record   service.Record
+}
+
+func preflightImportSystemReplacements(
+	ctx context.Context,
+	source configstore.Document,
+	target *configstore.Store,
+	force bool,
+	streams IO,
+	opts options,
+) (map[string]bool, error) {
+	if !force {
+		return map[string]bool{}, nil
+	}
+	document, err := target.Load()
+	if err != nil {
+		return nil, err
+	}
+	records, err := serviceRecordStore()
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]systemReplacementCandidate, 0)
+	for _, imported := range source.Items {
+		_, existing := configstore.Find(&document, imported.Metadata.Name)
+		if existing == nil || existing.Spec.Driver != sshdriver.ID || imported.Spec.Driver != sshdriver.ID {
+			continue
+		}
+		record, exists, err := records.Load(imported.Metadata.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !exists || service.NormalizeScope(record.Scope) != service.ScopeSystem || record.Mode != service.ModePersistent {
+			continue
+		}
+		if err := ensureDeclarationOwner(record, target.Path()); err != nil {
+			return nil, err
+		}
+		newPlan, err := serviceExecutionPlan(ctx, imported)
+		if err != nil {
+			return nil, err
+		}
+		newDigest, err := service.PlanDigest(newPlan)
+		if err != nil {
+			return nil, err
+		}
+		if record.PlanDigest == newDigest {
+			continue
+		}
+		candidates = append(candidates, systemReplacementCandidate{
+			existing: cloneConnection(*existing), imported: cloneConnection(imported), record: record,
+		})
+	}
+	if len(candidates) == 0 {
+		return map[string]bool{}, nil
+	}
+	adapter, err := opts.newServiceAdapter()
+	if err != nil {
+		return nil, err
+	}
+	planned := make([]plannedSystemReplacement, 0, len(candidates))
+	for _, candidate := range candidates {
+		oldArtifact, err := buildBoundServiceArtifact(ctx, adapter, candidate.existing, &candidate.record)
+		if err != nil {
+			return nil, err
+		}
+		newArtifact, err := buildBoundServiceArtifact(ctx, adapter, candidate.imported, &candidate.record)
+		if err != nil {
+			return nil, err
+		}
+		if oldArtifact.PlanDigest == newArtifact.PlanDigest {
+			continue
+		}
+		if state := service.Evaluate(ctx, adapter, candidate.record, &oldArtifact); state.ConsistencyState != service.ConsistencyConsistent {
+			return nil, stateConflictError("connection has drifted; resolve it before importing configuration")
+		}
+		if err := service.CheckDefinitionReplace(ctx, adapter, candidate.record.Reference(), newArtifact); err != nil {
+			return nil, err
+		}
+		planned = append(planned, plannedSystemReplacement{
+			name: candidate.imported.Metadata.Name, reference: candidate.record.Reference(), artifact: newArtifact,
+		})
+	}
+	if len(planned) == 0 {
+		return map[string]bool{}, nil
+	}
+	if !opts.NonInteractive {
+		if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{connections: len(planned)}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range planned {
+		if err := service.PreflightDefinitionReplace(ctx, adapter, item.reference, item.artifact); err != nil {
+			return nil, err
+		}
+	}
+	approved := make(map[string]bool, len(planned))
+	for _, item := range planned {
+		approved[item.name] = true
+	}
+	return approved, nil
 }
 
 func loadImportDocument(path string) (configstore.Document, string, []core.Condition, error) {
@@ -423,11 +551,16 @@ func renderDeclarationWrite(streams IO, opts options, outcome, path string, coun
 func renderImportResult(streams IO, opts options, source, sourceFormat string, conditions []core.Condition, results []itemResult) error {
 	failed := 0
 	applied := 0
+	interactionFailuresOnly := len(results) > 0
 	for _, result := range results {
 		if result.Outcome == "failed" {
 			failed++
+			if result.Code != "privilege_required" && result.Code != "interaction_required" {
+				interactionFailuresOnly = false
+			}
 		} else {
 			applied++
+			interactionFailuresOnly = false
 		}
 	}
 	outcome := "applied"
@@ -466,6 +599,9 @@ func renderImportResult(streams IO, opts options, source, sourceFormat string, c
 		return renderedExit(exitPartial)
 	}
 	if failed > 0 {
+		if interactionFailuresOnly {
+			return renderedExit(4)
+		}
 		return renderedExit(1)
 	}
 	return nil

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,9 @@ const (
 	launchctlProgram = "/bin/launchctl"
 	installProgram   = "/usr/bin/install"
 	removeProgram    = "/bin/rm"
+	stdinPath        = "/dev/stdin"
+	psProgram        = "/bin/ps"
+	killProgram      = "/bin/kill"
 	trueProgram      = "/usr/bin/true"
 )
 
@@ -151,6 +155,9 @@ func (l *Launchd) build(artifact Artifact, executionPlan plan.ExecutionPlan) (Ar
 	artifact.Plan = executionPlan
 	artifact.PlanDigest = digest
 	if artifact.Scope == ScopeSystem {
+		if err := l.validateSystemArtifact(artifact); err != nil {
+			return Artifact{}, err
+		}
 		if l.userName == "" || l.userName == "root" || l.uid <= 0 {
 			return Artifact{}, &UnsupportedScopeError{Adapter: l.Name(), Scope: ScopeSystem}
 		}
@@ -363,6 +370,14 @@ func (l *Launchd) install(ctx context.Context, artifact Artifact) ([]byte, bool,
 	if err := l.validateSystemArtifact(artifact); err != nil {
 		return nil, false, err
 	}
+	if err := l.validateManagedSystemDefinition(artifact, artifact.Content); err != nil {
+		return nil, false, err
+	}
+	if existed {
+		if err := l.validateManagedSystemDefinition(artifact, previous); err != nil {
+			return nil, false, fmt.Errorf("refuse to replace untrusted system launchd definition: %w", err)
+		}
+	}
 	if err := l.installSystemArtifact(ctx, artifact.Path, artifact.Content); err != nil {
 		return nil, false, err
 	}
@@ -380,30 +395,9 @@ func (l *Launchd) restore(ctx context.Context, artifact Artifact, previous []byt
 }
 
 func (l *Launchd) installSystemArtifact(ctx context.Context, destination string, content []byte) error {
-	temporary, err := os.CreateTemp("", ".tunlite-launchd-*.plist")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(content); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	_, err = l.runner.Run(ctx, MacOSSudoProgram, []string{
-		"-n", "--", installProgram, "-S", "-o", "root", "-g", "wheel", "-m", "0644", temporaryPath, destination,
-	}, Streams{})
+	_, err := l.runner.Run(ctx, MacOSSudoProgram, []string{
+		"-n", "--", installProgram, "-S", "-o", "root", "-g", "wheel", "-m", "0644", stdinPath, destination,
+	}, Streams{In: bytes.NewReader(content)})
 	if err != nil {
 		return &PrivilegeError{Operation: "install system launchd service", Cause: err}
 	}
@@ -417,7 +411,14 @@ func (l *Launchd) removeArtifact(ctx context.Context, artifact Artifact) error {
 	if err := l.validateSystemArtifact(artifact); err != nil {
 		return err
 	}
-	_, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", removeProgram, "-f", artifact.Path}, Streams{})
+	content, err := os.ReadFile(artifact.Path)
+	if err != nil {
+		return err
+	}
+	if err := l.validateManagedSystemDefinition(artifact, content); err != nil {
+		return fmt.Errorf("refuse to remove untrusted system launchd definition: %w", err)
+	}
+	_, err = l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", removeProgram, "-f", artifact.Path}, Streams{})
 	if err != nil {
 		return &PrivilegeError{Operation: "remove system launchd service", Cause: err}
 	}
@@ -425,10 +426,36 @@ func (l *Launchd) removeArtifact(ctx context.Context, artifact Artifact) error {
 }
 
 func (l *Launchd) validateSystemArtifact(artifact Artifact) error {
-	directory := filepath.Clean(l.daemonDir)
-	path := filepath.Clean(artifact.Path)
-	if directory == "." || directory == "" || filepath.Dir(path) != directory || filepath.Ext(path) != ".plist" {
-		return fmt.Errorf("system launchd artifact path %q is outside %s", artifact.Path, l.daemonDir)
+	if NormalizeScope(artifact.Scope) != ScopeSystem {
+		return errors.New("system launchd artifact validation requires system scope")
+	}
+	if err := validateLaunchdDemandIdentity(artifact.Connection, ScopeSystem); err != nil {
+		return err
+	}
+	canonical := l.rawTarget(ScopeSystem, artifact.Connection)
+	if artifact.UnitName != canonical.UnitName {
+		return fmt.Errorf("system launchd unit %q is not canonical for connection %q", artifact.UnitName, artifact.Connection)
+	}
+	if filepath.Clean(artifact.Path) != filepath.Clean(canonical.Path) || artifact.Path != canonical.Path {
+		return fmt.Errorf("system launchd artifact path %q is not canonical path %q", artifact.Path, canonical.Path)
+	}
+	return nil
+}
+
+func (l *Launchd) validateManagedSystemDefinition(artifact Artifact, content []byte) error {
+	if err := l.validateSystemArtifact(artifact); err != nil {
+		return err
+	}
+	embedded := embeddedPlanFromText(string(content), "<!-- "+embeddedPlanPrefix)
+	if strings.TrimSpace(strings.TrimSuffix(embedded, "-->")) == "" {
+		return errors.New("system launchd definition has no controlled embedded execution plan")
+	}
+	_, label, _, err := parseLaunchdManagedPlan(content, l.logDir, ScopeSystem, l.userName)
+	if err != nil {
+		return err
+	}
+	if label != artifact.UnitName {
+		return fmt.Errorf("system launchd definition label %q does not match canonical identity %q", label, artifact.UnitName)
 	}
 	return nil
 }
@@ -470,12 +497,22 @@ func (l *Launchd) Remove(ctx context.Context, reference Reference) error {
 		return err
 	}
 	target := l.resolve(reference)
+	if NormalizeScope(target.Scope) == ScopeSystem {
+		if err := l.validateSystemArtifact(target); err != nil {
+			return err
+		}
+	}
 	// Scope transitions intentionally have both native definitions staged for
 	// a short window. Snapshot only the definition being removed; the ordinary
 	// public Inspect path continues to reject cross-scope twins.
 	before, err := l.inspectOne(ctx, target)
 	if err != nil {
 		return err
+	}
+	if before.Installed && NormalizeScope(target.Scope) == ScopeSystem {
+		if err := l.validateManagedSystemDefinition(target, before.Artifact); err != nil {
+			return err
+		}
 	}
 	demandWasActive, err := launchdDemandActive(l.logDir, target)
 	if err != nil {
@@ -534,6 +571,121 @@ type launchdScopeInstall struct {
 	launchd   *Launchd
 	target    Artifact
 	committed bool
+}
+
+type launchdDefinitionReplace struct {
+	launchd      *Launchd
+	target       Artifact
+	before       Observation
+	beforeDemand bool
+	committed    bool
+}
+
+func (l *Launchd) CheckDefinitionReplace(ctx context.Context, source Reference, target Artifact) error {
+	if NormalizeScope(source.Scope) != ScopeSystem || NormalizeScope(target.Scope) != ScopeSystem {
+		return errors.New("privileged launchd definition replacement is only valid in system scope")
+	}
+	resolved := l.resolve(source)
+	if resolved.UnitName != target.UnitName || resolved.Connection != target.Connection || filepath.Clean(resolved.Path) != filepath.Clean(target.Path) {
+		return errors.New("launchd definition replacement must preserve native identity")
+	}
+	if err := l.validateSystemArtifact(target); err != nil {
+		return err
+	}
+	if err := l.validateManagedSystemDefinition(target, target.Content); err != nil {
+		return err
+	}
+	before, err := l.inspectOne(ctx, resolved)
+	if err != nil {
+		return err
+	}
+	if !before.Installed {
+		return errors.New("system launchd definition is missing")
+	}
+	if err := l.validateManagedSystemDefinition(resolved, before.Artifact); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (l *Launchd) PreflightDefinitionReplace(ctx context.Context, source Reference, target Artifact) error {
+	if err := l.CheckDefinitionReplace(ctx, source, target); err != nil {
+		return err
+	}
+	if _, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", trueProgram}, Streams{}); err != nil {
+		return &PrivilegeError{Operation: "preflight system launchd definition replacement", Cause: err}
+	}
+	return nil
+}
+
+func (l *Launchd) StageDefinitionReplace(
+	ctx context.Context,
+	source Reference,
+	target Artifact,
+	mode string,
+	verify func(context.Context, Reference) error,
+) (ScopeTransition, error) {
+	if mode != ModePersistent {
+		return nil, errors.New("system launchd definition replacement requires persistent mode")
+	}
+	if err := l.PreflightDefinitionReplace(ctx, source, target); err != nil {
+		return nil, err
+	}
+	resolved := l.resolve(source)
+	before, err := l.inspectOne(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
+	beforeDemand, err := launchdDemandActive(l.logDir, resolved)
+	if err != nil {
+		return nil, err
+	}
+	transaction := &launchdDefinitionReplace{launchd: l, target: target, before: before, beforeDemand: beforeDemand}
+	rollback := func(cause error) (ScopeTransition, error) {
+		recoveryCtx, cancel := scopeCompensationContext(ctx)
+		defer cancel()
+		if recoveryErr := transaction.Rollback(recoveryCtx); recoveryErr != nil {
+			return nil, &RecoveryBlockedError{Operation: "replace system launchd definition", Cause: cause, Recovery: recoveryErr}
+		}
+		return nil, cause
+	}
+	if _, _, err := l.install(ctx, target); err != nil {
+		return rollback(err)
+	}
+	output, err := l.runMutation(ctx, ScopeSystem, "bootout", l.domainTarget(ScopeSystem, target.UnitName))
+	if err != nil && !missingService(output) {
+		return rollback(err)
+	}
+	if err := setLaunchdDemand(l.logDir, target, true); err != nil {
+		return rollback(err)
+	}
+	if _, err := l.runMutation(ctx, ScopeSystem, "enable", l.domainTarget(ScopeSystem, target.UnitName)); err != nil {
+		return rollback(err)
+	}
+	if err := l.bootstrapOrKickstart(ctx, target, false); err != nil {
+		return rollback(err)
+	}
+	if err := l.observeTransitionTarget(ctx, target, verify); err != nil {
+		return rollback(err)
+	}
+	return transaction, nil
+}
+
+func (t *launchdDefinitionReplace) Commit(context.Context) error {
+	t.committed = true
+	return nil
+}
+
+func (t *launchdDefinitionReplace) Rollback(ctx context.Context) error {
+	if t.committed {
+		return errors.New("launchd definition replacement is already committed")
+	}
+	previous := t.target
+	previous.Content = append([]byte(nil), t.before.Artifact...)
+	_, _, installErr := t.launchd.install(ctx, previous)
+	restoreErr := t.launchd.restoreObservation(ctx, previous, t.before)
+	demandErr := restoreLaunchdDemand(t.launchd.logDir, previous, t.beforeDemand)
+	return errors.Join(installErr, restoreErr, demandErr)
 }
 
 func (l *Launchd) CheckScopeInstall(ctx context.Context, target Artifact) error {
@@ -876,6 +1028,9 @@ func (l *Launchd) Start(ctx context.Context, reference Reference) error {
 	if err := l.ensureScopeAvailable(reference.Scope); err != nil {
 		return err
 	}
+	if NormalizeScope(reference.Scope) == ScopeSystem {
+		return errors.New("system launchd services cannot run in temporary background mode; use enable")
+	}
 	target := l.resolve(reference)
 	before, err := l.Inspect(ctx, reference)
 	if err != nil {
@@ -909,6 +1064,9 @@ func (l *Launchd) Stop(ctx context.Context, reference Reference) error {
 	if err := l.ensureScopeAvailable(reference.Scope); err != nil {
 		return err
 	}
+	if NormalizeScope(reference.Scope) == ScopeSystem {
+		return errors.New("system launchd services are persistent; use disable to stop and unregister them")
+	}
 	target := l.resolve(reference)
 	before, err := l.Inspect(ctx, reference)
 	if err != nil {
@@ -937,6 +1095,9 @@ func (l *Launchd) Stop(ctx context.Context, reference Reference) error {
 func (l *Launchd) Restart(ctx context.Context, reference Reference) error {
 	if err := l.ensureScopeAvailable(reference.Scope); err != nil {
 		return err
+	}
+	if NormalizeScope(reference.Scope) == ScopeSystem {
+		return l.restartSystemPersistent(ctx, reference)
 	}
 	target := l.resolve(reference)
 	before, err := l.Inspect(ctx, reference)
@@ -969,6 +1130,173 @@ func (l *Launchd) Restart(ctx context.Context, reference Reference) error {
 		}
 	}
 	return nil
+}
+
+// restartSystemPersistent deliberately does not mutate the system launchd
+// domain. A system service is restarted by terminating the verified non-root
+// provider and allowing its already-registered KeepAlive policy to replace it.
+// Every check happens before the signal, and there is no privileged fallback.
+func (l *Launchd) restartSystemPersistent(ctx context.Context, reference Reference) error {
+	target := l.resolve(reference)
+	if err := l.validateSystemArtifact(target); err != nil {
+		return err
+	}
+	before, expectedPlan, oldPID, err := l.verifySystemRestartTarget(ctx, reference, target, 0)
+	if err != nil {
+		return err
+	}
+	if before.ProcessState != ProcessRunning || !before.AutoStart {
+		return errors.New("system launchd service is not a running persistent job")
+	}
+	// Close the easy PID-reuse/job-replacement window by checking launchd and
+	// the process identity a second time immediately before sending SIGTERM.
+	if _, _, confirmedPID, err := l.verifySystemRestartTarget(ctx, reference, target, oldPID); err != nil {
+		return err
+	} else if confirmedPID != oldPID {
+		return errors.New("system launchd provider PID changed during restart verification")
+	}
+	if _, err := l.runner.Run(ctx, killProgram, []string{"-TERM", strconv.Itoa(oldPID)}, Streams{}); err != nil {
+		return fmt.Errorf("terminate verified system launchd provider pid %d: %w", oldPID, err)
+	}
+	return l.waitForSystemRestart(ctx, reference, target, expectedPlan, oldPID)
+}
+
+func (l *Launchd) verifySystemRestartTarget(
+	ctx context.Context,
+	reference Reference,
+	target Artifact,
+	requirePID int,
+) (Observation, plan.ExecutionPlan, int, error) {
+	if l.userName == "" || l.userName == "root" || l.uid <= 0 {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd provider is not configured to run as the current non-root user")
+	}
+	if reference.BaselineDigest == "" || reference.PlanDigest == "" {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd restart requires a recorded definition and execution-plan baseline")
+	}
+	if target.UnitName == "" || target.UnitName != "dev.tunlite.connection."+target.Connection {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd native identity does not match the managed connection")
+	}
+	observation, err := l.inspectOne(ctx, target)
+	if err != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, err
+	}
+	if !observation.Installed || len(observation.Artifact) == 0 {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd definition is missing")
+	}
+	if ContentDigest(observation.Artifact) != reference.BaselineDigest {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd definition drifted from the recorded baseline")
+	}
+	expectedPlan, label, _, err := parseLaunchdManagedPlan(observation.Artifact, l.logDir, ScopeSystem, l.userName)
+	if err != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, fmt.Errorf("validate system launchd definition: %w", err)
+	}
+	if label != target.UnitName {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd definition label does not match its native identity")
+	}
+	if digest, digestErr := PlanDigest(expectedPlan); digestErr != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, digestErr
+	} else if digest != reference.PlanDigest {
+		return Observation{}, plan.ExecutionPlan{}, 0, fmt.Errorf("system launchd execution plan drifted from the recorded baseline (%s != %s)", digest, reference.PlanDigest)
+	}
+	demand, err := launchdDemandActive(l.logDir, target)
+	if err != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, err
+	}
+	if !demand || !observation.AutoStart {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd KeepAlive demand is not active")
+	}
+	pid, err := launchdObservationPID(observation)
+	if err != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, err
+	}
+	if requirePID > 0 && pid != requirePID {
+		return Observation{}, plan.ExecutionPlan{}, 0, errors.New("system launchd provider PID changed during restart verification")
+	}
+	if path := observation.Platform["path"]; path != target.Path {
+		return Observation{}, plan.ExecutionPlan{}, 0, fmt.Errorf("system launchd job path %q does not match managed definition %q", path, target.Path)
+	}
+	if program := observation.Platform["program"]; program != expectedPlan.Exec.Program {
+		return Observation{}, plan.ExecutionPlan{}, 0, fmt.Errorf("system launchd job program %q does not match expected provider %q", program, expectedPlan.Exec.Program)
+	}
+	if err := l.verifyProviderProcess(ctx, pid, expectedPlan.Exec.Program); err != nil {
+		return Observation{}, plan.ExecutionPlan{}, 0, err
+	}
+	return observation, expectedPlan, pid, nil
+}
+
+func (l *Launchd) verifyProviderProcess(ctx context.Context, pid int, expectedProgram string) error {
+	output, err := l.runner.Run(ctx, psProgram, []string{"-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm="}, Streams{})
+	if err != nil {
+		return fmt.Errorf("inspect system launchd provider pid %d: %w", pid, err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 {
+		return fmt.Errorf("cannot prove identity of system launchd provider pid %d", pid)
+	}
+	uid, err := strconv.Atoi(fields[0])
+	if err != nil || uid != l.uid || uid == 0 {
+		return fmt.Errorf("system launchd provider pid %d is not owned by the configured non-root user", pid)
+	}
+	if filepath.Clean(fields[1]) != filepath.Clean(expectedProgram) {
+		return fmt.Errorf("system launchd provider pid %d executable %q does not match %q", pid, fields[1], expectedProgram)
+	}
+	return nil
+}
+
+func (l *Launchd) waitForSystemRestart(ctx context.Context, reference Reference, target Artifact, expected plan.ExecutionPlan, oldPID int) error {
+	timeout, poll := l.transitionTimeout, l.transitionPoll
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if poll <= 0 {
+		poll = 100 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		observation, _, pid, err := l.verifySystemRestartTarget(ctx, reference, target, 0)
+		if err == nil && observation.ProcessState == ProcessRunning && pid != oldPID {
+			if healthErr := verifyExecutionPlanHealth(ctx, expected); healthErr == nil {
+				return nil
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("system launchd KeepAlive did not converge on a healthy replacement for pid %d within %s", oldPID, timeout)
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func verifyExecutionPlanHealth(ctx context.Context, value plan.ExecutionPlan) error {
+	for _, check := range value.HealthChecks {
+		probeCtx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutMS)*time.Millisecond)
+		connection, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", check.Address)
+		cancel()
+		if err != nil {
+			return err
+		}
+		_ = connection.Close()
+	}
+	return nil
+}
+
+func launchdObservationPID(observation Observation) (int, error) {
+	raw, _ := observation.Platform["pid"].(string)
+	pid, err := strconv.Atoi(raw)
+	if err != nil || pid <= 0 || observation.ProcessState != ProcessRunning {
+		return 0, errors.New("system launchd job has no stable running provider PID")
+	}
+	return pid, nil
 }
 
 func (l *Launchd) Enable(ctx context.Context, reference Reference) error {
@@ -1008,6 +1336,12 @@ func (l *Launchd) Disable(ctx context.Context, reference Reference) error {
 	if err := l.ensureScopeAvailable(reference.Scope); err != nil {
 		return err
 	}
+	if NormalizeScope(reference.Scope) == ScopeSystem {
+		// Remove performs disable + bootout + root-owned artifact removal as one
+		// rollback-capable adapter transaction. The user-level Record is retained
+		// by the application so the system scope intent can be enabled again.
+		return l.Remove(ctx, reference)
+	}
 	target := l.resolve(reference)
 	before, err := l.Inspect(ctx, reference)
 	if err != nil {
@@ -1022,6 +1356,32 @@ func (l *Launchd) Disable(ctx context.Context, reference Reference) error {
 	output, err := l.runMutation(ctx, target.Scope, "bootout", l.domainTarget(target.Scope, target.UnitName))
 	if err != nil && !missingService(output) {
 		return errors.Join(err, l.restoreObservation(ctx, target, before))
+	}
+	return nil
+}
+
+func (l *Launchd) PreflightDisable(ctx context.Context, reference Reference) error {
+	if err := l.ensureScopeAvailable(reference.Scope); err != nil {
+		return err
+	}
+	if NormalizeScope(reference.Scope) != ScopeSystem {
+		return nil
+	}
+	target := l.resolve(reference)
+	if err := l.validateSystemArtifact(target); err != nil {
+		return err
+	}
+	observation, err := l.inspectOne(ctx, target)
+	if err != nil {
+		return err
+	}
+	if observation.Installed {
+		if err := l.validateManagedSystemDefinition(target, observation.Artifact); err != nil {
+			return err
+		}
+	}
+	if _, err := l.runner.Run(ctx, MacOSSudoProgram, []string{"-n", "--", trueProgram}, Streams{}); err != nil {
+		return &PrivilegeError{Operation: "preflight system launchd disable", Cause: err}
 	}
 	return nil
 }
@@ -1236,6 +1596,20 @@ func (l *Launchd) inspectOne(ctx context.Context, target Artifact) (Observation,
 			observation.ProcessState = ProcessInactive
 		}
 	}
+	if observation.ProcessState == ProcessRunning {
+		if pid, parseErr := strconv.Atoi(properties["pid"]); parseErr == nil && pid > 0 {
+			queryCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+			startedOutput, queryErr := l.runner.Run(queryCtx, psProgram,
+				[]string{"-p", strconv.Itoa(pid), "-o", "lstart="}, Streams{})
+			cancel()
+			if queryErr == nil {
+				raw := strings.TrimSpace(string(startedOutput))
+				if started, parseErr := time.ParseInLocation("Mon Jan _2 15:04:05 2006", raw, time.Local); parseErr == nil {
+					observation.Platform["activeEnterTimestamp"] = started.Format(time.RFC3339)
+				}
+			}
+		}
+	}
 	return observation, nil
 }
 
@@ -1400,6 +1774,30 @@ func (l *Launchd) discoverDirectory(ctx context.Context, scope Scope, directory 
 
 func parseLaunchdExecutionPlan(raw []byte) (plan.ExecutionPlan, string, []string, error) {
 	return parseLaunchdExecutionPlanControlled(raw, "", ScopeUser, "")
+}
+
+func parseLaunchdManagedPlan(raw []byte, controlledLogDir string, actualScope Scope, configuredUserName string) (plan.ExecutionPlan, string, []string, error) {
+	value, label, logs, err := parseLaunchdExecutionPlanControlled(raw, controlledLogDir, actualScope, configuredUserName)
+	if err != nil {
+		return plan.ExecutionPlan{}, "", nil, err
+	}
+	embedded := embeddedPlanFromText(string(raw), "<!-- "+embeddedPlanPrefix)
+	embedded = strings.TrimSpace(strings.TrimSuffix(embedded, "-->"))
+	if embedded == "" {
+		return value, label, logs, nil
+	}
+	embeddedValue, err := decodeEmbeddedPlan(embedded)
+	if err != nil {
+		return plan.ExecutionPlan{}, "", nil, err
+	}
+	if _, err = mergeEmbeddedPlan(value, embeddedValue); err != nil {
+		return plan.ExecutionPlan{}, "", nil, err
+	}
+	// The embedded plan is the exact canonical value whose digest is recorded;
+	// the native parse above has already proved it cannot override executable
+	// or lifecycle fields. Returning it preserves nil/empty representation for
+	// a stable digest while retaining the native definition as authority.
+	return embeddedValue, label, logs, nil
 }
 
 func parseLaunchdExecutionPlanControlled(raw []byte, controlledLogDir string, actualScope Scope, configuredUserName string) (plan.ExecutionPlan, string, []string, error) {
@@ -1683,6 +2081,10 @@ func parseLaunchdProperties(output []byte) map[string]string {
 			result["state"] = value
 		case "pid":
 			result["pid"] = value
+		case "path":
+			result["path"] = value
+		case "program":
+			result["program"] = value
 		case "last exit code":
 			result["lastExitCode"] = value
 		case "runs":

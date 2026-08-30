@@ -206,6 +206,12 @@ func TestMonitorPersistentStopAndRestartExplainTheirDifferentEffects(t *testing.
 	if !strings.Contains(restart, "连接会短暂中断") || !strings.Contains(restart, "自动启动设置不变") {
 		t.Fatalf("restart warning is incomplete: %q", restart)
 	}
+	systemStop := monitorConfirmationText(monitorConfirmation{
+		key: monitorStop, name: "db", persistent: true, system: true,
+	}, languageChinese)
+	if !strings.Contains(systemStop, "管理员授权") || !strings.Contains(systemStop, "解除系统服务") {
+		t.Fatalf("system persistent stop did not explain authorization: %q", systemStop)
+	}
 }
 
 func TestNarrowMonitorKeepsPIDUptimeAndRestartCount(t *testing.T) {
@@ -405,6 +411,97 @@ func TestScopeMigrationProgressIsLocalizedAndJSONSafe(t *testing.T) {
 	}
 }
 
+func TestRunningWithoutHealthEvidenceIsNotReportedHealthy(t *testing.T) {
+	row := fixtureStatusRow(t)
+	row.state.Health = service.HealthUnknown
+
+	english := displayState(row.state, languageEnglish)
+	if english.color != ansiYellow || !strings.Contains(english.label, "health unverified") || english.label == "running" {
+		t.Fatalf("unknown health was overclaimed: %#v", english)
+	}
+	chinese := displayState(row.state, languageChinese)
+	if chinese.color != ansiYellow || !strings.Contains(chinese.label, "健康未验证") || strings.Contains(chinese.label, "正常运行") {
+		t.Fatalf("Chinese unknown health was overclaimed: %#v", chinese)
+	}
+}
+
+func TestHumanStatusDoesNotInventScopeOrRestartCount(t *testing.T) {
+	row := fixtureStatusRow(t)
+	row.state.ServiceState = service.ServiceUnknown
+	row.state.Mode = service.ModeUnknown
+	row.state.Scope = service.ScopeUser // protocol-v1 fallback, not evidence
+	row.state.Platform = nil
+	row.state.Conditions = []core.Condition{{Code: "status_observation_timeout"}}
+
+	if got := statusScope(row, languageEnglish); got != "—" {
+		t.Fatalf("scope=%q want em dash", got)
+	}
+	if got := statusScope(row, languageChinese); got != "未知" {
+		t.Fatalf("Chinese scope=%q want 未知", got)
+	}
+	if got := statusRestarts(row); got != "—" {
+		t.Fatalf("restarts=%q want unknown", got)
+	}
+}
+
+func TestStatusDetailSeparatesRuntimeDimensionsAndDesiredActualMode(t *testing.T) {
+	row := fixtureStatusRow(t)
+	row.state.Mode = service.ModePersistent
+	row.state.ConsistencyState = service.ConsistencyDrifted
+	row.state.Conditions = []core.Condition{{
+		Code: "service_mode_drifted", Severity: "warning",
+		Message: "native service mode is stopped but Tunlite recorded persistent",
+	}}
+	text := strings.Join(renderStatusDetail(row, false, languageEnglish), "\n")
+	for _, expected := range []string{"service", "process", "health", "consistency", "desired mode", "persistent", "actual mode", "stopped"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("detail missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestMonitorFailureIsIsolatedToOneRow(t *testing.T) {
+	connection := fixtureStatusRow(t).connection
+	row := monitorFailureRow(connection, &serviceItemError{
+		Code: "service_state_read_failed", Message: "record is unreadable",
+	}, languageChinese)
+	if row.state.ConsistencyState != service.ConsistencyBlocked || row.state.ProcessState != service.ProcessUnknown ||
+		len(row.state.Conditions) != 1 || !strings.Contains(row.state.Conditions[0].Message, "无法读取状态") {
+		t.Fatalf("failure row=%#v", row)
+	}
+	if text := strings.Join(renderMonitorTable([]statusRow{row, fixtureStatusRow(t)}, 0, 0, 2, 80, false, languageChinese), "\n"); strings.Count(text, "db") < 2 || !strings.Contains(text, "需要处理") {
+		t.Fatalf("monitor did not retain rows after isolated failure:\n%s", text)
+	}
+}
+
+func TestVeryNarrowMonitorRetainsRuntimeEvidence(t *testing.T) {
+	text := strings.Join(renderMonitorTable([]statusRow{fixtureStatusRow(t)}, 0, 0, 1, 32, false, languageEnglish), "\n")
+	for _, expected := range []string{"NAME", "ST", "PID", "UP", "RST"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("very narrow monitor dropped %s:\n%s", expected, text)
+		}
+	}
+	for _, hidden := range []string{"HOST", "ROUTE", "AUTOSTART", "SCOPE"} {
+		if strings.Contains(text, hidden) {
+			t.Fatalf("very narrow monitor kept %s:\n%s", hidden, text)
+		}
+	}
+}
+
+func TestBatchProgressUsesTTYStderrAndIsLocalized(t *testing.T) {
+	terminal := true
+	var stderr bytes.Buffer
+	renderBatchProgress(IO{Err: &stderr, Terminal: &terminal}, options{Language: languageChinese}, 2, 5, "Checking db", "正在检查 db")
+	if got := stderr.String(); got != "[2/5] 正在检查 db\n" {
+		t.Fatalf("batch progress=%q", got)
+	}
+	stderr.Reset()
+	renderBatchProgress(IO{Err: &stderr, Terminal: &terminal}, options{JSON: true}, 2, 5, "Checking db", "正在检查 db")
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON progress leaked: %q", stderr.String())
+	}
+}
+
 func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
@@ -426,12 +523,16 @@ func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 }
 
 func TestMonitorRejectsNonInteractiveJSONAndDryRunUse(t *testing.T) {
-	for _, args := range [][]string{{"monitor"}, {"monitor", "--json"}, {"monitor", "--dry-run"}} {
+	tests := []struct {
+		args []string
+		code int
+	}{{[]string{"monitor"}, 4}, {[]string{"monitor", "--non-interactive"}, 4}, {[]string{"monitor", "--json"}, 2}, {[]string{"monitor", "--dry-run"}, 2}}
+	for _, test := range tests {
 		var out, stderr bytes.Buffer
-		code := RunContext(context.Background(), args, IO{Out: &out, Err: &stderr})
+		code := RunContext(context.Background(), test.args, IO{Out: &out, Err: &stderr})
 		message := out.String() + stderr.String()
-		if code != 2 || (!strings.Contains(message, "status --json") && !strings.Contains(message, "does not support --dry-run")) {
-			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", args, code, out.String(), stderr.String())
+		if code != test.code || (!strings.Contains(message, "status --json") && !strings.Contains(message, "does not support --dry-run")) {
+			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", test.args, code, out.String(), stderr.String())
 		}
 	}
 }

@@ -8,6 +8,19 @@
     "protocolVersion": { "const": 1 },
     "outcome": { "enum": ["succeeded", "planned", "applied", "starting", "stopped", "log", "partial", "failed"] },
     "dryRun": { "type": "boolean" },
+    "exitCodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "error", "invalidArguments", "notFound", "interactionRequired", "partial"],
+      "properties": {
+        "success": { "const": 0 },
+        "error": { "const": 1 },
+        "invalidArguments": { "const": 2 },
+        "notFound": { "const": 3 },
+        "interactionRequired": { "const": 4 },
+        "partial": { "const": 5 }
+      }
+    },
     "conditions": {
       "type": "array",
       "items": { "$ref": "#/$defs/condition" }

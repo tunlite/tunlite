@@ -102,6 +102,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 		return err
 	}
 	if command == "status" {
+		renderCommandProgress(streams, opts, append([]string{"status"}, args...))
 		results := collectStatusResults(ctx, adapter, records, targets, config.Path(), defaultStatusObservationBudget())
 		for index := range results {
 			declaration := cloneConnection(targets[index])
@@ -225,17 +226,54 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			return renderServiceResults(streams, opts, command, results)
 		}
 	}
+	if command == "enable" {
+		preflightErr := preflightSystemReenable(ctx, adapter, records, targets, config.Path(), streams, opts)
+		if preflightErr != nil {
+			results := make([]serviceItemResult, 0, len(targets))
+			for _, connection := range targets {
+				results = append(results, failedServiceOperation(connection.Metadata.Name, preflightErr, "scope_transition_failed"))
+			}
+			return renderServiceResults(streams, opts, command, results)
+		}
+	}
+	if command == "disable" {
+		preflightErr := preflightSystemDisable(ctx, adapter, records, targets, config.Path(), streams, opts)
+		if preflightErr != nil {
+			results := make([]serviceItemResult, 0, len(targets))
+			for _, connection := range targets {
+				results = append(results, failedServiceOperation(connection.Metadata.Name, preflightErr, "service_disable_failed"))
+			}
+			return renderServiceResults(streams, opts, command, results)
+		}
+	}
+	renderCommandProgress(streams, opts, append([]string{command}, args...))
 	if command == "start" || command == "enable" || command == "restart" {
 		lifecycleObserverFor(&opts)
 	}
 	results := make([]serviceItemResult, 0, len(targets))
-	for _, connection := range targets {
+	for index, connection := range targets {
+		batchCurrent, total := index+1, len(targets)
+		renderBatchProgress(streams, opts, batchCurrent, total,
+			fmt.Sprintf("%s %q…", strings.ToUpper(command[:1])+command[1:], connection.Metadata.Name),
+			fmt.Sprintf("正在对“%s”执行 %s…", connection.Metadata.Name, command))
+		completeProgress := func(outcome string) {
+			chineseOutcome := map[string]string{
+				"applied": "已完成", "planned": "预演完成", "starting": "启动中", "failed": "失败", "succeeded": "已完成",
+			}[outcome]
+			if chineseOutcome == "" {
+				chineseOutcome = outcome
+			}
+			renderBatchProgress(streams, opts, batchCurrent, total,
+				fmt.Sprintf("%q %s.", connection.Metadata.Name, outcome),
+				fmt.Sprintf("“%s”%s。", connection.Metadata.Name, chineseOutcome))
+		}
 		release := func() {}
 		if !opts.DryRun {
 			var lockErr error
 			release, lockErr = records.Lock(ctx, connection.Metadata.Name)
 			if lockErr != nil {
 				results = append(results, failedServiceItem(connection.Metadata.Name, "service_busy", lockErr, "low", nil))
+				completeProgress("failed")
 				continue
 			}
 		}
@@ -243,12 +281,14 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			release()
 			results = append(results, failedServiceItem(connection.Metadata.Name, "foreground_running",
 				errors.New("connection is running in the foreground; stop that run before changing its lifecycle"), "low", nil))
+			completeProgress("failed")
 			continue
 		}
 		fresh, loadErr := config.Load()
 		if loadErr != nil {
 			release()
 			results = append(results, failedServiceItem(connection.Metadata.Name, "declaration_read_failed", loadErr, "low", nil))
+			completeProgress("failed")
 			continue
 		}
 		_, current := configstore.Find(&fresh, connection.Metadata.Name)
@@ -256,6 +296,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			release()
 			results = append(results, failedServiceItem(connection.Metadata.Name, "not_found",
 				errors.New("connection was removed before the service operation started"), "low", nil))
+			completeProgress("failed")
 			continue
 		}
 		connection = cloneConnection(*current)
@@ -274,8 +315,116 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 		}
 		release()
 		results = append(results, result)
+		completeProgress(result.Outcome)
 	}
 	return renderServiceResults(streams, opts, command, results)
+}
+
+func preflightSystemReenable(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	targets []core.Connection,
+	declarationPath string,
+	streams IO,
+	opts options,
+) error {
+	artifacts := make([]service.Artifact, 0)
+	for _, connection := range targets {
+		record, exists, err := records.Load(connection.Metadata.Name)
+		if err != nil {
+			return err
+		}
+		if !exists || service.NormalizeScope(record.Scope) != service.ScopeSystem || record.Mode != service.ModeStopped {
+			continue
+		}
+		if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+			return err
+		}
+		artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+		if err != nil {
+			return err
+		}
+		observation, err := adapter.Inspect(ctx, record.Reference())
+		if err != nil {
+			return err
+		}
+		if observation.Installed {
+			continue
+		}
+		if err := service.CheckScopeInstall(ctx, adapter, artifact); err != nil {
+			return err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if len(artifacts) == 0 || opts.DryRun {
+		return nil
+	}
+	if !opts.NonInteractive {
+		if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{
+			connections: len(artifacts), installsToSystem: len(artifacts),
+		}); err != nil {
+			return err
+		}
+	}
+	for _, artifact := range artifacts {
+		if err := service.PreflightScopeInstall(ctx, adapter, artifact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func preflightSystemDisable(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	targets []core.Connection,
+	declarationPath string,
+	streams IO,
+	opts options,
+) error {
+	references := make([]service.Reference, 0)
+	for _, connection := range targets {
+		record, exists, err := records.Load(connection.Metadata.Name)
+		if err != nil {
+			return err
+		}
+		if !exists || service.NormalizeScope(record.Scope) != service.ScopeSystem {
+			continue
+		}
+		if err := ensureRecordScopeSupported(adapter, record); err != nil {
+			return err
+		}
+		if err := ensureDeclarationOwner(record, declarationPath); err != nil {
+			return err
+		}
+		if record.Mode == service.ModePersistent {
+			references = append(references, record.Reference())
+			continue
+		}
+		observation, err := adapter.Inspect(ctx, record.Reference())
+		if err != nil {
+			return err
+		}
+		if observation.Installed || observation.AutoStart || observation.ProcessState != service.ProcessInactive {
+			references = append(references, record.Reference())
+		}
+	}
+	if len(references) == 0 || opts.DryRun {
+		return nil
+	}
+	if !opts.NonInteractive {
+		if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{connections: len(references)}); err != nil {
+			return err
+		}
+	}
+	for _, reference := range references {
+		if err := service.PreflightDisable(ctx, adapter, reference); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func renderUnsupportedStatus(_ []string, selection serviceSelection, streams IO, opts options, cause error) error {
@@ -608,6 +757,9 @@ func startService(ctx context.Context, adapter service.Adapter, records *service
 	if record.Mode == service.ModePersistent {
 		return failedServiceItem(connection.Metadata.Name, "persistent_connection", errors.New("connection is persistent; start cannot change it to temporary background mode"), "low", nil)
 	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+		return failedServiceItem(connection.Metadata.Name, "system_scope_requires_enable", errors.New("system-scope connections cannot run temporarily; use enable"), "low", nil)
+	}
 	conditions := []core.Condition{}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
 	if !missing && before.ConsistencyState != service.ConsistencyConsistent {
@@ -655,11 +807,16 @@ func stopService(ctx context.Context, adapter service.Adapter, records *service.
 	if err != nil {
 		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
 	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+		return failedServiceItem(connection.Metadata.Name, "system_scope_requires_enable", errors.New("system-scope connections are persistent; use disable instead of stop"), "low", nil)
+	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
-	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
+	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive &&
+		(service.NormalizeScope(record.Scope) != service.ScopeSystem || before.ServiceState == service.ServiceAbsent) {
 		return succeededServiceItem(connection.Metadata.Name, before)
 	}
-	if before.ConsistencyState != service.ConsistencyConsistent {
+	if before.ConsistencyState != service.ConsistencyConsistent &&
+		!(service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModeStopped) {
 		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before stopping"), "low", resolveActions(connection.Metadata.Name))
 	}
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(artifact)}
@@ -712,6 +869,9 @@ func enableService(
 	}
 	conditions := []core.Condition{}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModeStopped && before.ServiceState == service.ServiceAbsent {
+		return reenableSystemService(ctx, adapter, records, record, artifact, connection.Metadata.Name, before, opts)
+	}
 	if !missing && before.ConsistencyState != service.ConsistencyConsistent {
 		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before enabling"), "low", resolveActions(connection.Metadata.Name))
 	}
@@ -747,6 +907,45 @@ func enableService(
 			errors.Join(disableErr, startErr))
 	}
 	return observeLifecycleResult(ctx, adapter, record, artifact, "enable", result, opts)
+}
+
+func reenableSystemService(
+	ctx context.Context,
+	adapter service.Adapter,
+	records *service.Store,
+	oldRecord service.Record,
+	artifact service.Artifact,
+	connection string,
+	before service.State,
+	opts options,
+) serviceItemResult {
+	result := serviceItemResult{
+		Connection: connection, Outcome: "applied", Changed: true,
+		Conditions: []core.Condition{}, Artifact: artifactResult(artifact),
+	}
+	if opts.DryRun {
+		result.Outcome = "planned"
+		result.State = &before
+		return result
+	}
+	transition, err := service.StageScopeInstall(ctx, adapter, artifact, service.ModePersistent, transitionHealthVerifier(artifact))
+	if err != nil {
+		return failedServiceOperation(connection, err, "scope_transition_failed")
+	}
+	newRecord := updatedRecordForArtifact(oldRecord, artifact, service.ModePersistent)
+	if err := records.Write(ctx, newRecord); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		return failedServiceItemAfterRecovery(connection, "service_state_write_failed", err, transition.Rollback(recoveryCtx))
+	}
+	if err := transition.Commit(ctx); err != nil {
+		recoveryCtx, cancel := compensationContext(ctx)
+		defer cancel()
+		recordErr := records.Write(recoveryCtx, oldRecord)
+		return failedServiceItemAfterRecovery(connection, "scope_transition_failed", err,
+			errors.Join(recordErr, transition.Rollback(recoveryCtx)))
+	}
+	return observeLifecycleResult(ctx, adapter, newRecord, artifact, "enable", result, opts)
 }
 
 func installAndEnableScopedService(
@@ -903,7 +1102,7 @@ func renderScopeChangeProgress(streams IO, opts options, connection, from string
 			}
 		}
 	case "target_ready":
-		fmt.Fprintln(streams.Err, localized(opts.Language, "Target service is healthy; saving the new scope…", "目标服务已就绪，正在保存新的范围…"))
+		fmt.Fprintln(streams.Err, localized(opts.Language, "Target process is stable; saving the new scope…", "目标进程已稳定，正在保存新的范围…"))
 	case "complete":
 		fmt.Fprintln(streams.Err, localized(opts.Language, "Service scope change complete.", "服务范围变更完成。"))
 	}
@@ -924,6 +1123,15 @@ func transitionHealthVerifier(artifact service.Artifact) func(context.Context, s
 	}
 }
 
+func transitionHealthVerifierWithProgress(artifact service.Artifact, streams IO, opts options, connection string) func(context.Context, service.Reference) error {
+	verify := transitionHealthVerifier(artifact)
+	var once sync.Once
+	return func(ctx context.Context, reference service.Reference) error {
+		once.Do(func() { renderSystemDefinitionProgress(streams, opts, connection, "health") })
+		return verify(ctx, reference)
+	}
+}
+
 func disableService(ctx context.Context, adapter service.Adapter, records *service.Store, connection core.Connection, declarationPath string, opts options) serviceItemResult {
 	record, err := loadServiceRecord(records, connection, declarationPath)
 	if err != nil {
@@ -934,13 +1142,24 @@ func disableService(ctx context.Context, adapter service.Adapter, records *servi
 		return failedServiceOperation(connection.Metadata.Name, err, "execution_plan_failed")
 	}
 	before := service.Evaluate(ctx, adapter, record, &artifact)
+	systemScope := service.NormalizeScope(record.Scope) == service.ScopeSystem
 	if record.Mode == service.ModeStopped && before.ProcessState == service.ProcessInactive {
-		return succeededServiceItem(connection.Metadata.Name, before)
+		if !systemScope {
+			return succeededServiceItem(connection.Metadata.Name, before)
+		}
+		observation, inspectErr := adapter.Inspect(ctx, record.Reference())
+		if inspectErr != nil {
+			return failedServiceOperation(connection.Metadata.Name, inspectErr, "service_state_read_failed")
+		}
+		if !observation.Installed && !observation.AutoStart && observation.ProcessState == service.ProcessInactive &&
+			before.ServiceState == service.ServiceAbsent {
+			return succeededServiceItem(connection.Metadata.Name, before)
+		}
 	}
 	if record.Mode == service.ModeBackground {
 		return failedServiceItem(connection.Metadata.Name, "background_connection", errors.New("connection is in background mode; use stop"), "low", nil)
 	}
-	if before.ConsistencyState != service.ConsistencyConsistent {
+	if before.ConsistencyState != service.ConsistencyConsistent && !(systemScope && record.Mode == service.ModeStopped) {
 		return failedServiceItem(connection.Metadata.Name, "connection_drifted", errors.New("connection has drifted; resolve it before disabling"), "low", resolveActions(connection.Metadata.Name))
 	}
 	result := serviceItemResult{Connection: connection.Metadata.Name, Outcome: "applied", Changed: true, Conditions: []core.Condition{}, Artifact: artifactResult(artifact)}
@@ -956,11 +1175,25 @@ func disableService(ctx context.Context, adapter service.Adapter, records *servi
 			applyNativeMode(recoveryCtx, adapter, record.Reference(), record.Mode))
 	}
 	record.Mode = service.ModeStopped
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+		record.ArtifactPath = ""
+	}
 	if err := records.Write(ctx, record); err != nil {
 		recoveryCtx, cancel := compensationContext(ctx)
 		defer cancel()
+		var recoveryErr error
+		if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+			materializeErr := adapter.Materialize(recoveryCtx, artifact)
+			enableErr := error(nil)
+			if materializeErr == nil {
+				enableErr = adapter.Enable(recoveryCtx, record.Reference())
+			}
+			recoveryErr = errors.Join(materializeErr, enableErr)
+		} else {
+			recoveryErr = adapter.Enable(recoveryCtx, record.Reference())
+		}
 		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_state_write_failed", err,
-			adapter.Enable(recoveryCtx, record.Reference()))
+			recoveryErr)
 	}
 	state := service.Evaluate(ctx, adapter, record, &artifact)
 	result.State = &state
@@ -990,6 +1223,12 @@ func restartService(ctx context.Context, adapter service.Adapter, records *servi
 		return result
 	}
 	if err := adapter.Restart(ctx, record.Reference()); err != nil {
+		if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+			// System restart is intentionally a verified, non-privileged KeepAlive
+			// replacement. Never turn a verification/convergence failure into a
+			// privileged Disable/Enable fallback.
+			return failedServiceOperation(connection.Metadata.Name, err, "service_restart_failed")
+		}
 		recoveryCtx, cancel := compensationContext(ctx)
 		defer cancel()
 		return failedServiceItemAfterRecovery(connection.Metadata.Name, "service_restart_failed", err,
@@ -1108,6 +1347,7 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 				Driver: connection.Spec.Driver, Actions: []core.Action{},
 			}},
 		}
+		addRecordIdentity(&state, record)
 		return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
 	}
 	var expected *service.Artifact
@@ -1115,6 +1355,7 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 		expected = &artifact
 	}
 	state := service.Evaluate(ctx, adapter, record, expected)
+	addRecordIdentity(&state, record)
 	if records.RunActive(connection.Metadata.Name) {
 		state.Mode, state.ProcessState = service.ModeForeground, service.ProcessRunning
 	}
@@ -1126,6 +1367,22 @@ func statusService(ctx context.Context, adapter service.Adapter, records *servic
 		})
 	}
 	return serviceItemResult{Connection: connection.Metadata.Name, Outcome: "succeeded", Changed: false, State: &state, Conditions: []core.Condition{}}
+}
+
+func addRecordIdentity(state *service.State, record service.Record) {
+	if state.Platform == nil {
+		state.Platform = map[string]any{}
+	}
+	serviceKey := record.ServiceKey
+	if serviceKey == "" {
+		serviceKey = record.Connection
+	}
+	state.Platform["serviceKey"] = serviceKey
+	state.Platform["unitName"] = record.UnitName
+	state.Platform["nativeIdentity"] = record.UnitName
+	if state.Platform["nativeIdentity"] == "" {
+		state.Platform["nativeIdentity"] = serviceKey
+	}
 }
 
 func nativeStatusErrorCondition(err error, connection, adapter string) core.Condition {
@@ -1263,13 +1520,19 @@ func failedServiceItemAfterRecovery(connection, code string, cause, recovery err
 
 func renderServiceResults(streams IO, opts options, operation string, results []serviceItemResult) error {
 	failed, succeeded, starting := 0, 0, 0
+	interactionFailuresOnly := len(results) > 0
 	for _, result := range results {
 		if result.Outcome == "failed" {
 			failed++
+			if result.Error == nil || (result.Error.Code != "privilege_required" && result.Error.Code != "interaction_required") {
+				interactionFailuresOnly = false
+			}
 		} else if result.Outcome == "starting" {
 			starting++
+			interactionFailuresOnly = false
 		} else {
 			succeeded++
+			interactionFailuresOnly = false
 		}
 	}
 	outcome := "succeeded"
@@ -1302,7 +1565,11 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 				fmt.Fprintf(streams.Err, "%s: failed: %s\n", result.Connection, result.Error.Message)
 			}
 		}
-		if len(rows) == 1 && detailed {
+		if len(rows) == 0 {
+			fmt.Fprintln(streams.Out, localized(opts.Language,
+				"No connections yet. Create one with: tunlite add <name> [SSH options] <destination>",
+				"还没有连接。请使用 tunlite add <name> [SSH 选项] <destination> 创建。"))
+		} else if len(rows) == 1 && detailed {
 			for _, line := range renderStatusDetail(rows[0], outputUsesColor(streams, opts), opts.Language) {
 				fmt.Fprintln(streams.Out, line)
 			}
@@ -1338,6 +1605,9 @@ func renderServiceResults(streams IO, opts options, operation string, results []
 		return renderedExit(exitPartial)
 	}
 	if failed > 0 {
+		if interactionFailuresOnly {
+			return renderedExit(4)
+		}
 		return renderedExit(1)
 	}
 	return nil
@@ -1360,6 +1630,7 @@ func serviceLogs(ctx context.Context, args []string, streams IO, opts options) e
 	if flags.NArg() != 0 || lines < 1 || lines > 100000 {
 		return usageError("logs requires --lines between 1 and 100000")
 	}
+	renderCommandProgress(streams, opts, append([]string{"logs", name}, args[1:]...))
 	adapter, records, config, document, err := serviceDependencies(opts)
 	if err != nil {
 		return capabilityError(err.Error())
@@ -1376,6 +1647,11 @@ func serviceLogs(ctx context.Context, args []string, streams IO, opts options) e
 		return err
 	}
 	if opts.JSON && follow {
+		if err := writeResponse(streams.Out, map[string]any{
+			"outcome": "starting", "command": "logs", "connection": name, "stream": "logs",
+		}); err != nil {
+			return err
+		}
 		var lock sync.Mutex
 		stdout := &ndjsonLogWriter{destination: streams.Out, connection: name, stream: "stdout", lock: &lock}
 		stderr := &ndjsonLogWriter{destination: streams.Out, connection: name, stream: "stderr", lock: &lock}
@@ -1394,10 +1670,25 @@ func serviceLogs(ctx context.Context, args []string, streams IO, opts options) e
 	if err := adapter.Logs(ctx, record.Reference(), lines, false, service.Streams{Out: &stdout, Err: &stderr}); err != nil {
 		return err
 	}
-	logs := append(splitLogLines(stdout.String()), splitLogLines(stderr.String())...)
+	logs := append(logRecords("stdout", stdout.String()), logRecords("stderr", stderr.String())...)
 	return writeResponse(streams.Out, map[string]any{
-		"outcome": "succeeded", "connection": name, "logs": logs,
+		"outcome": "succeeded", "command": "logs", "connection": name,
+		"stream": "snapshot", "logs": logs,
 	})
+}
+
+type logRecord struct {
+	Stream string `json:"stream"`
+	Line   string `json:"line"`
+}
+
+func logRecords(stream, value string) []logRecord {
+	lines := splitLogLines(value)
+	result := make([]logRecord, 0, len(lines))
+	for _, line := range lines {
+		result = append(result, logRecord{Stream: stream, Line: line})
+	}
+	return result
 }
 
 type ndjsonLogWriter struct {

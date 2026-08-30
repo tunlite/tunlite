@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,10 +42,11 @@ func (r *launchdScopeRunner) execute(command string, args []string) ([]byte, err
 			return nil, nil
 		case "/usr/bin/install":
 			source, destination := args[len(args)-2], args[len(args)-1]
-			raw, err := os.ReadFile(source)
-			if err == nil {
-				err = os.WriteFile(destination, raw, 0o644)
+			if source != stdinPath {
+				return nil, fmt.Errorf("system install source must be %s, got %s", stdinPath, source)
 			}
+			raw := append([]byte(nil), r.fakeRunner.input...)
+			err := os.WriteFile(destination, raw, 0o644)
 			return nil, err
 		case "/bin/rm":
 			err := os.Remove(args[len(args)-1])
@@ -137,6 +139,320 @@ func newScopedLaunchd(t *testing.T, runner CommandRunner) (*Launchd, string, str
 	adapter.transitionStable = 2 * time.Millisecond
 	adapter.transitionPoll = time.Millisecond
 	return adapter, agents, daemons
+}
+
+type systemRestartRunner struct {
+	fakeRunner
+	target         string
+	path           string
+	program        string
+	uid            int
+	pid            int
+	replacementPID int
+	printCalls     int
+	changePIDAt    int
+	killCalls      int
+	privileged     int
+}
+
+func newSystemRestartRunner() *systemRestartRunner {
+	runner := &systemRestartRunner{program: "/usr/bin/provider", uid: 501, pid: 42, replacementPID: 84}
+	runner.fakeRunner.run = runner.execute
+	return runner
+}
+
+func (r *systemRestartRunner) execute(command string, args []string) ([]byte, error) {
+	if command == MacOSSudoProgram {
+		r.privileged++
+		return nil, errors.New("system restart must not invoke sudo")
+	}
+	if command == launchctlProgram {
+		switch args[0] {
+		case "print-disabled":
+			return []byte(fmt.Sprintf("\"%s\" => false\n", strings.TrimPrefix(r.target, "system/"))), nil
+		case "print":
+			r.printCalls++
+			if r.changePIDAt > 0 && r.printCalls >= r.changePIDAt {
+				r.pid = r.replacementPID
+			}
+			return []byte(fmt.Sprintf("path = %s\nstate = running\nprogram = %s\npid = %d\n", r.path, r.program, r.pid)), nil
+		default:
+			return nil, fmt.Errorf("forbidden launchctl mutation %q", args[0])
+		}
+	}
+	if command == psProgram {
+		return []byte(fmt.Sprintf("%d %s\n", r.uid, r.program)), nil
+	}
+	if command == killProgram {
+		r.killCalls++
+		r.pid = r.replacementPID
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unexpected command %s", command)
+}
+
+func prepareSystemRestart(t *testing.T, mutate func(*systemRestartRunner, *Artifact, *Reference)) (*Launchd, *systemRestartRunner, Artifact, Reference) {
+	t.Helper()
+	runner := newSystemRestartRunner()
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact.Path, artifact.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setLaunchdDemand(adapter.logDir, artifact, true); err != nil {
+		t.Fatal(err)
+	}
+	reference := artifact.Reference()
+	runner.target = adapter.domainTarget(ScopeSystem, artifact.UnitName)
+	runner.path = artifact.Path
+	if mutate != nil {
+		mutate(runner, &artifact, &reference)
+	}
+	return adapter, runner, artifact, reference
+}
+
+func TestLaunchdSystemRestartUsesVerifiedNonPrivilegedKeepAliveReplacement(t *testing.T) {
+	adapter, runner, _, reference := prepareSystemRestart(t, nil)
+	if err := adapter.Restart(context.Background(), reference); err != nil {
+		t.Fatal(err)
+	}
+	if runner.killCalls != 1 || runner.pid != runner.replacementPID || runner.privileged != 0 {
+		t.Fatalf("kill=%d pid=%d privileged=%d calls=%#v", runner.killCalls, runner.pid, runner.privileged, runner.calls)
+	}
+	for _, call := range runner.calls {
+		if call.command == launchctlProgram && len(call.args) > 0 && slices.Contains([]string{"bootout", "bootstrap", "kickstart"}, call.args[0]) {
+			t.Fatalf("system restart mutated launchd domain: %#v", call)
+		}
+	}
+}
+
+func TestLaunchdSystemRestartPreflightFailuresAreZeroChange(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*systemRestartRunner, *Artifact, *Reference)
+	}{
+		{name: "definition baseline drift", mutate: func(_ *systemRestartRunner, _ *Artifact, reference *Reference) {
+			reference.BaselineDigest = "different"
+		}},
+		{name: "native path mismatch", mutate: func(runner *systemRestartRunner, _ *Artifact, _ *Reference) {
+			runner.path += ".foreign"
+		}},
+		{name: "provider mismatch", mutate: func(runner *systemRestartRunner, _ *Artifact, _ *Reference) {
+			runner.program = "/usr/bin/foreign"
+		}},
+		{name: "root provider", mutate: func(runner *systemRestartRunner, _ *Artifact, _ *Reference) {
+			runner.uid = 0
+		}},
+		{name: "pid changed before signal", mutate: func(runner *systemRestartRunner, _ *Artifact, _ *Reference) {
+			runner.changePIDAt = 2
+		}},
+		{name: "keepalive definition drift", mutate: func(_ *systemRestartRunner, artifact *Artifact, reference *Reference) {
+			changed := bytes.Replace(artifact.Content, []byte("<key>KeepAlive</key>"), []byte("<key>KeepAliveChanged</key>"), 1)
+			if err := os.WriteFile(artifact.Path, changed, 0o644); err != nil {
+				panic(err)
+			}
+			reference.BaselineDigest = ContentDigest(changed)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, runner, _, reference := prepareSystemRestart(t, test.mutate)
+			if err := adapter.Restart(context.Background(), reference); err == nil {
+				t.Fatal("unsafe system restart unexpectedly succeeded")
+			}
+			if runner.killCalls != 0 || runner.privileged != 0 {
+				t.Fatalf("preflight failure changed process: kill=%d privileged=%d calls=%#v", runner.killCalls, runner.privileged, runner.calls)
+			}
+		})
+	}
+}
+
+func TestLaunchdSystemDisableDeletesArtifactAndCanBeEnabledAgain(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := StageScopeInstall(context.Background(), adapter, artifact, ModePersistent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transition.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Disable(context.Background(), artifact.Reference()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("system disable retained root artifact: %v", err)
+	}
+	if runner.loaded[adapter.domainTarget(ScopeSystem, artifact.UnitName)] {
+		t.Fatal("system disable retained loaded job")
+	}
+	reenabled, err := StageScopeInstall(context.Background(), adapter, artifact, ModePersistent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reenabled.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact.Path); err != nil {
+		t.Fatalf("system enable did not recreate artifact: %v", err)
+	}
+}
+
+func TestLaunchdSystemDefinitionReplacementCommitsOrRestoresAtomically(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		runner := newLaunchdScopeRunner(t)
+		adapter, _, _ := newScopedLaunchd(t, runner)
+		original, _ := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+		installed, err := StageScopeInstall(context.Background(), adapter, original, ModePersistent, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := installed.Commit(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		changedPlan := testPlan()
+		changedPlan.Exec.Args = append(changedPlan.Exec.Args, "--changed")
+		changed, _ := adapter.BuildScoped(ScopeSystem, "db", changedPlan)
+		replacement, err := StageDefinitionReplace(context.Background(), adapter, original.Reference(), changed, ModePersistent, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := replacement.Commit(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(changed.Path)
+		if err != nil || !bytes.Equal(raw, changed.Content) {
+			t.Fatalf("replacement not committed: err=%v", err)
+		}
+	})
+
+	t.Run("bootstrap failure restores old definition and mode", func(t *testing.T) {
+		runner := newLaunchdScopeRunner(t)
+		adapter, _, _ := newScopedLaunchd(t, runner)
+		original, _ := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+		installed, err := StageScopeInstall(context.Background(), adapter, original, ModePersistent, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := installed.Commit(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		changedPlan := testPlan()
+		changedPlan.Exec.Args = append(changedPlan.Exec.Args, "--changed")
+		changed, _ := adapter.BuildScoped(ScopeSystem, "db", changedPlan)
+		runner.failBootstrap = true
+		if _, err := StageDefinitionReplace(context.Background(), adapter, original.Reference(), changed, ModePersistent, nil); err == nil {
+			t.Fatal("replacement unexpectedly survived bootstrap failure")
+		}
+		raw, err := os.ReadFile(original.Path)
+		if err != nil || !bytes.Equal(raw, original.Content) {
+			t.Fatalf("old definition not restored: err=%v", err)
+		}
+		observation, err := adapter.Inspect(context.Background(), original.Reference())
+		if err != nil || !observation.AutoStart || observation.ProcessState != ProcessRunning {
+			t.Fatalf("old persistent mode not restored: observation=%#v err=%v", observation, err)
+		}
+	})
+}
+
+func TestLaunchdRejectsForgedSystemRecordIdentityBeforeSudoOrProcessMutation(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := StageScopeInstall(context.Background(), adapter, artifact, ModePersistent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installed.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	privilegedBefore := 0
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram {
+			privilegedBefore++
+		}
+	}
+	forged := artifact.Reference()
+	forged.ArtifactPath = filepath.Join(filepath.Dir(artifact.Path), "com.example.victim.plist")
+	forged.UnitName = "com.example.victim"
+	operations := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "build-bound-set-or-resolve", run: func() error {
+			_, err := adapter.BuildBound(forged, testPlan())
+			return err
+		}},
+		{name: "disable", run: func() error { return adapter.Disable(context.Background(), forged) }},
+		{name: "remove", run: func() error { return adapter.Remove(context.Background(), forged) }},
+		{name: "restart", run: func() error { return adapter.Restart(context.Background(), forged) }},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			callsBefore := len(runner.calls)
+			if err := operation.run(); err == nil {
+				t.Fatal("forged system identity unexpectedly accepted")
+			}
+			for _, call := range runner.calls[callsBefore:] {
+				if call.command == MacOSSudoProgram || call.command == killProgram ||
+					(call.command == launchctlProgram && len(call.args) > 0 && slices.Contains([]string{"disable", "enable", "bootout", "bootstrap", "kickstart"}, call.args[0])) {
+					t.Fatalf("forged identity caused mutation: %#v", call)
+				}
+			}
+		})
+	}
+	privilegedAfter := 0
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram {
+			privilegedAfter++
+		}
+	}
+	if privilegedAfter != privilegedBefore {
+		t.Fatalf("forged identity reached sudo: before=%d after=%d", privilegedBefore, privilegedAfter)
+	}
+}
+
+func TestLaunchdSystemInstallStreamsExactDefinitionThroughStdin(t *testing.T) {
+	runner := newLaunchdScopeRunner(t)
+	adapter, _, _ := newScopedLaunchd(t, runner)
+	artifact, err := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := StageScopeInstall(context.Background(), adapter, artifact, ModePersistent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transition.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(artifact.Path)
+	if err != nil || !bytes.Equal(raw, artifact.Content) {
+		t.Fatalf("stdin install changed definition bytes: err=%v", err)
+	}
+	found := false
+	for _, call := range runner.calls {
+		if call.command != MacOSSudoProgram || !slices.Contains(call.args, installProgram) {
+			continue
+		}
+		found = true
+		if len(call.args) < 2 || call.args[len(call.args)-2] != stdinPath || call.args[len(call.args)-1] != artifact.Path {
+			t.Fatalf("unsafe system install arguments: %#v", call.args)
+		}
+	}
+	if !found {
+		t.Fatal("system install did not use the privileged install program")
+	}
 }
 
 func TestLaunchdSystemBuildUsesDaemonPathAndNonRootUser(t *testing.T) {

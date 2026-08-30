@@ -44,6 +44,10 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 	if err != nil {
 		return err
 	}
+	if port != 0 && (port < 1 || port > 65535) {
+		return usageError(fmt.Sprintf("invalid SSH port %d", port))
+	}
+	renderCommandProgress(streams, opts, append([]string{"check", target}, args...))
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -51,9 +55,6 @@ func checkSSH(ctx context.Context, args []string, streams IO, opts options) erro
 	document, err := store.Load()
 	if err != nil {
 		return err
-	}
-	if port != 0 && (port < 1 || port > 65535) {
-		return usageError(fmt.Sprintf("invalid SSH port %d", port))
 	}
 	connection, err := resolveSSHConnection(document, target, port, identity, jump)
 	if err != nil {
@@ -167,6 +168,11 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 	if err != nil {
 		return err
 	}
+	progressArgs := []string{"doctor"}
+	if name != "" {
+		progressArgs = append(progressArgs, name)
+	}
+	renderCommandProgress(streams, opts, progressArgs)
 	store, err := connectionStore(opts)
 	if err != nil {
 		return err
@@ -243,7 +249,8 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 		_ = writeResponse(streams.Out, result)
 	} else if len(conditions) == 0 {
 		glyph, shade := doctorStyle("info")
-		fmt.Fprintf(streams.Out, "%s no connections defined; configuration is valid\n", colorize(glyph, shade, outputUsesColor(streams, opts)))
+		fmt.Fprintf(streams.Out, "%s %s\n", colorize(glyph, shade, outputUsesColor(streams, opts)), localized(opts.Language,
+			"No connections yet; the configuration is valid.", "还没有连接；当前配置有效。"))
 	} else {
 		color := outputUsesColor(streams, opts)
 		counts := map[string]int{}
@@ -252,15 +259,20 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 			counts[item.Severity]++
 			scope := item.Connection
 			if scope == "" {
-				scope = "system"
+				scope = localized(opts.Language, "system", "系统")
 			}
-			fmt.Fprintf(streams.Out, "%s %-16s %s\n", colorize(glyph, shade, color), scope, item.Message)
-			if fix := doctorFix(item); fix != "" {
-				fmt.Fprintln(streams.Out, colorize("    ↳ fix: "+fix, ansiDim, color))
+			fmt.Fprintf(streams.Out, "%s %-16s %s\n", colorize(glyph, shade, color), scope, doctorConditionMessage(item, opts.Language))
+			if fix := doctorFix(item, opts.Language); fix != "" {
+				fmt.Fprintln(streams.Out, colorize("    ↳ "+localized(opts.Language, "fix: ", "处理：")+fix, ansiDim, color))
 			}
 		}
-		fmt.Fprintf(streams.Out, "\n%d checks: %d passed, %d warnings, %d failed\n",
-			len(conditions), counts["info"], counts["warning"], counts["error"])
+		if isChinese(opts.Language) {
+			fmt.Fprintf(streams.Out, "\n共 %d 项检查：%d 项通过，%d 项警告，%d 项失败\n",
+				len(conditions), counts["info"], counts["warning"], counts["error"])
+		} else {
+			fmt.Fprintf(streams.Out, "\n%d checks: %d passed, %d warnings, %d failed\n",
+				len(conditions), counts["info"], counts["warning"], counts["error"])
+		}
 	}
 	if !healthy {
 		return renderedExit(1)
@@ -268,21 +280,75 @@ func doctor(ctx context.Context, args []string, streams IO, opts options) error 
 	return nil
 }
 
-func doctorFix(condition core.Condition) string {
+func doctorFix(condition core.Condition, lang language) string {
 	for _, action := range condition.Actions {
 		switch action.Type {
 		case "setup_ssh_key":
 			target := fmt.Sprint(action.Parameters["host"])
 			if target != "" {
-				return "configure OpenSSH key authentication for " + target
+				return localized(lang, "configure OpenSSH key authentication for ", "为以下主机配置 OpenSSH 密钥认证：") + target
 			}
 		case "repair_configuration":
-			return "inspect " + fmt.Sprint(action.Parameters["path"])
+			return localized(lang, "inspect ", "检查 ") + fmt.Sprint(action.Parameters["path"])
 		case "inspect_local_endpoint":
-			return "free or change local endpoint " + fmt.Sprint(action.Parameters["address"])
+			return localized(lang, "free or change local endpoint ", "释放或更改本地端点 ") + fmt.Sprint(action.Parameters["address"])
 		}
 	}
 	return ""
+}
+
+func doctorConditionMessage(condition core.Condition, lang language) string {
+	if !isChinese(lang) {
+		return condition.Message
+	}
+	detail := func(prefix string) string { return strings.TrimPrefix(condition.Message, prefix) }
+	switch condition.Code {
+	case "config_valid":
+		return "配置有效：" + strings.TrimSuffix(strings.TrimPrefix(condition.Message, "configuration is valid ("), ")")
+	case "config_invalid":
+		return "配置无效。详细信息：" + condition.Message
+	case "ssh_client_found":
+		return "已找到 OpenSSH 客户端：" + detail("OpenSSH client found at ")
+	case "ssh_client_missing", "provider_missing":
+		return "未找到 OpenSSH 客户端。详细信息：" + condition.Message
+	case "ssh_keygen_found":
+		return "已找到 ssh-keygen：" + detail("ssh-keygen found at ")
+	case "ssh_keygen_missing":
+		return "未找到 ssh-keygen；仍可使用现有密钥和 SSH Agent。"
+	case "ssh_identity_found":
+		return "已找到默认 SSH 密钥：" + detail("default SSH identity found at ")
+	case "ssh_agent_found":
+		return "SSH Agent 可用。"
+	case "ssh_identity_unknown":
+		return "未检测到默认 SSH 私钥或 SSH Agent；仍可显式指定密钥文件。"
+	case "native_service_available":
+		return "原生后台服务可用。详细信息：" + condition.Message
+	case "native_service_unavailable":
+		return "原生后台服务不可用。详细信息：" + condition.Message
+	case "endpoint_available":
+		address := strings.TrimSuffix(strings.TrimPrefix(condition.Message, "local endpoint "), " is available")
+		return "本地端点 " + address + " 可用。"
+	case "endpoint_accepting":
+		return "Connection 运行中，本地端点已被占用（符合预期）。详细信息：" + condition.Message
+	case "endpoint_in_use":
+		return "本地端点已被其他进程占用。详细信息：" + condition.Message
+	case "remote_endpoint_not_probed":
+		return "远程端点由 SSH 服务器管理，本机未探测。详细信息：" + condition.Message
+	case "ssh_authentication_succeeded":
+		return "SSH 认证成功。详细信息：" + condition.Message
+	case "ssh_authentication_failed":
+		return "SSH 认证失败。详细信息：" + condition.Message
+	case "ssh_host_key_untrusted":
+		return "SSH 主机密钥尚未受信任。详细信息：" + condition.Message
+	case "ssh_dns_failed":
+		return "SSH 主机名解析失败。详细信息：" + condition.Message
+	case "ssh_unreachable":
+		return "无法连接 SSH 主机。详细信息：" + condition.Message
+	case "ssh_check_timeout":
+		return "SSH 检查超时。详细信息：" + condition.Message
+	default:
+		return "检查结果（" + condition.Code + "）：" + condition.Message
+	}
 }
 
 func doctorEnvironmentConditions(configPath string, configErr error, opts options) []core.Condition {

@@ -74,6 +74,7 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 		}
 		conditions = append(conditions, serviceConditions...)
 		conditions = append(conditions, risks...)
+		renderCommandProgress(streams, opts, append([]string{"add", name}, args[1:]...))
 		return renderConnectionMutationWithConditions(streams, opts, "add", "planned", connection, conditions)
 	}
 	document, err := store.Load()
@@ -83,6 +84,10 @@ func add(ctx context.Context, args []string, streams IO, opts options) error {
 	if _, existing := configstore.Find(&document, name); existing != nil {
 		return conflictError(fmt.Sprintf("a connection named %q already exists", name))
 	}
+	if _, err := previewNewConnectionService(ctx, connection, store.Path(), opts); err != nil {
+		return err
+	}
+	renderCommandProgress(streams, opts, append([]string{"add", name}, args[1:]...))
 	mutation, err := stageNewConnectionService(ctx, connection, store.Path(), opts)
 	if err != nil {
 		return err
@@ -163,7 +168,9 @@ func list(args []string, streams IO, opts options) error {
 		})
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(streams.Out, "no connections defined")
+		fmt.Fprintln(streams.Out, localized(opts.Language,
+			"No connections yet. Create one with: tunlite add <name> [SSH options] <destination>",
+			"还没有连接。请使用 tunlite add <name> [SSH 选项] <destination> 创建。"))
 		return nil
 	}
 	sort.Slice(results, func(i, j int) bool { return connectionLess(results[i], results[j]) })
@@ -235,6 +242,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		if err != nil {
 			return err
 		}
+		conditions = append(conditions, setCollectionReplacementConditions(before, updated, patch)...)
 		riskConditions, err := connectionRiskConditions(ctx, updated, opts.NonInteractive)
 		if err != nil {
 			return err
@@ -245,6 +253,7 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		}
 		conditions = append(conditions, serviceConditions...)
 		conditions = append(conditions, riskConditions...)
+		renderCommandProgress(streams, opts, append([]string{"set", name}, args[1:]...))
 		return renderConnectionMutationWithConditions(streams, opts, "set", "planned", updated, conditions)
 	}
 	before, updated, err := apply(&document)
@@ -256,7 +265,14 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 		return err
 	}
 	conditions = append(conditions, riskConditions...)
-	mutation, err := stageUpdatedConnectionService(ctx, before, updated, store.Path(), opts)
+	conditions = append(conditions, setCollectionReplacementConditions(before, updated, patch)...)
+	serviceConditions, err := previewUpdatedConnectionService(ctx, before, updated, store.Path(), opts)
+	if err != nil {
+		return err
+	}
+	conditions = append(conditions, serviceConditions...)
+	renderCommandProgress(streams, opts, append([]string{"set", name}, args[1:]...))
+	mutation, err := stageUpdatedConnectionService(ctx, before, updated, store.Path(), opts, streams)
 	if err != nil {
 		return err
 	}
@@ -289,6 +305,33 @@ func set(ctx context.Context, args []string, streams IO, opts options) error {
 	}
 	conditions = append(conditions, mutation.conditions...)
 	return renderConnectionMutationWithConditions(streams, opts, "set", "applied", updated, conditions)
+}
+
+func setCollectionReplacementConditions(before, after core.Connection, patch sshdriver.ConfigPatch) []condition {
+	if !patch.ForwardsSet && !patch.SSHOptionsSet {
+		return []condition{}
+	}
+	beforeConfig, beforeErr := sshdriver.DecodeConfig(before.Spec.Config)
+	afterConfig, afterErr := sshdriver.DecodeConfig(after.Spec.Config)
+	if beforeErr != nil || afterErr != nil {
+		return []condition{}
+	}
+	result := make([]condition, 0, 2)
+	if patch.ForwardsSet {
+		result = append(result, condition{
+			Code: "forwards_collection_replaced", Severity: "warning", Connection: before.Metadata.Name,
+			Message: fmt.Sprintf("the complete forwards collection will be replaced (%d before, %d after); omitted forwards will be removed", len(beforeConfig.Forwards), len(afterConfig.Forwards)),
+			Actions: []core.Action{},
+		})
+	}
+	if patch.SSHOptionsSet {
+		result = append(result, condition{
+			Code: "ssh_options_collection_replaced", Severity: "warning", Connection: before.Metadata.Name,
+			Message: fmt.Sprintf("the complete SSH options collection will be replaced (%d before, %d after); omitted options will be removed", len(beforeConfig.SSHOptions), len(afterConfig.SSHOptions)),
+			Actions: []core.Action{},
+		})
+	}
+	return result
 }
 
 func remove(ctx context.Context, args []string, streams IO, opts options) error {
@@ -324,6 +367,7 @@ func remove(ctx context.Context, args []string, streams IO, opts options) error 
 		if err := checkConnectionRemovable(ctx, removed, store.Path(), opts); err != nil {
 			return err
 		}
+		renderCommandProgress(streams, opts, []string{"remove", name})
 		return renderConnectionMutation(streams, opts, "remove", "planned", removed)
 	}
 	document, err := store.Load()
@@ -335,6 +379,10 @@ func remove(ctx context.Context, args []string, streams IO, opts options) error 
 		return notFoundError(fmt.Sprintf("no such connection: %s", name))
 	}
 	removed := cloneConnection(*current)
+	if err := checkConnectionRemovable(ctx, removed, store.Path(), opts); err != nil {
+		return err
+	}
+	renderCommandProgress(streams, opts, []string{"remove", name})
 	mutation, err := stageRemovedConnectionService(ctx, removed, store.Path(), opts)
 	if err != nil {
 		return err
@@ -401,7 +449,12 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 		if err := previewRenamedConnectionService(oldName, newName, store.Path(), opts); err != nil {
 			return err
 		}
-		return renderConnectionMutation(streams, opts, "rename", "planned", updated)
+		identity, err := loadRenameIdentity(oldName)
+		if err != nil {
+			return err
+		}
+		renderCommandProgress(streams, opts, []string{"rename", oldName, newName})
+		return renderRenameResult(streams, opts, "planned", updated, identity)
 	}
 	document, err := store.Load()
 	if err != nil {
@@ -416,6 +469,14 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 	if err != nil {
 		return err
 	}
+	if err := previewRenamedConnectionService(oldName, newName, store.Path(), opts); err != nil {
+		return err
+	}
+	identity, err := loadRenameIdentity(oldName)
+	if err != nil {
+		return err
+	}
+	renderCommandProgress(streams, opts, []string{"rename", oldName, newName})
 	mutation, err := stageRenamedConnectionService(ctx, oldName, newName, store.Path(), opts)
 	if err != nil {
 		return err
@@ -437,7 +498,64 @@ func rename(ctx context.Context, args []string, streams IO, opts options) error 
 	}); err != nil {
 		return mutation.rollbackAfter(classifyConcurrentChange(err))
 	}
-	return renderConnectionMutation(streams, opts, "rename", "applied", updated)
+	return renderRenameResult(streams, opts, "applied", updated, identity)
+}
+
+type renameIdentity struct {
+	NativeIdentity string `json:"nativeIdentity"`
+	ServiceKey     string `json:"serviceKey"`
+	UnitName       string `json:"unitName"`
+}
+
+func loadRenameIdentity(connection string) (renameIdentity, error) {
+	records, err := serviceRecordStore()
+	if err != nil {
+		return renameIdentity{}, err
+	}
+	record, exists, err := records.Load(connection)
+	if err != nil || !exists {
+		return renameIdentity{}, err
+	}
+	serviceKey := record.ServiceKey
+	if serviceKey == "" {
+		serviceKey = record.Connection
+	}
+	nativeIdentity := record.UnitName
+	if nativeIdentity == "" {
+		nativeIdentity = serviceKey
+	}
+	return renameIdentity{NativeIdentity: nativeIdentity, ServiceKey: serviceKey, UnitName: record.UnitName}, nil
+}
+
+func renderRenameResult(streams IO, opts options, outcome string, connection core.Connection, identity renameIdentity) error {
+	if opts.JSON {
+		return writeResponse(streams.Out, map[string]any{
+			"outcome": outcome, "operation": "rename", "connection": connection,
+			"connectionName": connection.Metadata.Name, "nativeIdentity": identity.NativeIdentity,
+			"serviceKey": identity.ServiceKey, "unitName": identity.UnitName,
+			"conditions": []condition{}, "dryRun": opts.DryRun,
+		})
+	}
+	verb := localized(opts.Language, "renamed", "已重命名")
+	if opts.DryRun {
+		verb = localized(opts.Language, "would be renamed", "将重命名")
+	}
+	fmt.Fprintf(streams.Out, "%s %q\n", verb, connection.Metadata.Name)
+	fmt.Fprintf(streams.Out, "  %s  %s\n", localized(opts.Language, "Connection name", "Connection 名称"), connection.Metadata.Name)
+	fmt.Fprintf(streams.Out, "  %s  %s\n", localized(opts.Language, "Native identity", "原生服务标识"), displayIdentityValue(identity.NativeIdentity))
+	fmt.Fprintf(streams.Out, "  %s  %s\n", localized(opts.Language, "Service key", "Service Key"), displayIdentityValue(identity.ServiceKey))
+	fmt.Fprintf(streams.Out, "  %s  %s\n", localized(opts.Language, "Unit name", "Unit 名称"), displayIdentityValue(identity.UnitName))
+	fmt.Fprintln(streams.Out, localized(opts.Language,
+		"  Native identity is unchanged, so the running service is not interrupted.",
+		"  原生服务标识保持不变，因此不会中断正在运行的服务。"))
+	return nil
+}
+
+func displayIdentityValue(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
 }
 
 func renameInWithBefore(document *configstore.Document, oldName, newName string) (core.Connection, core.Connection, error) {
@@ -620,14 +738,47 @@ func renderConnectionMutationWithConditions(streams IO, opts options, operation,
 		"add": "added", "set": "updated", "remove": "removed", "rename": "renamed",
 		"manage": "managed", "unmanage": "unmanaged", "resolve": "resolved",
 	}[operation]
-	if opts.DryRun {
+	if isChinese(opts.Language) {
+		verb = map[string]string{
+			"add": "已添加", "set": "已更新", "remove": "已删除", "rename": "已重命名",
+			"manage": "已接管", "unmanage": "已停止管理", "resolve": "已处理",
+		}[operation]
+		if opts.DryRun {
+			verb = "将" + verb
+		}
+	} else if opts.DryRun {
 		verb = "would be " + verb
 	}
 	fmt.Fprintf(streams.Out, "%s %q\n", verb, connection.Metadata.Name)
 	for _, item := range conditions {
-		fmt.Fprintf(streams.Err, "warning: %s\n", item.Message)
+		fmt.Fprintf(streams.Err, "%s%s\n", localized(opts.Language, "warning: ", "警告："), localizedMutationCondition(item, opts.Language))
 	}
 	return nil
+}
+
+func localizedMutationCondition(item condition, lang language) string {
+	if !isChinese(lang) {
+		return item.Message
+	}
+	switch item.Code {
+	case "connection_restart_required":
+		return "应用该配置时会重启正在运行的原生后台服务。"
+	case "endpoint_conflict":
+		if len(item.Actions) > 0 {
+			endpoint := fmt.Sprint(item.Actions[0].Parameters["endpoint"])
+			other := fmt.Sprint(item.Actions[0].Parameters["otherConnection"])
+			return fmt.Sprintf("端点 %s 也由连接“%s”声明。", endpoint, other)
+		}
+	case "network_exposure":
+		message := strings.TrimPrefix(item.Message, "connection ")
+		message = strings.ReplaceAll(message, "publishes a remote endpoint", "会公开远程端点")
+		message = strings.ReplaceAll(message, "listens outside the loopback interface", "会在非回环网络接口上监听")
+		message = strings.ReplaceAll(message, " and ", "，并且")
+		return "该连接" + message + "。"
+	case "foreground_only":
+		return "当前系统无法提供可用的原生后台服务；该连接只能使用 tunlite run。"
+	}
+	return "" + item.Message
 }
 
 func endpointConflicts(document *configstore.Document, candidate core.Connection) []condition {

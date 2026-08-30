@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,10 +25,15 @@ type runnerCall struct {
 type fakeRunner struct {
 	calls []runnerCall
 	run   func(string, []string) ([]byte, error)
+	input []byte
 }
 
 func (f *fakeRunner) Run(_ context.Context, command string, args []string, streams Streams) ([]byte, error) {
 	f.calls = append(f.calls, runnerCall{command: command, args: append([]string(nil), args...)})
+	f.input = nil
+	if streams.In != nil {
+		f.input, _ = io.ReadAll(streams.In)
+	}
 	var output []byte
 	var err error
 	if f.run != nil {
@@ -247,7 +253,9 @@ func TestLaunchdBackgroundStartLeavesJobDisabledForNextLogin(t *testing.T) {
 	}
 	commands := make([]string, 0, len(runner.calls))
 	for _, call := range runner.calls {
-		commands = append(commands, call.args[0])
+		if call.command == launchctlProgram {
+			commands = append(commands, call.args[0])
+		}
 	}
 	if strings.Join(commands, ",") != "print-disabled,print,enable,bootstrap,kickstart,disable" {
 		t.Fatalf("unexpected launchd background sequence: %v", commands)
@@ -278,7 +286,9 @@ func TestLaunchdEnableRunningBackgroundJobDoesNotRestartIt(t *testing.T) {
 	}
 	commands := make([]string, 0, len(runner.calls))
 	for _, call := range runner.calls {
-		commands = append(commands, call.args[0])
+		if call.command == launchctlProgram {
+			commands = append(commands, call.args[0])
+		}
 	}
 	if strings.Join(commands, ",") != "print-disabled,print,enable" {
 		t.Fatalf("enable restarted a running background job: %v", commands)
@@ -336,6 +346,43 @@ func TestLaunchdInspectTreatsXPCProxyAsStarting(t *testing.T) {
 	}
 	if observation.ProcessState != ProcessStarting {
 		t.Fatalf("xpcproxy state=%q, want %q", observation.ProcessState, ProcessStarting)
+	}
+}
+
+func TestLaunchdInspectReportsRunningPIDStartTimeWithoutPrivilege(t *testing.T) {
+	runner := &fakeRunner{run: func(command string, args []string) ([]byte, error) {
+		if command == launchctlProgram {
+			switch args[0] {
+			case "print-disabled":
+				return nil, nil
+			case "print":
+				return []byte("state = running\npid = 42\n"), nil
+			}
+		}
+		if command == psProgram && slices.Contains(args, "lstart=") {
+			return []byte("Sun Aug 30 12:34:56 2026\n"), nil
+		}
+		return nil, nil
+	}}
+	adapter := NewLaunchd(t.TempDir(), t.TempDir(), 501, runner)
+	artifact, err := adapter.Build("db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact.Path, artifact.Content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.Inspect(context.Background(), artifact.Reference())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Platform["pid"] != "42" || observation.Platform["activeEnterTimestamp"] == "" {
+		t.Fatalf("launchd running metadata=%#v", observation.Platform)
+	}
+	for _, call := range runner.calls {
+		if call.command == MacOSSudoProgram {
+			t.Fatalf("launchd uptime inspection used sudo: %#v", call)
+		}
 	}
 }
 

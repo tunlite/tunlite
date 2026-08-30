@@ -66,5 +66,20 @@ func terminalProgressEnabled(streams IO) bool {
 	if streams.Terminal != nil {
 		return *streams.Terminal
 	}
-	return writerIsTerminal(streams.Err) || writerIsTerminal(streams.Out)
+	return writerIsTerminal(streams.Err)
+}
+
+func renderBatchProgress(streams IO, opts options, current, total int, english, chinese string) {
+	if opts.JSON || !terminalProgressEnabled(streams) || total < 1 || current < 1 || current > total {
+		return
+	}
+	message := localized(opts.Language, english, chinese)
+	fmt.Fprintf(streams.Err, "[%d/%d] %s\n", current, total, message)
+}
+
+func renderStageProgress(streams IO, opts options, english, chinese string) {
+	if opts.JSON || !terminalProgressEnabled(streams) {
+		return
+	}
+	fmt.Fprintln(streams.Err, localized(opts.Language, english, chinese))
 }

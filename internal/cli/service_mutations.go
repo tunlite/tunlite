@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/yuanyuanzijin/tunlite/internal/core"
@@ -245,7 +246,11 @@ func nativeServiceIdentityAvailable(observation service.Observation) bool {
 	return !observation.Installed && !observation.AutoStart && observation.ProcessState == service.ProcessInactive
 }
 
-func stageUpdatedConnectionService(ctx context.Context, before, after core.Connection, declarationPath string, opts options) (stagedServiceMutation, error) {
+func stageUpdatedConnectionService(ctx context.Context, before, after core.Connection, declarationPath string, opts options, streamArgs ...IO) (stagedServiceMutation, error) {
+	streams := IO{In: nil, Out: io.Discard, Err: io.Discard}
+	if len(streamArgs) > 0 {
+		streams = streamArgs[0]
+	}
 	records, err := serviceRecordStore()
 	if err != nil {
 		return stagedServiceMutation{}, err
@@ -297,6 +302,75 @@ func stageUpdatedConnectionService(ctx context.Context, before, after core.Conne
 	if err != nil {
 		return fail(err)
 	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModeStopped && !observation.Installed {
+		oldRecord := record
+		record.PlanDigest = newArtifact.PlanDigest
+		record.BaselineDigest = service.ContentDigest(newArtifact.Content)
+		record.ArtifactPath = ""
+		if err := records.Write(ctx, record); err != nil {
+			return fail(err)
+		}
+		return stagedServiceMutation{
+			finish: release,
+			commit: func() error { return nil },
+			rollback: func() error {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return records.Write(recoveryCtx, oldRecord)
+			},
+			conditions: []condition{}, actions: resolveActions(before.Metadata.Name),
+		}, nil
+	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+		if record.Mode != service.ModePersistent {
+			return fail(stateConflictError("system-scope service has an invalid temporary lifecycle mode"))
+		}
+		if err := service.CheckDefinitionReplace(ctx, adapter, record.Reference(), newArtifact); err != nil {
+			return fail(err)
+		}
+		batchPreflighted := opts.systemReplacementBatch != nil && opts.systemReplacementBatch[before.Metadata.Name]
+		if !batchPreflighted {
+			renderSystemDefinitionProgress(streams, opts, before.Metadata.Name, "authorize")
+		}
+		if !batchPreflighted && !opts.NonInteractive {
+			if opts.privilegeAuthorizer == nil {
+				return fail(&privilegeRequiredError{message: "administrator authorization is required to replace the system service definition"})
+			}
+			if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{connections: 1}); err != nil {
+				return fail(err)
+			}
+		}
+		if !batchPreflighted {
+			if err := service.PreflightDefinitionReplace(ctx, adapter, record.Reference(), newArtifact); err != nil {
+				return fail(err)
+			}
+		}
+		renderSystemDefinitionProgress(streams, opts, before.Metadata.Name, "replace")
+		transition, err := service.StageDefinitionReplace(ctx, adapter, record.Reference(), newArtifact, service.ModePersistent,
+			transitionHealthVerifierWithProgress(newArtifact, streams, opts, before.Metadata.Name))
+		if err != nil {
+			return fail(err)
+		}
+		oldRecord := record
+		record.PlanDigest = newArtifact.PlanDigest
+		record.BaselineDigest = service.ContentDigest(newArtifact.Content)
+		if err := records.Write(ctx, record); err != nil {
+			recoveryCtx, cancel := compensationContext(ctx)
+			defer cancel()
+			return fail(recoveryBlockedError(err, transition.Rollback(recoveryCtx), resolveActions(before.Metadata.Name)))
+		}
+		renderSystemDefinitionProgress(streams, opts, before.Metadata.Name, "ready")
+		return stagedServiceMutation{
+			finish: release,
+			commit: func() error { return transition.Commit(ctx) },
+			rollback: func() error {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return errors.Join(transition.Rollback(recoveryCtx), records.Write(recoveryCtx, oldRecord))
+			},
+			conditions: []condition{}, actions: resolveActions(before.Metadata.Name),
+		}, nil
+	}
 	rollbackArtifact := oldArtifact
 	rollbackArtifact.Content = append([]byte(nil), observation.Artifact...)
 	if err := adapter.Materialize(ctx, newArtifact); err != nil {
@@ -341,6 +415,30 @@ func stageUpdatedConnectionService(ctx context.Context, before, after core.Conne
 		conditions: []condition{},
 		actions:    resolveActions(before.Metadata.Name),
 	}, nil
+}
+
+func renderSystemDefinitionProgress(streams IO, opts options, connection, phase string) {
+	if opts.JSON || !terminalProgressEnabled(streams) {
+		return
+	}
+	switch phase {
+	case "authorize":
+		fmt.Fprintln(streams.Err, localized(opts.Language,
+			fmt.Sprintf("Validated %q; preparing administrator authorization…", connection),
+			fmt.Sprintf("“%s”已完成只读校验，正在准备管理员授权…", connection)))
+	case "replace":
+		fmt.Fprintln(streams.Err, localized(opts.Language,
+			fmt.Sprintf("Replacing the system service definition for %q and waiting for it to stabilize…", connection),
+			fmt.Sprintf("正在替换“%s”的系统服务定义并等待进程稳定…", connection)))
+	case "health":
+		fmt.Fprintln(streams.Err, localized(opts.Language,
+			fmt.Sprintf("Replacement process for %q is running; verifying endpoints…", connection),
+			fmt.Sprintf("“%s”的替换进程已运行，正在验证端点…", connection)))
+	case "ready":
+		fmt.Fprintln(streams.Err, localized(opts.Language,
+			fmt.Sprintf("System service %q is stable; saving the new baseline…", connection),
+			fmt.Sprintf("系统服务“%s”已稳定，正在保存新基线…", connection)))
+	}
 }
 
 func stageRemovedConnectionService(ctx context.Context, connection core.Connection, declarationPath string, opts options) (stagedServiceMutation, error) {
@@ -413,6 +511,22 @@ func stageRemovedConnectionService(ctx context.Context, connection core.Connecti
 	if state.ConsistencyState != service.ConsistencyConsistent {
 		return fail(stateConflictError("connection has drifted; resolve it or unmanage it before removing it"))
 	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem {
+		if observation.Installed {
+			return fail(stateConflictError("system service definition still exists; use disable before removing the connection"))
+		}
+		return stagedServiceMutation{
+			finish: release,
+			commit: func() error { return records.Remove(connection.Metadata.Name) },
+			rollback: func() error {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return records.Write(recoveryCtx, record)
+			},
+			conditions: []condition{},
+			actions:    resolveActions(connection.Metadata.Name),
+		}, nil
+	}
 	rollbackArtifact := artifact
 	rollbackArtifact.Content = append([]byte(nil), observation.Artifact...)
 	if err := adapter.Remove(ctx, record.Reference()); err != nil {
@@ -480,6 +594,10 @@ func checkConnectionRemovable(ctx context.Context, connection core.Connection, d
 	if err != nil {
 		return err
 	}
+	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
+	if err != nil {
+		return err
+	}
 	observation, err := adapter.Inspect(ctx, record.Reference())
 	if err != nil {
 		return err
@@ -487,12 +605,11 @@ func checkConnectionRemovable(ctx context.Context, connection core.Connection, d
 	if observation.ProcessState == service.ProcessRunning || observation.ProcessState == service.ProcessStarting || observation.AutoStart {
 		return stateConflictError("native service is still running or persistent; resolve its state before removing it")
 	}
-	artifact, err := buildBoundServiceArtifact(ctx, adapter, connection, &record)
-	if err != nil {
-		return err
-	}
 	if state := service.Evaluate(ctx, adapter, record, &artifact); state.ConsistencyState != service.ConsistencyConsistent {
 		return stateConflictError("connection has drifted; resolve it or unmanage it before removing it")
+	}
+	if service.NormalizeScope(record.Scope) == service.ScopeSystem && observation.Installed {
+		return stateConflictError("system service definition still exists; use disable before removing the connection")
 	}
 	return nil
 }

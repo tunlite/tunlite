@@ -32,6 +32,14 @@ func manageConnection(ctx context.Context, args []string, streams IO, opts optio
 	if flags.NArg() != 0 {
 		return usageError("usage: tunlite manage [native-service] [--name name]")
 	}
+	if target == "" && (opts.NonInteractive || !streamsCanPromptOnStderr(streams)) {
+		return interactionRequiredError("manage without an explicit native service requires an interactive terminal")
+	}
+	progressArgs := []string{"manage"}
+	if target != "" {
+		progressArgs = append(progressArgs, target)
+	}
+	renderCommandProgress(streams, opts, progressArgs)
 	adapter, err := opts.newServiceAdapter()
 	if err != nil {
 		return capabilityError(err.Error())
@@ -195,8 +203,8 @@ func chooseCandidate(candidates []service.Candidate, target string, streams IO, 
 	if len(candidates) == 0 {
 		return service.Candidate{}, notFoundError("no manageable native services were found")
 	}
-	if opts.NonInteractive {
-		return service.Candidate{}, usageError("--non-interactive manage requires an explicit native service")
+	if opts.NonInteractive || !streamsCanPromptOnStderr(streams) {
+		return service.Candidate{}, interactionRequiredError("manage without an explicit native service requires an interactive terminal")
 	}
 	for index, candidate := range candidates {
 		fmt.Fprintf(streams.Err, "%d. %s (%s)\n", index+1, candidate.Reference.UnitName, observedMode(candidate.Observation))
@@ -255,6 +263,7 @@ func unmanageConnection(ctx context.Context, args []string, streams IO, opts opt
 	if err := ensureDeclarationOwner(record, config.Path()); err != nil {
 		return err
 	}
+	renderCommandProgress(streams, opts, []string{"unmanage", name})
 	adapter, err := opts.newServiceAdapter()
 	if err != nil {
 		return capabilityError(err.Error())
@@ -268,7 +277,7 @@ func unmanageConnection(ctx context.Context, args []string, streams IO, opts opt
 		return stateConflictError("connection is not consistent; resolve it before unmanaging it")
 	}
 	if opts.DryRun {
-		return renderConnectionMutation(streams, opts, "unmanage", "planned", *connection)
+		return renderUnmanageResult(streams, opts, "planned", *connection)
 	}
 	removed := cloneConnection(*connection)
 	if err := config.Update(ctx, func(document *configstore.Document) error {
@@ -287,7 +296,23 @@ func unmanageConnection(ctx context.Context, args []string, streams IO, opts opt
 	if err := completeUnmanage(ctx, config, name, connectionIndex, removed, records.Remove); err != nil {
 		return err
 	}
-	return renderConnectionMutation(streams, opts, "unmanage", "applied", removed)
+	return renderUnmanageResult(streams, opts, "applied", removed)
+}
+
+func renderUnmanageResult(streams IO, opts options, outcome string, connection core.Connection) error {
+	if opts.JSON {
+		return renderConnectionMutation(streams, opts, "unmanage", outcome, connection)
+	}
+	if opts.DryRun {
+		fmt.Fprintf(streams.Out, localized(opts.Language,
+			"Would stop managing %q. The native service would remain installed; its running state and autostart setting would stay unchanged.\n",
+			"将停止管理“%s”。原生后台服务仍会保持安装，运行状态和自动启动设置不变。\n"), connection.Metadata.Name)
+		return nil
+	}
+	fmt.Fprintf(streams.Out, localized(opts.Language,
+		"Stopped managing %q. The native service remains installed; its running state and autostart setting are unchanged.\n",
+		"已停止管理“%s”。原生后台服务仍保持安装，运行状态和自动启动设置不变。\n"), connection.Metadata.Name)
+	return nil
 }
 
 func completeUnmanage(ctx context.Context, config *configstore.Store, name string, connectionIndex int, removed core.Connection, removeRecord func(string) error) error {
@@ -351,6 +376,7 @@ func resolveConnection(ctx context.Context, args []string, streams IO, opts opti
 	if connection == nil {
 		return notFoundError(fmt.Sprintf("no such connection: %s", name))
 	}
+	renderCommandProgress(streams, opts, []string{"resolve", name})
 	record, err := resolvableServiceRecord(ctx, adapter, records, *connection, config.Path(), source)
 	if err != nil {
 		return err
@@ -368,12 +394,86 @@ func resolveConnection(ctx context.Context, args []string, streams IO, opts opti
 		if err != nil {
 			return err
 		}
+		if service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModeStopped && !before.Installed {
+			record.PlanDigest = artifact.PlanDigest
+			record.BaselineDigest = service.ContentDigest(artifact.Content)
+			record.ArtifactPath = ""
+			if err := records.Write(ctx, record); err != nil {
+				return err
+			}
+			return renderConnectionMutation(streams, opts, "resolve", "applied", *connection)
+		}
+		if service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModeStopped && before.Installed {
+			if !opts.NonInteractive {
+				if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{connections: 1}); err != nil {
+					return err
+				}
+			}
+			if err := service.PreflightDisable(ctx, adapter, record.Reference()); err != nil {
+				return err
+			}
+			previousArtifact := service.Artifact{
+				Connection: record.Reference().Connection, Adapter: record.Adapter, Scope: service.ScopeSystem,
+				UnitName: record.UnitName, Path: record.ArtifactPath, Content: append([]byte(nil), before.Artifact...),
+				PlanDigest: record.PlanDigest, LogPaths: append([]string(nil), record.LogPaths...),
+			}
+			if err := adapter.Disable(ctx, record.Reference()); err != nil {
+				return err
+			}
+			oldRecord := record
+			record.PlanDigest = artifact.PlanDigest
+			record.BaselineDigest = service.ContentDigest(artifact.Content)
+			record.ArtifactPath = ""
+			if err := records.Write(ctx, record); err != nil {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return recoveryBlockedError(err,
+					errors.Join(adapter.Materialize(recoveryCtx, previousArtifact), records.Write(recoveryCtx, oldRecord)),
+					resolveActions(name))
+			}
+			return renderConnectionMutation(streams, opts, "resolve", "applied", *connection)
+		}
 		previousArtifact := service.Artifact{
 			Connection: record.Reference().Connection, Adapter: record.Adapter, Scope: service.NormalizeScope(record.Scope),
 			UnitName: record.UnitName, Path: record.ArtifactPath, Content: append([]byte(nil), before.Artifact...),
 			PlanDigest: record.PlanDigest, LogPaths: append([]string(nil), record.LogPaths...),
 		}
 		previousMode := observedMode(before)
+		if service.NormalizeScope(record.Scope) == service.ScopeSystem && record.Mode == service.ModePersistent {
+			if err := service.CheckDefinitionReplace(ctx, adapter, record.Reference(), artifact); err != nil {
+				return err
+			}
+			renderSystemDefinitionProgress(streams, opts, name, "authorize")
+			if !opts.NonInteractive {
+				if err := opts.privilegeAuthorizer.Validate(ctx, streams, opts.Language, privilegeRequest{connections: 1}); err != nil {
+					return err
+				}
+			}
+			if err := service.PreflightDefinitionReplace(ctx, adapter, record.Reference(), artifact); err != nil {
+				return err
+			}
+			renderSystemDefinitionProgress(streams, opts, name, "replace")
+			transition, err := service.StageDefinitionReplace(ctx, adapter, record.Reference(), artifact, service.ModePersistent,
+				transitionHealthVerifierWithProgress(artifact, streams, opts, name))
+			if err != nil {
+				return err
+			}
+			oldRecord := record
+			record.PlanDigest = artifact.PlanDigest
+			record.BaselineDigest = service.ContentDigest(artifact.Content)
+			if err := records.Write(ctx, record); err != nil {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return recoveryBlockedError(err, transition.Rollback(recoveryCtx), resolveActions(name))
+			}
+			renderSystemDefinitionProgress(streams, opts, name, "ready")
+			if err := transition.Commit(ctx); err != nil {
+				recoveryCtx, cancel := compensationContext(ctx)
+				defer cancel()
+				return recoveryBlockedError(err, records.Write(recoveryCtx, oldRecord), resolveActions(name))
+			}
+			return renderConnectionMutation(streams, opts, "resolve", "applied", *connection)
+		}
 		rollback := func(cause error) error {
 			recoveryCtx, cancel := compensationContext(ctx)
 			defer cancel()
@@ -539,6 +639,13 @@ func resolvableServiceRecord(ctx context.Context, adapter service.Adapter, recor
 func applyNativeMode(ctx context.Context, adapter service.Adapter, reference service.Reference, mode string) error {
 	switch mode {
 	case service.ModeStopped:
+		observation, err := adapter.Inspect(ctx, reference)
+		if err != nil {
+			return err
+		}
+		if observation.ProcessState == service.ProcessInactive && !observation.AutoStart {
+			return nil
+		}
 		return adapter.Disable(ctx, reference)
 	case service.ModeBackground:
 		if err := adapter.Disable(ctx, reference); err != nil {
