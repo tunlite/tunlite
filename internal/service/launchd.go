@@ -216,6 +216,10 @@ func renderLaunchd(artifact Artifact, embedded string, executionPlan plan.Execut
 	if artifact.Scope == ScopeSystem {
 		plistKeyString(&output, "UserName", userName)
 	}
+	// Keep the executable explicit. On current macOS, a TLE-managed job whose
+	// executable is only inferred from ProgramArguments can remain in xpcproxy
+	// with execs=0 indefinitely.
+	plistKeyString(&output, "Program", executionPlan.Exec.Program)
 	fmt.Fprintln(&output, "  <key>ProgramArguments</key>")
 	fmt.Fprintln(&output, "  <array>")
 	for _, argument := range append([]string{executionPlan.Exec.Program}, executionPlan.Exec.Args...) {
@@ -2038,7 +2042,7 @@ func parseLaunchdExecutionPlanControlled(raw []byte, controlledLogDir string, ac
 		return plan.ExecutionPlan{}, "", nil, err
 	}
 	allowed := map[string]bool{
-		"Label": true, "UserName": true, "ProgramArguments": true, "RunAtLoad": true, "KeepAlive": true,
+		"Label": true, "UserName": true, "Program": true, "ProgramArguments": true, "RunAtLoad": true, "KeepAlive": true,
 		"ThrottleInterval": true, "ExitTimeOut": true, "ProcessType": true,
 		"StandardOutPath": true, "StandardErrorPath": true,
 	}
@@ -2081,6 +2085,15 @@ func parseLaunchdExecutionPlanControlled(raw []byte, controlledLogDir string, ac
 			return plan.ExecutionPlan{}, "", nil, errors.New("launchd ProgramArguments must contain only strings")
 		}
 		arguments[index] = argument
+	}
+	if programValue, exists := dictionary["Program"]; exists {
+		program, valid := programValue.(string)
+		if !valid || program == "" {
+			return plan.ExecutionPlan{}, "", nil, errors.New("launchd Program must be a non-empty string")
+		}
+		if program != arguments[0] {
+			return plan.ExecutionPlan{}, "", nil, errors.New("launchd Program must match ProgramArguments[0]")
+		}
 	}
 	if runAtLoad, ok := dictionary["RunAtLoad"].(bool); !ok || !runAtLoad {
 		return plan.ExecutionPlan{}, "", nil, errors.New("launchd service must use RunAtLoad=true")
@@ -2321,6 +2334,8 @@ func parseLaunchdProperties(output []byte) map[string]string {
 			result["lastExitCode"] = value
 		case "runs":
 			result["runs"] = value
+		case "execs":
+			result["execs"] = value
 		}
 	}
 	return result

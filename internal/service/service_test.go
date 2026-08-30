@@ -335,13 +335,13 @@ func TestLaunchdInspectDoesNotGuessWhenPersistenceStateIsUnavailable(t *testing.
 	}
 }
 
-func TestLaunchdInspectTreatsXPCProxyAsStarting(t *testing.T) {
+func TestLaunchdInspectTreatsUnexecedXPCProxyAsStarting(t *testing.T) {
 	runner := &fakeRunner{run: func(_ string, args []string) ([]byte, error) {
 		switch args[0] {
 		case "print-disabled":
 			return []byte(`"dev.tunlite.connection.db" => true`), nil
 		case "print":
-			return []byte("state = xpcproxy\npid = 42\n"), nil
+			return []byte("state = xpcproxy\npid = 42\nexecs = 0\n"), nil
 		default:
 			return nil, nil
 		}
@@ -354,6 +354,9 @@ func TestLaunchdInspectTreatsXPCProxyAsStarting(t *testing.T) {
 	}
 	if observation.ProcessState != ProcessStarting {
 		t.Fatalf("xpcproxy state=%q, want %q", observation.ProcessState, ProcessStarting)
+	}
+	if observation.Platform["pid"] != "42" || observation.Platform["execs"] != "0" {
+		t.Fatalf("xpcproxy metadata=%#v", observation.Platform)
 	}
 }
 
@@ -402,6 +405,7 @@ func TestLaunchdInspectDistinguishesThrottledActiveJobFromRunningProcess(t *test
 	}{
 		{name: "active without pid is waiting to restart", body: "state = active\nruns = 2\n", want: ProcessStarting},
 		{name: "active with pid is running", body: "state = active\nruns = 3\npid = 42\n", want: ProcessRunning},
+		{name: "running after provider exec is running", body: "state = running\nruns = 1\nexecs = 1\npid = 42\n", want: ProcessRunning},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -856,6 +860,33 @@ func TestLaunchdParsesRecognizableNativeSSHService(t *testing.T) {
 	}
 	if value.Exec.Program != "/usr/bin/ssh" || label != "example.ssh.db" || len(logs) != 2 {
 		t.Fatalf("plan=%#v label=%q logs=%v", value, label, logs)
+	}
+}
+
+func TestLaunchdRendersExplicitProgramAndRejectsMismatch(t *testing.T) {
+	adapter := NewLaunchd(t.TempDir(), t.TempDir(), 501, &fakeRunner{})
+	artifact, err := adapter.Build("db", testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dictionary, err := decodeLaunchdDictionary(artifact.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dictionary["Program"] != testPlan().Exec.Program {
+		t.Fatalf("launchd Program=%#v", dictionary["Program"])
+	}
+	mismatched := bytes.Replace(
+		artifact.Content,
+		[]byte("<key>Program</key>\n  <string>/usr/bin/provider</string>"),
+		[]byte("<key>Program</key>\n  <string>/usr/bin/other</string>"),
+		1,
+	)
+	if bytes.Equal(mismatched, artifact.Content) {
+		t.Fatal("launchd Program fixture was not changed")
+	}
+	if _, _, _, err := parseLaunchdExecutionPlan(mismatched); err == nil || !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("mismatched Program error=%v", err)
 	}
 }
 
