@@ -6,10 +6,16 @@ set -eu
 
 say() {
   printf 'tunlite macos system e2e: %s\n' "$1"
+  if [ -n "${main_log:-}" ]; then
+    printf '%s stage %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >>"$main_log"
+  fi
 }
 
 fail() {
   printf 'tunlite macos system e2e: ERROR: %s\n' "$1" >&2
+  if [ -n "${main_log:-}" ]; then
+    printf '%s ERROR %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >>"$main_log"
+  fi
   exit 1
 }
 
@@ -46,13 +52,155 @@ cleanup_bounded() {
   fi
 }
 
-cleanup_try() {
+cleanup_attempt() {
   if cleanup_bounded "$@"; then
     return 0
   fi
-  cleanup_any_failed=1
+  cleanup_attempt_failed=1
   return 0
 }
+
+cleanup_lifecycle_action() {
+  case "$1" in
+    persistent) printf '%s\n' disable ;;
+    background) printf '%s\n' stop ;;
+    stopped|'') printf '%s\n' none ;;
+    *) printf '%s\n' inspect ;;
+  esac
+}
+
+cleanup_tunlite_lifecycle() {
+  cleanup_mode="$1"
+  cleanup_action="$(cleanup_lifecycle_action "$cleanup_mode")"
+  case "$cleanup_action" in
+    disable) cleanup_attempt tunlite-disable 15 "$tunlite" disable "$name" --json --non-interactive ;;
+    stop) cleanup_attempt tunlite-stop 15 "$tunlite" stop "$name" --json --non-interactive ;;
+    inspect)
+      cleanup_attempt tunlite-disable 15 "$tunlite" disable "$name" --json --non-interactive
+      cleanup_mode_after="$(plutil -extract mode raw -o - "$record_path" 2>/dev/null || true)"
+      if [ "$cleanup_mode_after" = background ]; then
+        cleanup_attempt tunlite-stop 15 "$tunlite" stop "$name" --json --non-interactive
+      fi
+      ;;
+  esac
+  cleanup_attempt tunlite-remove 10 "$tunlite" remove "$name" --json --non-interactive
+}
+
+if [ "${TUNLITE_SYSTEM_E2E_SELFTEST:-}" = known-hosts ]; then
+  selftest_base="${TMPDIR:-/tmp}"
+  selftest_base="${selftest_base%/}"
+  temporary="$(mktemp -d "$selftest_base/tunlite-system-e2e-known-hosts.XXXXXX")"
+  trap '/bin/rm -rf "$temporary"' 0
+  selftest_script="$0"
+  selftest_helpers="$temporary/known-hosts-helpers.sh"
+  begin_count="$(awk '/^# BEGIN TUNLITE KNOWN HOSTS HELPERS$/ { count++ } END { print count + 0 }' "$selftest_script")"
+  end_count="$(awk '/^# END TUNLITE KNOWN HOSTS HELPERS$/ { count++ } END { print count + 0 }' "$selftest_script")"
+  [ "$begin_count:$end_count" = 1:1 ] || fail 'known_hosts helper sentinels are not unique'
+  awk '
+    /^# BEGIN TUNLITE KNOWN HOSTS HELPERS$/ { copy = 1; next }
+    /^# END TUNLITE KNOWN HOSTS HELPERS$/ { copy = 0; exit }
+    copy { print }
+  ' "$selftest_script" >"$selftest_helpers"
+  [ -s "$selftest_helpers" ] || fail 'known_hosts helper extraction was empty'
+  sh -n "$selftest_helpers" || fail 'known_hosts helper extraction is not valid shell'
+  # shellcheck disable=SC1090
+  . "$selftest_helpers"
+  python_path="$(command -v python3 || true)"
+  [ -n "$python_path" ] || fail 'python3 is required for known_hosts self-test'
+  uid="$(id -u)"
+  label=dev.tunlite.connection.it-system-e2e-selftest
+  line='[127.0.0.1]:32123 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest tunlite-system-e2e:selftest'
+
+  with_newline="$temporary/existing-newline"
+  printf 'baseline\n' >"$with_newline"
+  register_known_host "$with_newline" "$line" "$temporary/newline.json"
+  printf 'concurrent-append\n' >>"$with_newline"
+  deactivate_known_host "$with_newline" "$temporary/newline.json"
+  "$python_path" - "$with_newline" <<'PY' || fail 'newline/concurrent append fixture changed unexpectedly'
+import pathlib, sys
+expected = b"baseline\n#127.0.0.1]:32123 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest tunlite-system-e2e:selftest\nconcurrent-append\n"
+if pathlib.Path(sys.argv[1]).read_bytes() != expected:
+    raise SystemExit(1)
+PY
+
+  without_newline="$temporary/existing-without-newline"
+  printf 'baseline' >"$without_newline"
+  register_known_host "$without_newline" "$line" "$temporary/no-newline.json"
+  deactivate_known_host "$without_newline" "$temporary/no-newline.json"
+  "$python_path" - "$without_newline" <<'PY' || fail 'no-newline fixture changed unexpectedly'
+import pathlib, sys
+expected = b"baseline\n#127.0.0.1]:32123 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest tunlite-system-e2e:selftest\n"
+if pathlib.Path(sys.argv[1]).read_bytes() != expected:
+    raise SystemExit(1)
+PY
+
+  absent="$temporary/previously-absent"
+  register_known_host "$absent" "$line" "$temporary/absent.json"
+  deactivate_known_host "$absent" "$temporary/absent.json"
+  [ -f "$absent" ] || fail 'previously absent known_hosts was destructively removed'
+  if grep -F '[127.0.0.1]:32123 ' "$absent" >/dev/null 2>&1; then
+    fail 'previously absent fixture retained an active test host'
+  fi
+
+  changed="$temporary/payload-changed"
+  printf 'baseline\n' >"$changed"
+  register_known_host "$changed" "$line" "$temporary/changed.json"
+  "$python_path" - "$changed" <<'PY'
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    data = os.read(fd, 4096)
+    offset = data.index(b"[127.0.0.1]")
+    os.pwrite(fd, b"!", offset)
+finally:
+    os.close(fd)
+PY
+  changed_before="$(shasum -a 256 "$changed" | awk '{print $1}')"
+  if deactivate_known_host "$changed" "$temporary/changed.json" >/dev/null 2>&1; then
+    fail 'changed known_hosts payload was accepted'
+  fi
+  changed_after="$(shasum -a 256 "$changed" | awk '{print $1}')"
+  [ "$changed_before" = "$changed_after" ] || fail 'rejected payload was modified'
+
+  renamed="$temporary/path-replaced"
+  printf 'baseline\n' >"$renamed"
+  register_known_host "$renamed" "$line" "$temporary/renamed.json"
+  /bin/mv "$renamed" "$renamed.old"
+  printf 'replacement\n' >"$renamed"
+  if deactivate_known_host "$renamed" "$temporary/renamed.json" >/dev/null 2>&1; then
+    fail 'replaced known_hosts path was accepted'
+  fi
+  [ "$(sed -n '1p' "$renamed")" = replacement ] || fail 'replacement inode was modified'
+
+  symlink_target="$temporary/symlink-target"
+  symlink_path="$temporary/symlink-known-hosts"
+  printf 'target\n' >"$symlink_target"
+  /bin/ln -s "$symlink_target" "$symlink_path"
+  if register_known_host "$symlink_path" "$line" "$temporary/symlink.json" >/dev/null 2>&1; then
+    fail 'symlinked known_hosts was accepted'
+  fi
+  [ "$(sed -n '1p' "$symlink_target")" = target ] || fail 'symlink target was modified'
+
+  known_hosts_lock="$temporary/lock"
+  known_hosts_lock_token="$known_hosts_lock/owner"
+  /bin/mkdir -m 700 "$known_hosts_lock"
+  known_hosts_lock_identity="$(create_known_hosts_lock_token)"
+  if create_known_hosts_lock_token >/dev/null 2>&1; then
+    fail 'lock token O_EXCL gate accepted an occupied token'
+  fi
+  saved_identity="$known_hosts_lock_identity"
+  known_hosts_lock_identity=wrong
+  if release_known_hosts_lock >/dev/null 2>&1; then
+    fail 'lock release accepted the wrong token identity'
+  fi
+  [ -d "$known_hosts_lock" ] || fail 'rejected lock release removed the directory'
+  known_hosts_lock_identity="$saved_identity"
+  release_known_hosts_lock || fail 'validated lock release failed'
+  [ ! -e "$known_hosts_lock" ] || fail 'validated lock release retained the directory'
+
+  say 'PASS: isolated known_hosts append/deactivate/refusal and lock safety matrix'
+  exit 0
+fi
 
 if [ "${TUNLITE_SYSTEM_E2E_SELFTEST:-}" = cleanup-bounded ]; then
   selftest_base="${TMPDIR:-/tmp}"
@@ -69,7 +217,20 @@ if [ "${TUNLITE_SYSTEM_E2E_SELFTEST:-}" = cleanup-bounded ]; then
     selftest_result="$?"
   fi
   [ "$selftest_result" -eq 7 ] || fail "cleanup_bounded returned $selftest_result, expected 7"
-  say 'PASS: cleanup_bounded preserves child exit status 7'
+  trace="$temporary/lifecycle.trace"
+  tunlite="$temporary/fake-tunlite"
+  name=selftest
+  record_path="$temporary/record.json"
+  cleanup_attempt_failed=0
+  printf '#!/bin/sh\nprintf "%%s\\n" "$1" >>"%s"\ncase "$1" in stop) exit 7;; *) exit 0;; esac\n' "$trace" >"$tunlite"
+  /bin/chmod 700 "$tunlite"
+  cleanup_tunlite_lifecycle persistent
+  expected_trace="disable
+remove"
+  actual_trace="$(sed -n '1,10p' "$trace")"
+  [ "$actual_trace" = "$expected_trace" ] || fail "persistent cleanup matrix ran unexpected commands: $actual_trace"
+  [ "$cleanup_attempt_failed" -eq 0 ] || fail 'persistent cleanup matrix was incorrectly marked failed'
+  say 'PASS: cleanup_bounded preserves exit 7 and persistent cleanup selects disable without stop'
   exit 0
 fi
 
@@ -96,13 +257,13 @@ case "$username" in
   ''|*[!A-Za-z0-9._-]*) fail "unsafe current user name: $username" ;;
 esac
 
-for required in awk curl date grep id mktemp plutil ps sed shasum stat tar; do
+for required in awk curl date grep id mktemp plutil ps script sed shasum stat tar; do
   command -v "$required" >/dev/null 2>&1 || fail "required command is unavailable: $required"
 done
 command -v sudo >/dev/null 2>&1 || fail 'sudo is required for interactive LaunchDaemon registration and removal'
 command -v ssh-keygen >/dev/null 2>&1 || fail 'ssh-keygen is required'
-ssh_path="$(command -v ssh || true)"
-[ -n "$ssh_path" ] || fail 'the OpenSSH client is required'
+ssh_path=/usr/bin/ssh
+[ -x "$ssh_path" ] || fail 'the trusted macOS OpenSSH client is unavailable at /usr/bin/ssh'
 sshd_path="$(command -v sshd || true)"
 if [ -z "$sshd_path" ] && [ -x /usr/sbin/sshd ]; then
   sshd_path=/usr/sbin/sshd
@@ -133,6 +294,8 @@ esac
 case "$temporary" in
   *[[:space:]]*) fail "temporary path contains whitespace unsupported by the isolated sshd config: $temporary" ;;
 esac
+main_log="$temporary/main.log"
+printf '%s START pid=%s arch=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$$" "$(uname -m)" >"$main_log"
 
 name="it-system-e2e-$uid-$$"
 case "$name" in
@@ -163,9 +326,21 @@ http2_pid=''
 cleanup_running=0
 root_cleanup_failed=0
 cleanup_any_failed=0
+cleanup_attempt_failed=0
 completed=0
 global_cleanup_owned=0
 ownership_token="$temporary/global-cleanup-ownership"
+user_ssh_directory="$HOME/.ssh"
+user_known_hosts="$user_ssh_directory/known_hosts"
+known_hosts_metadata="$temporary/known-hosts-transaction.json"
+known_hosts_lock="$user_ssh_directory/.tunlite-system-e2e-known-hosts.lock"
+known_hosts_lock_token="$known_hosts_lock/owner"
+known_hosts_host=''
+known_hosts_registered=0
+known_hosts_lock_owned=0
+known_hosts_lock_directory_created=0
+known_hosts_lock_identity=''
+ssh_directory_created=0
 
 safe_generated_paths() {
 
@@ -194,6 +369,208 @@ global_cleanup_authorized() {
   safe_generated_paths
 }
 
+run_interactive_logged() {
+  interactive_stage="$1"
+  shift
+  interactive_log="$temporary/interactive-$interactive_stage.log"
+  printf '%s interactive-start %s transcript=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" "$interactive_log" >>"$main_log"
+  # script(1) preserves a PTY for Tunlite and sudo. Password input remains
+  # terminal no-echo input; it is not piped through tee or read by this script.
+  if /usr/bin/script -q -e "$interactive_log" "$@"; then
+    interactive_result=0
+  else
+    interactive_result="$?"
+  fi
+  printf '%s interactive-exit %s status=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$interactive_stage" "$interactive_result" >>"$main_log"
+  return "$interactive_result"
+}
+
+# BEGIN TUNLITE KNOWN HOSTS HELPERS
+register_known_host() {
+  known_hosts_target="$1"
+  known_hosts_line="$2"
+  known_hosts_metadata_target="$3"
+  "$python_path" - "$known_hosts_target" "$known_hosts_line" \
+    "$known_hosts_metadata_target" "$uid" <<'PY'
+import base64
+import json
+import os
+import stat
+import sys
+
+path, line, metadata_path, expected_uid_text = sys.argv[1:]
+expected_uid = int(expected_uid_text)
+flags = os.O_RDWR | os.O_APPEND
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+try:
+    fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    fd = os.open(path, flags)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError("known_hosts is not a regular file")
+    if info.st_uid != expected_uid:
+        raise RuntimeError(
+            f"known_hosts owner uid is {info.st_uid}, expected {expected_uid}"
+        )
+    separator = b""
+    if info.st_size:
+        os.lseek(fd, info.st_size - 1, os.SEEK_SET)
+        separator = b"" if os.read(fd, 1) == b"\n" else b"\n"
+    payload = separator + line.encode("utf-8") + b"\n"
+    metadata = {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "entryOffset": info.st_size + len(separator),
+        "payloadOffset": info.st_size,
+        "payloadBase64": base64.b64encode(payload).decode("ascii"),
+    }
+    metadata_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        metadata_flags |= os.O_NOFOLLOW
+    metadata_fd = os.open(metadata_path, metadata_flags, 0o600)
+    with os.fdopen(metadata_fd, "w", encoding="utf-8") as output:
+        json.dump(metadata, output, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    # One O_APPEND write never replaces existing bytes. A short write is an
+    # explicit failure and may leave only test-owned suffix bytes to inspect.
+    written = os.write(fd, payload)
+    if written != len(payload):
+        raise RuntimeError(
+            f"known_hosts append wrote {written} of {len(payload)} bytes"
+        )
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+deactivate_known_host() {
+  known_hosts_target="$1"
+  known_hosts_metadata_target="$2"
+  "$python_path" - "$known_hosts_target" "$known_hosts_metadata_target" "$uid" <<'PY'
+import base64
+import json
+import os
+import stat
+import sys
+
+path, metadata_path, expected_uid_text = sys.argv[1:]
+expected_uid = int(expected_uid_text)
+with open(metadata_path, encoding="utf-8") as source:
+    metadata = json.load(source)
+flags = os.O_RDWR
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(path, flags)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid:
+        raise RuntimeError("known_hosts type or owner changed after registration")
+    if (info.st_dev, info.st_ino) != (metadata["device"], metadata["inode"]):
+        raise RuntimeError("known_hosts path identity changed after registration")
+    current_path = os.lstat(path)
+    if (current_path.st_dev, current_path.st_ino) != (info.st_dev, info.st_ino):
+        raise RuntimeError("known_hosts path was replaced after open")
+    payload = base64.b64decode(metadata["payloadBase64"], validate=True)
+    payload_offset = metadata["payloadOffset"]
+    if hasattr(os, "pread"):
+        current_payload = os.pread(fd, len(payload), payload_offset)
+    else:
+        os.lseek(fd, payload_offset, os.SEEK_SET)
+        current_payload = os.read(fd, len(payload))
+    if current_payload != payload:
+        raise RuntimeError("temporary known_hosts payload changed")
+    entry_offset = metadata["entryOffset"]
+    if hasattr(os, "pwrite"):
+        written = os.pwrite(fd, b"#", entry_offset)
+    else:
+        os.lseek(fd, entry_offset, os.SEEK_SET)
+        written = os.write(fd, b"#")
+    if written != 1:
+        raise RuntimeError("could not deactivate the temporary host entry")
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+create_known_hosts_lock_token() {
+  "$python_path" - "$known_hosts_lock_token" "$label" "$uid" <<'PY'
+import os
+import stat
+import sys
+
+path, label, expected_uid_text = sys.argv[1:]
+expected_uid = int(expected_uid_text)
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(path, flags, 0o600)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid:
+        raise RuntimeError("lock token type or owner is unsafe")
+    payload = (label + "\n").encode("utf-8")
+    written = 0
+    while written < len(payload):
+        count = os.write(fd, payload[written:])
+        if count <= 0:
+            raise RuntimeError("lock token write made no progress")
+        written += count
+    os.fsync(fd)
+    print(f"{info.st_dev}:{info.st_ino}")
+except Exception:
+    try:
+        current = os.lstat(path)
+        opened = os.fstat(fd)
+        if (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    raise
+finally:
+    os.close(fd)
+PY
+}
+
+release_known_hosts_lock() {
+  "$python_path" - "$known_hosts_lock" "$known_hosts_lock_token" \
+    "$known_hosts_lock_identity" "$label" "$uid" <<'PY'
+import os
+import stat
+import sys
+
+directory, token, expected_identity, label, expected_uid_text = sys.argv[1:]
+expected_uid = int(expected_uid_text)
+flags = os.O_RDONLY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(token, flags)
+try:
+    info = os.fstat(fd)
+    identity = f"{info.st_dev}:{info.st_ino}"
+    if not expected_identity or identity != expected_identity:
+        raise RuntimeError("known_hosts lock token identity changed")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid:
+        raise RuntimeError("known_hosts lock token type or owner changed")
+    if os.read(fd, 4096) != (label + "\n").encode("utf-8"):
+        raise RuntimeError("known_hosts lock token content changed")
+    current = os.lstat(token)
+    if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+        raise RuntimeError("known_hosts lock token path changed")
+    os.unlink(token)
+finally:
+    os.close(fd)
+os.rmdir(directory)
+PY
+}
+# END TUNLITE KNOWN HOSTS HELPERS
+
 cleanup() {
   cleanup_status="$?"
   if [ "$cleanup_running" -eq 1 ]; then
@@ -206,26 +583,25 @@ cleanup() {
   say 'cleanup: stopping only resources covered by this run ownership token'
   if global_cleanup_authorized; then
     if [ "$completed" -ne 1 ] && [ -n "$tunlite" ] && [ -x "$tunlite" ] && [ -e "$connection_path" ]; then
-      cleanup_try tunlite-stop 15 "$tunlite" stop "$name" --json --non-interactive
-      cleanup_try tunlite-disable 15 "$tunlite" disable "$name" --json --non-interactive
-      cleanup_try tunlite-remove 10 "$tunlite" remove "$name" --json --non-interactive
+      cleanup_record_mode="$(plutil -extract mode raw -o - "$record_path" 2>/dev/null || true)"
+      cleanup_tunlite_lifecycle "$cleanup_record_mode"
     fi
 
     if job_exists "gui/$uid"; then
-      cleanup_try user-bootout 5 /bin/launchctl bootout "gui/$uid/$label"
+      cleanup_attempt user-bootout 5 /bin/launchctl bootout "gui/$uid/$label"
     fi
-    cleanup_try user-artifacts 5 /bin/rm -f "$agent_plist" "$stdout_log" "$stderr_log" "$user_demand"
+    cleanup_attempt user-artifacts 5 /bin/rm -f "$agent_plist" "$stdout_log" "$stderr_log" "$user_demand"
 
     # Never prompt from a trap. A still-valid timestamp may clean a failed
     # system mutation; otherwise leave the evidence and print exact recovery.
     if job_exists system; then
-      cleanup_try system-bootout 5 /usr/bin/sudo -n /bin/launchctl bootout "system/$label"
+      cleanup_attempt system-bootout 5 /usr/bin/sudo -n /bin/launchctl bootout "system/$label"
     fi
     if path_occupied "$daemon_plist"; then
-      cleanup_try system-artifact 5 /usr/bin/sudo -n /bin/rm -f "$daemon_plist"
+      cleanup_attempt system-artifact 5 /usr/bin/sudo -n /bin/rm -f "$daemon_plist"
     fi
     if path_occupied "$system_demand"; then
-      cleanup_try system-demand 5 /bin/rm -f "$system_demand"
+      cleanup_attempt system-demand 5 /bin/rm -f "$system_demand"
     fi
 
     if path_occupied "$daemon_plist" || job_exists system; then
@@ -265,6 +641,41 @@ cleanup() {
     esac
   done
 
+  if [ "$known_hosts_registered" -eq 1 ]; then
+    printf 'tunlite macos system e2e: cleanup: deactivating only the temporary known_hosts entry' >&2
+    if deactivate_known_host "$user_known_hosts" "$known_hosts_metadata" >"$temporary/cleanup-known-hosts.log" 2>&1; then
+      known_hosts_registered=0
+      printf ' done\n' >&2
+    else
+      cleanup_any_failed=1
+      printf ' refused because the validated entry or file identity changed\n' >&2
+      sed -n '1,20p' "$temporary/cleanup-known-hosts.log" >&2
+      printf 'Remove only this test host manually after inspection:\n' >&2
+      printf "  /usr/bin/ssh-keygen -R '%s'\n" "$known_hosts_host" >&2
+    fi
+  fi
+  if [ "$known_hosts_lock_owned" -eq 1 ]; then
+    if release_known_hosts_lock >"$temporary/cleanup-known-hosts-lock.log" 2>&1; then
+      known_hosts_lock_owned=0
+      known_hosts_lock_directory_created=0
+    else
+      cleanup_any_failed=1
+      printf 'tunlite macos system e2e: cleanup: known_hosts lock remains: %s\n' "$known_hosts_lock" >&2
+      sed -n '1,20p' "$temporary/cleanup-known-hosts-lock.log" >&2
+    fi
+  elif [ "$known_hosts_lock_directory_created" -eq 1 ]; then
+    if /bin/rmdir "$known_hosts_lock" >/dev/null 2>&1; then
+      known_hosts_lock_directory_created=0
+    else
+      cleanup_any_failed=1
+      printf 'tunlite macos system e2e: cleanup: unverified known_hosts lock content was preserved: %s\n' "$known_hosts_lock" >&2
+      printf 'Inspect manually: /bin/ls -la %s\n' "$known_hosts_lock" >&2
+    fi
+  fi
+  if [ "$ssh_directory_created" -eq 1 ]; then
+    /bin/rmdir "$user_ssh_directory" >/dev/null 2>&1 || true
+  fi
+
   if global_cleanup_authorized; then
     if job_exists "gui/$uid"; then
       cleanup_any_failed=1
@@ -276,18 +687,49 @@ cleanup() {
         printf 'tunlite macos system e2e: cleanup: user artifact remains: %s\n' "$remaining_user_path" >&2
       fi
     done
+    if path_occupied "$system_demand"; then
+      cleanup_any_failed=1
+      printf 'tunlite macos system e2e: cleanup: system demand marker remains: %s\n' "$system_demand" >&2
+    fi
+    if path_occupied "$record_path"; then
+      cleanup_any_failed=1
+      printf 'tunlite macos system e2e: cleanup: service record remains: %s\n' "$record_path" >&2
+    fi
+    if [ -e "$connection_path" ] && ! "$python_path" - "$connection_path" "$name" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    document = json.load(source)
+name = sys.argv[2]
+if any(item.get("metadata", {}).get("name") == name for item in document.get("items", [])):
+    raise SystemExit(1)
+PY
+    then
+      cleanup_any_failed=1
+      printf 'tunlite macos system e2e: cleanup: connection declaration remains: %s\n' "$name" >&2
+    fi
   fi
 
   if [ "$cleanup_any_failed" -ne 0 ]; then
     printf 'tunlite macos system e2e: CLEANUP INCOMPLETE; diagnostics retained at %s\n' "$temporary" >&2
   fi
-  if [ "$root_cleanup_failed" -eq 0 ] && [ "$cleanup_any_failed" -eq 0 ]; then
-    /bin/rm -rf "$temporary"
+  if [ "$cleanup_attempt_failed" -ne 0 ] && [ "$cleanup_any_failed" -eq 0 ] && [ "$root_cleanup_failed" -eq 0 ]; then
+    printf '%s cleanup-fallback-recovered\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" >>"$main_log"
+  fi
+  retain_diagnostics=0
+  if [ "$cleanup_status" -ne 0 ] || [ "$completed" -ne 1 ] || [ "$root_cleanup_failed" -ne 0 ] || [ "$cleanup_any_failed" -ne 0 ]; then
+    retain_diagnostics=1
+  fi
+  if [ "$retain_diagnostics" -ne 0 ]; then
+    printf 'tunlite macos system e2e: diagnostics retained at %s (main summary: %s)\n' "$temporary" "$main_log" >&2
   fi
   if [ "$completed" -eq 1 ] && [ "$cleanup_status" -eq 0 ] && [ "$root_cleanup_failed" -eq 0 ] && [ "$cleanup_any_failed" -eq 0 ]; then
     say 'cleanup complete'
   elif [ "$root_cleanup_failed" -eq 0 ] && [ "$cleanup_any_failed" -eq 0 ]; then
     say "cleanup complete after failure (exit $cleanup_status)"
+  fi
+  if [ "$retain_diagnostics" -eq 0 ]; then
+    /bin/rm -rf "$temporary"
   fi
 }
 trap cleanup 0
@@ -547,7 +989,6 @@ client_key="$temporary/client_key"
 authorized_keys="$temporary/authorized_keys"
 known_hosts="$temporary/known_hosts"
 sshd_config="$temporary/sshd_config"
-ssh_wrapper="$temporary/ssh"
 ssh-keygen -q -t ed25519 -N '' -f "$host_key"
 ssh-keygen -q -t ed25519 -N '' -f "$client_key"
 /bin/cp "$client_key.pub" "$authorized_keys"
@@ -573,9 +1014,57 @@ LogLevel VERBOSE
 AllowUsers $username
 EOF
 "$sshd_path" -t -f "$sshd_config"
-printf '#!/bin/sh\nexec "%s" -o "UserKnownHostsFile=%s" -o StrictHostKeyChecking=yes "$@"\n' "$ssh_path" "$known_hosts" >"$ssh_wrapper"
-/bin/chmod 700 "$ssh_wrapper"
-export TUNLITE_SSH="$ssh_wrapper"
+
+# The managed plan must execute the real provider binary. A wrapper would make
+# launchd's ProgramArguments disagree with the provider reported by ps(1), and
+# system restart correctly rejects that identity mismatch.
+export TUNLITE_SSH=/usr/bin/ssh
+
+# Tunlite deliberately uses `ssh -F none` and rejects UserKnownHostsFile
+# overrides. Register only this unique loopback endpoint in the invoking
+# user's real known_hosts. Cleanup never truncates, replaces, or deletes that
+# file; after validation it deactivates only this run's line in place.
+if [ -L "$user_ssh_directory" ]; then
+  fail "refusing symlinked SSH directory: $user_ssh_directory"
+fi
+if [ -e "$user_ssh_directory" ]; then
+  [ -d "$user_ssh_directory" ] || fail "SSH path is not a directory: $user_ssh_directory"
+  [ "$(stat -f '%u' "$user_ssh_directory")" = "$uid" ] || fail "SSH directory is not owned by uid $uid"
+else
+  /bin/mkdir -m 700 "$user_ssh_directory"
+  ssh_directory_created=1
+fi
+if ! /bin/mkdir -m 700 "$known_hosts_lock" 2>/dev/null; then
+  printf 'Inspect the lock before removing anything: /bin/ls -la %s\n' "$known_hosts_lock" >&2
+  printf 'Only if it is empty and no E2E is running: /bin/rmdir %s\n' "$known_hosts_lock" >&2
+  fail "another system E2E run or stale known_hosts lock exists: $known_hosts_lock"
+fi
+known_hosts_lock_directory_created=1
+if ! known_hosts_lock_identity="$(create_known_hosts_lock_token)"; then
+  if /bin/rmdir "$known_hosts_lock" >/dev/null 2>&1; then
+    known_hosts_lock_directory_created=0
+  fi
+  fail "could not safely create the known_hosts lock token: $known_hosts_lock_token"
+fi
+known_hosts_lock_owned=1
+known_hosts_host="[127.0.0.1]:$sshd_port"
+if [ -e "$user_known_hosts" ] || [ -L "$user_known_hosts" ]; then
+  [ ! -L "$user_known_hosts" ] || fail "refusing symlinked known_hosts: $user_known_hosts"
+  [ -f "$user_known_hosts" ] || fail "known_hosts is not a regular file: $user_known_hosts"
+  [ "$(stat -f '%u' "$user_known_hosts")" = "$uid" ] || fail "known_hosts is not owned by uid $uid"
+  if /usr/bin/ssh-keygen -F "$known_hosts_host" -f "$user_known_hosts" >/dev/null 2>&1; then
+    fail "refusing pre-existing known_hosts entry for the generated endpoint: $known_hosts_host"
+  fi
+fi
+say "temporarily registering isolated sshd host key as $known_hosts_host"
+if ! register_known_host "$user_known_hosts" \
+  "$known_hosts_host $host_public tunlite-system-e2e:$label" "$known_hosts_metadata"; then
+  if [ -f "$known_hosts_metadata" ]; then
+    known_hosts_registered=1
+  fi
+  fail "could not safely register the isolated host key in $user_known_hosts"
+fi
+known_hosts_registered=1
 
 say "starting isolated sshd as $username (never as root)"
 "$sshd_path" -D -e -f "$sshd_config" >"$temporary/sshd.log" 2>&1 &
@@ -611,7 +1100,9 @@ user_pid="$(wait_status_pid user persistent 0)" || fail 'user LaunchAgent did no
 wait_http "$local_port" "$marker1" 'user-scope -L traffic' || fail 'user-scope forward did not reach target 1'
 
 say 'migrating USER -> SYSTEM; Tunlite should now request administrator authorization once'
-"$tunlite" enable "$name" --scope system
+if ! run_interactive_logged user-to-system "$tunlite" enable "$name" --scope system; then
+  fail "USER -> SYSTEM migration failed; see $temporary/interactive-user-to-system.log"
+fi
 system_pid="$(wait_status_pid system persistent 0)" || fail 'system LaunchDaemon did not become healthy'
 [ "$system_pid" != "$user_pid" ] || fail 'USER -> SYSTEM migration did not replace the provider PID'
 wait_http "$local_port" "$marker1" 'system-scope -L traffic' || fail 'system-scope forward did not reach target 1'
@@ -631,7 +1122,9 @@ assert_record_matches_plist
 
 say 'changing the system execution plan; traffic must switch to target 2 and PID must change'
 plist_before_set="$(shasum -a 256 "$daemon_plist" | awk '{print $1}')"
-"$tunlite" set "$name" -L "$forward2"
+if ! run_interactive_logged system-set "$tunlite" set "$name" -L "$forward2"; then
+  fail "system set failed; see $temporary/interactive-system-set.log"
+fi
 set_pid="$(wait_status_pid system persistent "$system_pid")" || fail 'system definition replacement did not produce a healthy new PID'
 plist_after_set="$(shasum -a 256 "$daemon_plist" | awk '{print $1}')"
 [ "$plist_before_set" != "$plist_after_set" ] || fail 'system set did not change the LaunchDaemon definition'
@@ -658,7 +1151,9 @@ restart_pid="$(wait_status_pid system persistent "$set_pid")" || fail 'system re
 wait_http "$local_port" "$marker2" 'post-restart -L traffic' || fail 'traffic did not recover after the no-credential restart gate'
 
 say 'disabling SYSTEM; interactive administrator authorization is expected again'
-"$tunlite" disable "$name"
+if ! run_interactive_logged system-disable "$tunlite" disable "$name"; then
+  fail "system disable failed; see $temporary/interactive-system-disable.log"
+fi
 [ ! -e "$daemon_plist" ] || fail 'system disable retained the root LaunchDaemon plist'
 if job_exists system; then
   fail 'system disable retained the system-domain launchd job'

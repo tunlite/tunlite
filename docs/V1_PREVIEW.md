@@ -195,6 +195,15 @@ system `set`、`restart`、`disable` 和 `remove`。SYSTEM→USER、权限缺失
 回滚仍由自动故障注入测试与另行人工矩阵覆盖，不能把本脚本单独视为完整 system Scope
 验收。
 
+为让 LaunchAgent 与 LaunchDaemon 都直接执行真实 `/usr/bin/ssh`，脚本会把本次随机本机
+sshd 的唯一 host key 临时追加到当前用户的 `~/.ssh/known_hosts`。它记录文件 inode 和
+本次条目的精确字节位置；清理永不截断、删除或替换该文件，只在文件身份和本次
+完整条目仍匹配时把该条目行首原地改为 `#`，因此随后追加的内容不受影响。这个安全取舍
+会留下一个无效注释行；若检测到路径替换或已登记区间变化，脚本不再自动修改，而是保留
+诊断并打印仅删除该随机端点的 `ssh-keygen -R` 命令。若新机器原本没有 `.ssh` 或
+`known_hosts`，脚本创建的目录或只含无效注释的文件也会保留，避免以存在竞态的方式自动
+删除。
+
 无 sudo 调用的硬证明来源是 Launchd 单测
 `TestLaunchdSystemRestartUsesVerifiedNonPrivilegedKeepAliveReplacement`：Runner 遇到
 `MacOSSudoProgram` 会立即失败，并断言 system restart 只经过受校验的
