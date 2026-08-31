@@ -754,16 +754,9 @@ func TestFailedImportDoesNotCreateTarget(t *testing.T) {
 }
 
 func TestCheckReturnsStableAuthenticationExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test provider is a POSIX executable script")
-	}
-	provider := filepath.Join(t.TempDir(), "fake-ssh")
-	script := []byte("#!/bin/sh\necho 'Permission denied (publickey).' >&2\nexit 255\n")
-	if err := os.WriteFile(provider, script, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("TUNLITE_HOME", t.TempDir())
-	t.Setenv("TUNLITE_SSH", provider)
+	setTestSSH(t)
+	t.Setenv(testSSHBehavior, "authentication-failed")
 	code, out, stderr := invoke(t, "check", "me@example.com", "--timeout", "5", "--json", "--non-interactive")
 	if code != 4 || stderr != "" || !strings.Contains(out, `"code":"ssh_authentication_failed"`) {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, out, stderr)
