@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/filelock"
-	"github.com/yuanyuanzijin/tunlite/internal/processlock"
+	"github.com/tunlite/tunlite/internal/filelock"
+	"github.com/tunlite/tunlite/internal/processlock"
 )
 
 type Store struct {

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/yuanyuanzijin/tunlite/internal/cli"
+	"github.com/tunlite/tunlite/internal/cli"
 )
 
 func main() {

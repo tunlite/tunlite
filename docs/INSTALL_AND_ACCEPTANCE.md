@@ -113,7 +113,7 @@ tunlite version --json
 GitHub Release 真正存在以后，macOS 和 Linux 用户使用：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 ```
 
 安装脚本会自动识别系统和 CPU、校验 SHA-256，并安装到 `~/.local/bin/tunlite`。

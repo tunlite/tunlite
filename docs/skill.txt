@@ -9,7 +9,7 @@ Tunlite 是单文件 Go CLI，使用系统 OpenSSH 管理本地转发、远端�
 
 macOS / Linux：
 
-  curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 
 安装脚本下载 v1.0.0-preview.1 的平台二进制，并使用同一 GitHub Release 中的
 SHA256SUMS 校验。它只安装 CLI，不创建 Connection，也不启动任何持久服务。
@@ -33,17 +33,17 @@ Agent 的所有操作使用 --json --non-interactive；修改前优先使用 --d
 
 完整 Agent 操作手册：
 
-  https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite
+  https://github.com/tunlite/tunlite/tree/main/skill/use-tunlite
 
 从零安装与完整验收：
 
-  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md
+  https://github.com/tunlite/tunlite/blob/main/docs/INSTALL_AND_ACCEPTANCE.md
 
 预览版边界和发布门禁：
 
-  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md
+  https://github.com/tunlite/tunlite/blob/main/docs/V1_PREVIEW.md
 
 两份并列主文档：
 
-  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/PROJECT_DIRECTION.md
-  https://github.com/yuanyuanzijin/tunlite/blob/master/docs/ARCHITECTURE.md
+  https://github.com/tunlite/tunlite/blob/main/docs/PROJECT_DIRECTION.md
+  https://github.com/tunlite/tunlite/blob/main/docs/ARCHITECTURE.md

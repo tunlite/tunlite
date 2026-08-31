@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 type lifecycleObservationBudget struct {

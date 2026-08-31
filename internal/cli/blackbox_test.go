@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 type blackboxContract struct {

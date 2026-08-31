@@ -1,4 +1,4 @@
-module github.com/yuanyuanzijin/tunlite
+module github.com/tunlite/tunlite
 
 go 1.25.0
 

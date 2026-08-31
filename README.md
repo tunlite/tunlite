@@ -4,7 +4,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-[![Go CI](https://github.com/yuanyuanzijin/tunlite/actions/workflows/go-ci.yml/badge.svg)](https://github.com/yuanyuanzijin/tunlite/actions/workflows/go-ci.yml)
+[![Go CI](https://github.com/tunlite/tunlite/actions/workflows/go-ci.yml/badge.svg)](https://github.com/tunlite/tunlite/actions/workflows/go-ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Tunlite turns OpenSSH port forwards into named connections that can run in the
@@ -21,7 +21,7 @@ The system `ssh` command is the only runtime prerequisite.
 
 ```bash
 # macOS / Linux; downloads v1.0.0-preview.1 and verifies SHA-256
-curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 ```
 
 Every release contains self-contained archives and `SHA256SUMS`. Follow the

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/core"
 )
 
 var (

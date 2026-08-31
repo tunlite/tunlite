@@ -84,7 +84,7 @@ SSH Target 可以是明确的 `host` 或 `user@host`，但 Preview 用户名只�
 macOS 或 Linux：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 tunlite version --json
 tunlite capabilities --json
 ```
@@ -131,7 +131,7 @@ V1 Preview 暂不提供 Shell 自动补全，也不读取或修改 `.bashrc`、`
 
 ```bash
 gh attestation verify tunlite_1.0.0-preview.1_macos.tar.gz \
-  --repo yuanyuanzijin/tunlite
+  --repo tunlite/tunlite
 ```
 
 Checksum 只证明下载内容和发布清单一致；Attestation 才把产物绑定到仓库身份、提交和

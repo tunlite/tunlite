@@ -16,7 +16,7 @@ expectations and examples of acceptable and unacceptable behavior.
 
 If you experience or witness behavior that violates this code of conduct, please
 report it privately to the maintainers through
-[GitHub's confidential reporting](https://github.com/yuanyuanzijin/tunlite/security/advisories/new).
+[GitHub's confidential reporting](https://github.com/tunlite/tunlite/security/advisories/new).
 All reports will be reviewed and handled discreetly.
 
 ## Enforcement

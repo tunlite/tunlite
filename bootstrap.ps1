@@ -18,7 +18,7 @@ function Main {
 
   $plainVersion = $Version.Substring(1)
   $asset = "tunlite_${plainVersion}_windows_amd64.zip"
-  $repository = 'https://github.com/yuanyuanzijin/tunlite'
+  $repository = 'https://github.com/tunlite/tunlite'
   $baseUrl = if ($env:TUNLITE_RELEASE_BASE_URL) { $env:TUNLITE_RELEASE_BASE_URL } else { "$repository/releases/download/$Version" }
   $temporary = Join-Path ([IO.Path]::GetTempPath()) ("tunlite-" + [guid]::NewGuid())
   $staged = $null

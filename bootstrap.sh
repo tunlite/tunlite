@@ -5,7 +5,7 @@ set -eu
 main() {
   version="${TUNLITE_VERSION:-v1.0.0-preview.1}"
   install_dir="${TUNLITE_INSTALL_DIR:-${HOME}/.local/bin}"
-  repository="https://github.com/yuanyuanzijin/tunlite"
+  repository="https://github.com/tunlite/tunlite"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in

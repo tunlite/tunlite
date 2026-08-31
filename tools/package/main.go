@@ -131,7 +131,7 @@ func build(output, version string, item target) error {
 	if goBinary == "" {
 		goBinary = "go"
 	}
-	linkerFlags := "-s -w -X github.com/yuanyuanzijin/tunlite/internal/cli.Version=" + version
+	linkerFlags := "-s -w -X github.com/tunlite/tunlite/internal/cli.Version=" + version
 	command := exec.Command(goBinary, "build", "-buildvcs=false", "-trimpath", "-ldflags", linkerFlags, "-o", output, "./cmd/tunlite")
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr

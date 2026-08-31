@@ -4,7 +4,7 @@
 
 [English](README.md) · **简体中文**
 
-[![Go CI](https://github.com/yuanyuanzijin/tunlite/actions/workflows/go-ci.yml/badge.svg)](https://github.com/yuanyuanzijin/tunlite/actions/workflows/go-ci.yml)
+[![Go CI](https://github.com/tunlite/tunlite/actions/workflows/go-ci.yml/badge.svg)](https://github.com/tunlite/tunlite/actions/workflows/go-ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Tunlite 把 OpenSSH 端口转发变成有名字的 Connection，可以在前台运行，也可以交给
@@ -20,7 +20,7 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 
 ```bash
 # macOS / Linux；下载 v1.0.0-preview.1 并校验 SHA-256
-curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 ```
 
 每个 Release 都包含独立压缩包和 `SHA256SUMS`。第一次安装或参与发布验收，请按照
