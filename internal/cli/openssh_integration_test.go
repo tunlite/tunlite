@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 func TestRealOpenSSHAllForwardTypes(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/core"
 )
 
 func TestStoreSerializesConcurrentUpdates(t *testing.T) {

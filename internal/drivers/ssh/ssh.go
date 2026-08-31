@@ -15,8 +15,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 const ID = "io.tunlite.ssh"

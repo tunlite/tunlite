@@ -5,8 +5,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 const CurrentRecordRevision = 1

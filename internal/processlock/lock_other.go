@@ -5,7 +5,7 @@ package processlock
 import (
 	"context"
 
-	"github.com/yuanyuanzijin/tunlite/internal/filelock"
+	"github.com/tunlite/tunlite/internal/filelock"
 )
 
 // Windows is not in the v1 support matrix. Keep unsupported targets compiling

@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 func Evaluate(ctx context.Context, adapter Adapter, record Record, expected *Artifact) State {

@@ -13,11 +13,11 @@ import (
 	"time"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
-	"github.com/yuanyuanzijin/tunlite/internal/configstore"
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
-	"github.com/yuanyuanzijin/tunlite/schemas"
+	"github.com/tunlite/tunlite/internal/configstore"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/service"
+	"github.com/tunlite/tunlite/schemas"
 )
 
 type transitioningServiceAdapter struct {

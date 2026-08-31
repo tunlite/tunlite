@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yuanyuanzijin/tunlite/internal/configstore"
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/configstore"
+	"github.com/tunlite/tunlite/internal/core"
+	sshdriver "github.com/tunlite/tunlite/internal/drivers/ssh"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 func TestUnsupportedDryRunCommandsFailBeforeDispatch(t *testing.T) {

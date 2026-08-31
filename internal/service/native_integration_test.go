@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 const nativeServiceProviderHelperEnvironment = "TUNLITE_NATIVE_SERVICE_PROVIDER_HELPER"

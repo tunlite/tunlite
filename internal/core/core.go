@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 const (

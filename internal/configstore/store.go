@@ -12,8 +12,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/filelock"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/filelock"
 )
 
 const Kind = "ConnectionList"

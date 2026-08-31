@@ -7,8 +7,8 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 type stagedServiceMutation struct {

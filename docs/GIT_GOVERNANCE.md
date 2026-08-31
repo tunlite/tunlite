@@ -12,8 +12,9 @@
 
 ### 1.1 代码切代，仓库不断代
 
-Go v1 在现有公开仓库 `github.com/yuanyuanzijin/tunlite` 中原地演进，不新建另一份产品
-仓库，也不创建无父提交的 orphan 主线。现有公开仓库只有很短的 0.x 历史；重建只能让
+Go v1 在组织公开仓库 `github.com/tunlite/tunlite` 中原地演进；该仓库由原个人地址
+Transfer 而来，不新建另一份产品仓库，也不创建无父提交的 orphan 主线。现有公开仓库
+只有很短的 0.x 历史；重建只能让
 `git log` 表面更干净，却会割裂 Tag、Release、Issue、外部链接和构建来源，不能改善 Go
 程序本身。
 
@@ -127,11 +128,13 @@ Worktree 做物理隔离，但 Worktree 仍属于同一个公开仓库，分支�
 
 ### 4.2 Transfer 到 Organization
 
-1. 在 Transfer 前暂停 Push，确认本地工作区和远端 Branch/Tag 状态并创建 Mirror/Bundle。
-2. 将现有公开仓库 Transfer 到 `tunlite` Organization，仓库名仍为 `tunlite`。
-3. 更新本地 `origin` 和 Go module/import 路径，搜索并替换旧 GitHub 地址。
-4. 验证旧 URL 重定向、Clone、Actions、Pages、Security、Release 和权限设置。
-5. Transfer 和 module path 迁移通过独立 PR 完成，不与 v1 Tag 发布放在同一操作中。
+1. Transfer 前暂停 Push，确认本地工作区和远端 Branch/Tag 状态并创建 Mirror/Bundle。
+2. `v0.10.3` Tag 和 `legacy/node-0.x` 必须先在远端保留并验证可取回。
+3. 将现有公开仓库 Transfer 到 `tunlite` Organization，仓库名仍为 `tunlite`。
+4. 更新本地 `origin`，验证旧 URL 重定向、Clone、Actions、Pages、Security、Release 和权限设置。
+5. 当前迁移已经完成前四项：legacy 线已保留，仓库已 Transfer 到
+   `github.com/tunlite/tunlite`。Go module/import/URL 迁移仍通过独立 PR 完成，不与 v1 Tag
+   发布放在同一操作中。
 
 ### 4.3 拆分静态主页
 
@@ -146,12 +149,18 @@ Worktree 做物理隔离，但 Worktree 仍属于同一个公开仓库，分支�
 
 ### 4.4 Go v1 成为主线
 
-1. 推送 `rewrite/v1-go`，通过 Pull Request 和完整 CI 合入当前默认分支。
-2. 将默认分支统一命名为 `main`，同步更新 Ruleset、本地跟踪分支和文档链接。
-3. v1 验收稳定后，从 `main` 删除 `src/`、旧 `test/`、旧 `bin/` 等 Node 实现。
-4. V1 主线不携带 0.x 运行时兼容代码、夹具或迁移文档；历史只由 Release notes、Tag、
+1. 在 Go 迁移 Diff 推送到远端或通过 PR 对外生效前，先在 GitHub 将远端默认分支从
+   `master` 重命名为 `main`，同步更新 Ruleset 和本地跟踪分支。
+2. 验证 GitHub 默认分支确为 `main`，远端 HEAD 指向 `main`，Clone、`blob/main`、
+   `tree/main` 和 Raw `main` 链接均正常；这一步未通过时不得推送 Go 迁移分支。
+3. 推送 `rewrite/v1-go`，以 `main` 为 base 创建 Pull Request。
+4. 完整 CI 和必需 Review 通过后使用 Rebase Merge 合入 `main`，不制造迁移 Merge Commit。
+5. 合入后的 `main` 直接以 Go v1 为当前实现；默认分支重命名已经在 PR 之前完成，也不在
+   发布时临时删除 Node 目录。
+6. V1 主线不携带 0.x 运行时兼容代码、夹具或迁移文档；历史只由 Release notes、Tag、
    私有存档和按需保留的 legacy 分支保存。
-5. 删除已合入的 rewrite 分支、临时 Worktree，以及过渡完成后的 `dev/master` 分支。
+7. 合入和 `main` 核验完成后，再删除已合入的 rewrite 分支、临时 Worktree，以及过渡完成
+   后的 `dev/master` 分支。
 
 删除过渡分支不等于删除历史：发布 Tag 和 `legacy/node-0.x` 必须先验证能从空目录取回。
 
@@ -293,48 +302,88 @@ GitHub Actions 默认 `contents: read`。写权限、OIDC、Attestation 和 Rele
 
 ### 11.1 公开仓库迁移
 
+legacy 线已经保留，仓库也已经 Transfer 到 Organization。Go 迁移分支在本地完成最终
+验证，但此时先不 Push：
+
 ```bash
 cd /Users/admin/jly_gh/tunlite-go-v1
 git status --short
 go test ./...
 go test -race ./...
 go vet ./...
-git push -u origin rewrite/v1-go
 
 cd /Users/admin/jly_gh/tunlite
-git fetch origin --tags
-git branch legacy/node-0.x v0.10.3
-git push origin legacy/node-0.x
+git remote set-url origin git@github.com:tunlite/tunlite.git
+git fetch origin --prune --tags
+git ls-remote --exit-code --tags origin refs/tags/v0.10.3
+git ls-remote --exit-code --heads origin legacy/node-0.x
 ```
 
-在 GitHub 仓库 Settings 中将现有仓库 Transfer 给 `tunlite` Organization。Transfer 后：
+以上命令必须证明 Tag 和 legacy 远端分支仍可取回。随后在 GitHub 仓库 Settings 中把远端
+默认分支从 `master` 重命名为 `main`，并同步 Ruleset。这个远端重命名必须发生在
+`rewrite/v1-go` Push 和 PR 创建之前。重命名后先核验：
 
 ```bash
 cd /Users/admin/jly_gh/tunlite
-git remote set-url origin git@github.com:tunlite/tunlite.git
-git remote -v
 git fetch origin --prune --tags
+git ls-remote --heads origin main master
+git remote set-head origin --auto
+git remote show origin
+git branch --show-current
+git branch -m main
+git branch --set-upstream-to=origin/main main
+git pull --ff-only
 
-cd /Users/admin/jly_gh/tunlite-go-v1
-git remote -v
-rg -n "github.com/yuanyuanzijin/tunlite|raw.githubusercontent.com/yuanyuanzijin/tunlite" .
+curl -fsSI https://github.com/tunlite/tunlite/tree/main
+curl -fsSI https://github.com/tunlite/tunlite/blob/main/README.md
+curl -fsSI https://raw.githubusercontent.com/tunlite/tunlite/main/README.md
 ```
 
-Worktree 共享 Remote 配置，所以只在主 Worktree 修改一次 `origin`；第二段用于复核。随后
-通过单独 PR 更新 `go.mod`、Go Import 和全部旧 URL。创建并合入 `rewrite/v1-go` PR，
-再把默认分支重命名为 `main`，本地更新：
+`git ls-remote` 必须只显示 `main`，`git remote show origin` 必须显示 `HEAD branch: main`；
+执行本地 `git branch -m main` 前，`git branch --show-current` 必须确认当前正是旧
+`master`。三个 HTTP 链接都成功后，才允许 Go 迁移 Diff 对外生效。若本地分支已经按
+GitHub 提示完成重命名，则跳过重复的 `git branch -m main`，只核对 upstream。
+
+接着更新组织 module、Import 和活跃 URL，确认旧地址只剩明确的历史记录；然后推送 Go
+迁移分支，以 `main` 为 base 创建 PR：
+
+```bash
+cd /Users/admin/jly_gh/tunlite-go-v1
+git remote -v
+git status --short
+go mod tidy -diff
+go test ./...
+git diff --check
+
+rg -n "github.com/yuanyuanzijin/tunlite|raw.githubusercontent.com/yuanyuanzijin/tunlite" . \
+  --glob '!CHANGELOG.md' \
+  --glob '!docs/release-notes/**' \
+  --glob '!docs/GIT_GOVERNANCE.md'
+
+git push -u origin rewrite/v1-go
+gh pr create --repo tunlite/tunlite --base main --head rewrite/v1-go --fill
+gh pr checks --repo tunlite/tunlite --watch
+gh pr merge --repo tunlite/tunlite --rebase
+```
+
+`rg` 在上述排除历史事实的范围内必须零结果。PR 必须明确显示 `base: main`；只有完整 CI
+和 Review 通过后才执行 Rebase Merge。Worktree 共享 Remote 配置，所以只在主 Worktree
+修改一次 `origin`，Go Worktree 只复核。
+
+合入后在主 Worktree 更新并核验最终主线：
 
 ```bash
 cd /Users/admin/jly_gh/tunlite
 git fetch origin --prune
-git branch -m <旧默认分支> main
-git branch --set-upstream-to=origin/main main
+git switch main
 git pull --ff-only
+git remote show origin
+go test ./...
 ```
 
-更新仍指向旧默认分支的 Raw URL 和 Release notes，确认保护规则生效，再清理已合入的
-rewrite 分支和 Worktree。每次删除远端过渡分支之前，单独确认默认分支、Tag 和 legacy
-分支均可取回；不把改默认分支、删分支和发布 Tag 塞进一个脚本。
+最后再次确认默认分支、Tag、`legacy/node-0.x` 和 `main` 链接均可取回，再清理已合入的
+rewrite 分支和 Worktree。不把远端默认分支重命名、PR 合入、删分支和发布 Tag 塞进一个
+脚本；任一步失败都停在当前可恢复状态。
 
 ### 11.2 静态主页仓库
 

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/core"
+	sshdriver "github.com/tunlite/tunlite/internal/drivers/ssh"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 func TestRealNativeManageAndUnmanageDoNotInterruptProvider(t *testing.T) {

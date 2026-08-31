@@ -12,9 +12,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/yuanyuanzijin/tunlite/internal/configstore"
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
+	"github.com/tunlite/tunlite/internal/configstore"
+	"github.com/tunlite/tunlite/internal/core"
+	sshdriver "github.com/tunlite/tunlite/internal/drivers/ssh"
 )
 
 type connectionFlags struct {

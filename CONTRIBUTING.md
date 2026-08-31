@@ -21,7 +21,7 @@
 还需要系统 OpenSSH。
 
 ```bash
-git clone https://github.com/yuanyuanzijin/tunlite.git
+git clone https://github.com/tunlite/tunlite.git
 cd tunlite
 go run ./cmd/tunlite help
 go test ./...

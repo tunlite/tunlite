@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/yuanyuanzijin/tunlite/internal/core"
+	"github.com/tunlite/tunlite/internal/core"
 )
 
 func TestDriverBuildsDeterministicArgvPlan(t *testing.T) {

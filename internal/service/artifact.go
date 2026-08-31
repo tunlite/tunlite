@@ -9,7 +9,7 @@ import (
 	"os"
 	"reflect"
 
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/plan"
 )
 
 const embeddedPlanPrefix = "Tunlite-ExecutionPlan: "

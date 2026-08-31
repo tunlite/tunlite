@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 type privilegeAuthorizer interface {

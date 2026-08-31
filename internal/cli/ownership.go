@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yuanyuanzijin/tunlite/internal/configstore"
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/configstore"
+	"github.com/tunlite/tunlite/internal/core"
+	sshdriver "github.com/tunlite/tunlite/internal/drivers/ssh"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 func manageConnection(ctx context.Context, args []string, streams IO, opts options) error {

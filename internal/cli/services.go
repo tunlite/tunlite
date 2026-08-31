@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuanyuanzijin/tunlite/internal/configstore"
-	"github.com/yuanyuanzijin/tunlite/internal/core"
-	sshdriver "github.com/yuanyuanzijin/tunlite/internal/drivers/ssh"
-	appPaths "github.com/yuanyuanzijin/tunlite/internal/paths"
-	"github.com/yuanyuanzijin/tunlite/internal/plan"
-	"github.com/yuanyuanzijin/tunlite/internal/service"
+	"github.com/tunlite/tunlite/internal/configstore"
+	"github.com/tunlite/tunlite/internal/core"
+	sshdriver "github.com/tunlite/tunlite/internal/drivers/ssh"
+	appPaths "github.com/tunlite/tunlite/internal/paths"
+	"github.com/tunlite/tunlite/internal/plan"
+	"github.com/tunlite/tunlite/internal/service"
 )
 
 type serviceSelection struct {

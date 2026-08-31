@@ -13,7 +13,7 @@
   <header class="site-header">
     <nav class="nav shell" aria-label="Primary navigation">
       <a class="brand" href="index.html"><span>tun</span><b>lite</b><i></i></a>
-      <div class="nav-links"><a class="active" href="docs.html">Docs</a><a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/V1_PREVIEW.md">Preview</a><a href="https://github.com/yuanyuanzijin/tunlite">GitHub</a></div>
+      <div class="nav-links"><a class="active" href="docs.html">Docs</a><a href="https://github.com/tunlite/tunlite/blob/main/docs/V1_PREVIEW.md">Preview</a><a href="https://github.com/tunlite/tunlite">GitHub</a></div>
     </nav>
   </header>
 
@@ -27,9 +27,9 @@
       <a href="#automation">Automation</a>
       <a href="#support">Platform support</a>
       <p>DEEP DIVES</p>
-      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/ARCHITECTURE.md">Architecture ↗</a>
-      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/PROJECT_DIRECTION.md">Product direction ↗</a>
-      <a href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">Acceptance guide ↗</a>
+      <a href="https://github.com/tunlite/tunlite/blob/main/docs/ARCHITECTURE.md">Architecture ↗</a>
+      <a href="https://github.com/tunlite/tunlite/blob/main/docs/PROJECT_DIRECTION.md">Product direction ↗</a>
+      <a href="https://github.com/tunlite/tunlite/blob/main/docs/INSTALL_AND_ACCEPTANCE.md">Acceptance guide ↗</a>
     </aside>
 
     <main id="content" class="docs-content">
@@ -44,7 +44,7 @@
         <h2>Install the native binary</h2>
         <p>The only runtime dependency is the system <code>ssh</code>. The bootstrap downloads the platform archive and verifies its SHA-256 before installation.</p>
         <pre class="code"><span>$</span> command -v ssh
-<span>$</span> curl -fsSL https://raw.githubusercontent.com/yuanyuanzijin/tunlite/master/bootstrap.sh | sh
+<span>$</span> curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 <span>$</span> ~/.local/bin/tunlite version --json</pre>
         <div class="callout"><strong>Release not published yet?</strong> A 404 is expected before the Preview Release exists. Testers can install a supplied native binary with <code>install -m 0755 ./tunlite ~/.local/bin/tunlite</code>.</div>
       </section>
@@ -117,7 +117,7 @@
 <span>$</span> tunlite add db -L 5432:localhost:5432 deploy@app01 \
     --dry-run --json --non-interactive</pre>
         <p>Batch operations return one result per connection. Exit code <code>5</code> means partial failure; inspect every item instead of treating it as total failure or success.</p>
-        <p><a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/tree/master/skill/use-tunlite">Use the official Agent Skill →</a></p>
+        <p><a class="text-link" href="https://github.com/tunlite/tunlite/tree/main/skill/use-tunlite">Use the official Agent Skill →</a></p>
       </section>
 
       <section id="support">
@@ -130,13 +130,13 @@
           <div><span>Linux · arm64</span><code>linux_arm64</code><span>systemd user scope; system unsupported</span></div>
           <div><span>Windows</span><span>not published</span><span>repository compiles; Monitor rejects the platform before TUI; native lifecycle deferred</span></div>
         </div>
-        <p>Cross-compilation is not treated as platform validation. On 2026-08-31, Intel macOS passed the final Universal 2 build check, LaunchAgent release E2E, and an isolated LaunchDaemon USER→SYSTEM→USER→SYSTEM success path with real <code>-L</code> traffic, system <code>set</code>, restart without sudo, disable/remove, and exact cleanup. Ubuntu 24.04 PID 1 systemd Docker E2E passed. Apple Silicon hardware and non-container Linux hosts remain unverified before stable v1.0.0. See the <a class="text-link" href="https://github.com/yuanyuanzijin/tunlite/blob/master/docs/INSTALL_AND_ACCEPTANCE.md">acceptance guide</a> for the exact hardware gates.</p>
+        <p>Cross-compilation is not treated as platform validation. On 2026-08-31, Intel macOS passed the final Universal 2 build check, LaunchAgent release E2E, and an isolated LaunchDaemon USER→SYSTEM→USER→SYSTEM success path with real <code>-L</code> traffic, system <code>set</code>, restart without sudo, disable/remove, and exact cleanup. Ubuntu 24.04 PID 1 systemd Docker E2E passed. Apple Silicon hardware and non-container Linux hosts remain unverified before stable v1.0.0. See the <a class="text-link" href="https://github.com/tunlite/tunlite/blob/main/docs/INSTALL_AND_ACCEPTANCE.md">acceptance guide</a> for the exact hardware gates.</p>
       </section>
     </main>
   </div>
 
   <footer>
-    <div class="shell copyright">Tunlite V1 Preview · <a href="index.html">Home</a> · <a href="https://github.com/yuanyuanzijin/tunlite">GitHub</a> · MIT License</div>
+    <div class="shell copyright">Tunlite V1 Preview · <a href="index.html">Home</a> · <a href="https://github.com/tunlite/tunlite">GitHub</a> · MIT License</div>
   </footer>
 </body>
 </html>

@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yuanyuanzijin/tunlite/internal/service"
-	"github.com/yuanyuanzijin/tunlite/schemas"
+	"github.com/tunlite/tunlite/internal/service"
+	"github.com/tunlite/tunlite/schemas"
 )
 
 func schema(args []string, streams IO, opts options) error {

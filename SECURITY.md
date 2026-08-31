@@ -11,7 +11,7 @@
 
 请不要为未修复漏洞创建公开 Issue。使用 GitHub Private Vulnerability Reporting：
 
-https://github.com/yuanyuanzijin/tunlite/security/advisories/new
+https://github.com/tunlite/tunlite/security/advisories/new
 
 项目会尽快确认报告。修复发布后会致谢报告者，除非报告者希望匿名。
 
