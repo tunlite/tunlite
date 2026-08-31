@@ -11,6 +11,7 @@ import (
 )
 
 const testSSHProcess = "TUNLITE_TEST_SSH_PROCESS"
+const testSSHBehavior = "TUNLITE_TEST_SSH_BEHAVIOR"
 const foregroundProviderMarker = "TUNLITE_TEST_FOREGROUND_MARKER"
 const foregroundProviderStopped = "TUNLITE_TEST_FOREGROUND_STOPPED"
 
@@ -37,6 +38,10 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	if os.Getenv(testSSHProcess) == "1" {
+		if os.Getenv(testSSHBehavior) == "authentication-failed" {
+			fmt.Fprintln(os.Stderr, "Permission denied (publickey).")
+			os.Exit(255)
+		}
 		os.Exit(0)
 	}
 

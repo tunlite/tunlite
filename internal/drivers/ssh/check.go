@@ -1,8 +1,8 @@
 package ssh
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,9 +10,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tunlite/tunlite/internal/core"
+)
+
+const (
+	maxProbeOutputBytes = 64 * 1024
+	probeMatchTailBytes = 256
+	probeWaitDelay      = 500 * time.Millisecond
 )
 
 var (
@@ -58,18 +65,15 @@ func (d *Driver) Check(ctx context.Context, connection core.Connection, options 
 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	authenticated := make(chan struct{}, 1)
+	probeOutput := newProbeOutputObserver(authenticated)
 	command := exec.CommandContext(probeCtx, program, args...)
 	command.Stdout = io.Discard
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		return core.CheckReport{}, err
-	}
+	command.Stderr = probeOutput
+	command.WaitDelay = probeWaitDelay
 	if err := command.Start(); err != nil {
 		return core.CheckReport{}, err
 	}
-	authenticated := make(chan struct{}, 1)
-	linesDone := make(chan string, 1)
-	go scanProbeOutput(stderr, authenticated, linesDone)
 	waited := make(chan error, 1)
 	go func() { waited <- command.Wait() }()
 
@@ -88,8 +92,9 @@ func (d *Driver) Check(ctx context.Context, connection core.Connection, options 
 	case <-probeCtx.Done():
 		runErr = <-waited
 	}
-	output := <-linesDone
-	if confirmed || authSuccessPattern.MatchString(output) || runErr == nil {
+	output := probeOutput.String()
+	if confirmed || authSuccessPattern.MatchString(output) || runErr == nil ||
+		(errors.Is(runErr, exec.ErrWaitDelay) && probeCtx.Err() == nil) {
 		return checkReport(observedAt, connection, true, "ssh_authentication_succeeded", "info",
 			fmt.Sprintf("SSH authentication to %s succeeded", config.Host), nil), nil
 	}
@@ -125,28 +130,56 @@ func buildCheckArgs(config Config, seconds int) []string {
 	return args
 }
 
-func scanProbeOutput(reader io.Reader, authenticated chan<- struct{}, done chan<- string) {
-	var output strings.Builder
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if output.Len() < 64*1024 {
-			remaining := 64*1024 - output.Len()
-			if len(line) > remaining {
-				line = line[:remaining]
-			}
-			output.WriteString(line)
-			output.WriteByte('\n')
+type probeOutputObserver struct {
+	mu            sync.Mutex
+	output        []byte
+	matchTail     []byte
+	authenticated chan<- struct{}
+	authSignaled  bool
+}
+
+func newProbeOutputObserver(authenticated chan<- struct{}) *probeOutputObserver {
+	return &probeOutputObserver{authenticated: authenticated}
+}
+
+func (observer *probeOutputObserver) Write(value []byte) (int, error) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+
+	if remaining := maxProbeOutputBytes - len(observer.output); remaining > 0 {
+		if remaining > len(value) {
+			remaining = len(value)
 		}
-		if authSuccessPattern.MatchString(line) {
+		observer.output = append(observer.output, value[:remaining]...)
+	}
+	for unread := value; len(unread) > 0; {
+		chunkSize := probeMatchTailBytes
+		if chunkSize > len(unread) {
+			chunkSize = len(unread)
+		}
+		candidate := make([]byte, 0, len(observer.matchTail)+chunkSize)
+		candidate = append(candidate, observer.matchTail...)
+		candidate = append(candidate, unread[:chunkSize]...)
+		if !observer.authSignaled && authSuccessPattern.Match(candidate) {
+			observer.authSignaled = true
 			select {
-			case authenticated <- struct{}{}:
+			case observer.authenticated <- struct{}{}:
 			default:
 			}
 		}
+		if len(candidate) > probeMatchTailBytes {
+			candidate = candidate[len(candidate)-probeMatchTailBytes:]
+		}
+		observer.matchTail = append(observer.matchTail[:0], candidate...)
+		unread = unread[chunkSize:]
 	}
-	done <- output.String()
+	return len(value), nil
+}
+
+func (observer *probeOutputObserver) String() string {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	return string(observer.output)
 }
 
 func classifyCheckFailure(host, output string, contextErr error) (string, string, []core.Action) {
