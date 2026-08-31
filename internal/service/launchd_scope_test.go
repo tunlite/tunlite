@@ -976,6 +976,8 @@ func TestLaunchdSystemInstallRejectsLinkedOrReplacedStageBeforeInstall(t *testin
 		t.Run(mutation, func(t *testing.T) {
 			runner := newLaunchdScopeRunner(t)
 			baseExecute := runner.execute
+			mutationSetupComplete := false
+			var mutationSetupErr error
 			runner.fakeRunner.run = func(command string, args []string) ([]byte, error) {
 				output, err := baseExecute(command, args)
 				if err != nil {
@@ -983,9 +985,17 @@ func TestLaunchdSystemInstallRejectsLinkedOrReplacedStageBeforeInstall(t *testin
 				}
 				if mutation == "hardlink" && command == MacOSSudoProgram && len(args) >= 3 && args[2] == mktempProgram {
 					stage := strings.TrimSuffix(string(output), "\n")
-					if linkErr := os.Link(stage, stage+".link"); linkErr != nil {
-						return nil, linkErr
+					linked := stage + ".link"
+					t.Cleanup(func() {
+						if cleanupErr := os.Remove(linked); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+							t.Errorf("clean up injected hardlink %q: %v", linked, cleanupErr)
+						}
+					})
+					if mutationSetupErr = os.Link(stage, linked); mutationSetupErr != nil {
+						mutationSetupErr = fmt.Errorf("create injected hardlink: %w", mutationSetupErr)
+						return nil, mutationSetupErr
 					}
+					mutationSetupComplete = true
 				}
 				if mutation == "replace-after-write" && command == MacOSSudoProgram && len(args) >= 3 && args[2] == ddProgram {
 					var stage string
@@ -996,21 +1006,50 @@ func TestLaunchdSystemInstallRejectsLinkedOrReplacedStageBeforeInstall(t *testin
 					}
 					content, readErr := os.ReadFile(stage)
 					if readErr != nil {
-						return nil, readErr
+						mutationSetupErr = fmt.Errorf("read stage before injected replacement: %w", readErr)
+						return nil, mutationSetupErr
 					}
-					if removeErr := os.Remove(stage); removeErr != nil {
-						return nil, removeErr
+					displaced := stage + ".replaced"
+					t.Cleanup(func() {
+						if cleanupErr := os.Remove(displaced); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+							t.Errorf("clean up displaced stage %q: %v", displaced, cleanupErr)
+						}
+					})
+					if mutationSetupErr = os.Rename(stage, displaced); mutationSetupErr != nil {
+						mutationSetupErr = fmt.Errorf("displace stage before injected replacement: %w", mutationSetupErr)
+						return nil, mutationSetupErr
 					}
-					if writeErr := os.WriteFile(stage, content, 0o600); writeErr != nil {
-						return nil, writeErr
+					if mutationSetupErr = os.WriteFile(stage, content, 0o600); mutationSetupErr != nil {
+						mutationSetupErr = fmt.Errorf("create injected replacement stage: %w", mutationSetupErr)
+						return nil, mutationSetupErr
 					}
+					mutationSetupComplete = true
 				}
 				return output, nil
 			}
 			adapter, _, _ := newScopedLaunchd(t, runner)
 			artifact, _ := adapter.BuildScoped(ScopeSystem, "unsafe-stage-identity", testPlan())
-			if _, _, err := adapter.install(context.Background(), artifact); err == nil {
+			_, _, installErr := adapter.install(context.Background(), artifact)
+			if mutationSetupErr != nil {
+				t.Fatalf("%s mutation fixture failed: %v", mutation, mutationSetupErr)
+			}
+			if !mutationSetupComplete {
+				t.Fatalf("%s mutation fixture did not run", mutation)
+			}
+			if installErr == nil {
 				t.Fatalf("%s stage mutation unexpectedly succeeded", mutation)
+			}
+			switch mutation {
+			case "hardlink":
+				if !strings.Contains(installErr.Error(), "unsafe privileged launchd staging file") ||
+					!strings.Contains(installErr.Error(), "identity, link count, or filesystem is unsafe") {
+					t.Fatalf("hardlink rejection error=%v", installErr)
+				}
+			case "replace-after-write":
+				if !strings.Contains(installErr.Error(), "staged system launchd definition changed during write") ||
+					!strings.Contains(installErr.Error(), "inode changed during the privileged write") {
+					t.Fatalf("replacement rejection error=%v", installErr)
+				}
 			}
 			for _, call := range runner.calls {
 				if call.command == MacOSSudoProgram && len(call.args) >= 3 && call.args[2] == installProgram {
