@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -275,6 +276,9 @@ func TestMonitorStopAndRestartPlansRequireConfirmationBeforeExecution(t *testing
 }
 
 func TestMonitorStopAndRestartExecuteOnlyAfterYConfirmation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("interactive monitor is unsupported on Windows and covered by monitor_windows_test.go")
+	}
 	home := t.TempDir()
 	t.Setenv("TUNLITE_HOME", home)
 	setTestSSH(t)
@@ -531,6 +535,12 @@ func TestMonitorRejectsNonInteractiveJSONAndDryRunUse(t *testing.T) {
 		var out, stderr bytes.Buffer
 		code := RunContext(context.Background(), test.args, IO{Out: &out, Err: &stderr})
 		message := out.String() + stderr.String()
+		if !monitorPlatformSupported {
+			if code != 2 || !strings.Contains(message, "monitor is not available on this platform; use status instead") {
+				t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", test.args, code, out.String(), stderr.String())
+			}
+			continue
+		}
 		if code != test.code || (!strings.Contains(message, "status --json") && !strings.Contains(message, "does not support --dry-run")) {
 			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", test.args, code, out.String(), stderr.String())
 		}
