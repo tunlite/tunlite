@@ -198,7 +198,7 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 		t.Fatalf("capabilities omitted native service metadata: %#v", capabilities)
 	}
 	scope, ok := nativeServices["scope"].(map[string]any)
-	if !ok || scope["default"] != "user" {
+	if !ok {
 		t.Fatalf("unexpected native service scope contract: %#v", scope)
 	}
 	if elevation := scope["nonInteractiveElevation"]; elevation != "external" && elevation != "unsupported" {
@@ -208,7 +208,14 @@ func TestSchemaAndCapabilitiesAreMachineQueryable(t *testing.T) {
 		t.Fatalf("unexpected interactive elevation contract: %#v", scope)
 	}
 	supported, ok := scope["supported"].([]any)
-	if !ok || len(supported) == 0 || supported[0] != "user" {
+	if !ok {
+		t.Fatalf("native service scopes are not an array: %#v", scope)
+	}
+	if runtime.GOOS == "windows" {
+		if scope["default"] != nil || len(supported) != 0 {
+			t.Fatalf("Windows overclaims native service support: %#v", scope)
+		}
+	} else if scope["default"] != "user" || len(supported) == 0 || supported[0] != "user" {
 		t.Fatalf("user service scope is not reported: %#v", scope)
 	}
 	systemSupported := false

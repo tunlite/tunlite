@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -901,7 +902,7 @@ func TestServiceStoreRoundTrip(t *testing.T) {
 		t.Fatalf("loaded=%#v exists=%t err=%v", loaded, exists, err)
 	}
 	info, err := os.Stat(filepath.Join(store.root, "db.json"))
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("state permissions=%v err=%v", info.Mode(), err)
 	}
 }
