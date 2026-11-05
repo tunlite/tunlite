@@ -9,13 +9,15 @@ release process.
 > tunlite debuted publicly at **0.9.0**. Earlier `0.x` releases were a private
 > prototype and are not part of this public history.
 
-## [1.0.0-preview.1] - Unreleased
+## [1.0.0-preview.1] - 2026-11-06
 
 This preview replaces the Node.js runtime with a single Go binary while keeping SSH
 as the product's focused entry point.
 
-This entry describes the current `v1.0.0-preview.1` release candidate. It is not a
-stable `v1.0.0` release; the stable tag remains gated on multiple public previews
+This entry records the `v1.0.0-preview.1` candidate prepared on 2026-11-06. Public
+availability is established by the repository's tag, GitHub Release, checksums,
+and Artifact Attestation, rather than this dated entry. It is not a stable
+`v1.0.0` release; the stable tag remains gated on multiple public previews
 without destructive contract drift and the hardware validation in
 [docs/VERSIONING.md](docs/VERSIONING.md).
 

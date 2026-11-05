@@ -17,6 +17,7 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 ## 安装预览版
 
 运行时唯一前提是系统 `ssh`。
+对应 GitHub Release 和校验清单可用后执行：
 
 ```bash
 # macOS / Linux；下载 v1.0.0-preview.1 并校验 SHA-256

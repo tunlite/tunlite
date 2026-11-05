@@ -2,7 +2,7 @@
 
 - **适用版本：** `v1.0.0-preview.1`
 - **适用平台：** macOS 12+、使用 systemd 用户服务的 Linux
-- **最后更新：** 2026-08-31
+- **最后更新：** 2026-11-06
 
 这份文档只保留用户视角的端到端验收：能否安装、能否连接用户自己的 SSH 服务器、
 真实流量能否通过隧道，以及操作系统能否正确托管它。
@@ -26,8 +26,8 @@
 | Intel Mac LaunchDaemon USER→SYSTEM→USER→SYSTEM、真实 `-L` 流量、system `set`、无 sudo restart、disable/remove 与精确清理 | 通过 |
 | Ubuntu 24.04 PID 1 systemd 容器中的真实 OpenSSH、崩溃恢复、容器重启和 CLI 移除/替换 | 通过 |
 | macOS x64/arm64、Linux x64/arm64 原生构建 | 通过 |
-| 三个发布归档的 SHA-256 | 通过 |
-| bootstrap 下载、校验、原子替换和真实 Release 安装 | 通过 |
+| 三个本地候选归档的 SHA-256 | 通过；不代表公开 Release 校验已完成 |
+| bootstrap 下载、校验和原子替换的隔离测试 | 通过；公开 Release 安装须在发布后验证 |
 
 当前开发机是 Intel Mac，因此以下项目不能用交叉编译冒充真机通过：
 
@@ -36,6 +36,8 @@
 - 用户自己的 SSH 密钥、网络、跳板机和目标服务。
 
 这些才是后面需要用户或对应平台测试人员完成的内容。
+Apple Silicon user/system 与非容器 Linux 真机验收不阻塞 Preview.1，但仍是稳定
+`v1.0.0` 前的硬门禁。
 
 ## 2. 选择正确的原生二进制
 
@@ -68,9 +70,9 @@ command -v ssh
 应输出 `ssh` 的路径。发布后的在线安装脚本另外需要 `curl`、`tar` 和
 `sha256sum`/`shasum`。
 
-### 3.1 现在：安装收到的原生二进制
+### 3.1 安装收到的原生二进制
 
-当前 GitHub Release 尚未发布。维护者直接提供文件名为 `tunlite` 的单文件原生二进制；
+在对应 GitHub Release 可用前，可由维护者直接提供文件名为 `tunlite` 的单文件原生二进制；
 测试者不需要源码、Go、Node.js、压缩包或打包命令。终端进入该文件所在目录后执行：
 
 ```bash
@@ -110,14 +112,15 @@ tunlite version --json
 
 ### 3.2 发布以后：一条命令安装
 
-GitHub Release 真正存在以后，macOS 和 Linux 用户使用：
+对应 GitHub Release、归档和 `SHA256SUMS` 可用后，macOS 和 Linux 用户使用：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
 ```
 
 安装脚本会自动识别系统和 CPU、校验 SHA-256，并安装到 `~/.local/bin/tunlite`。
-Release 发布以前执行出现 404 是正常的。
+对应 Release 尚未发布时，下载地址可能返回 404；请使用维护者提供的候选二进制，不能
+跳过校验。公开发布完成仍须下载实际 Release 产物，重新校验 checksum 与 Attestation。
 
 ### 3.3 Shell 配置不得被修改
 

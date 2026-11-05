@@ -18,6 +18,7 @@ connection does not take the others down.
 ## Install the preview
 
 The system `ssh` command is the only runtime prerequisite.
+Once the corresponding GitHub Release and checksum manifest are available:
 
 ```bash
 # macOS / Linux; downloads v1.0.0-preview.1 and verifies SHA-256
