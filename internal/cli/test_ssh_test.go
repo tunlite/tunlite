@@ -52,10 +52,12 @@ func TestMain(m *testing.M) {
 	}
 	portableTestSSH = filepath.Join(directory, "ssh")
 	executable, err := os.Executable()
-	if err == nil {
+	// Windows cannot remove a hard link to the running test image. Copy it
+	// instead so TestMain can clean the fixture before this process exits.
+	if err == nil && runtime.GOOS != "windows" {
 		err = os.Link(executable, portableTestSSH)
 	}
-	if err != nil {
+	if err != nil || runtime.GOOS == "windows" {
 		var raw []byte
 		raw, err = os.ReadFile(executable)
 		if err == nil {
@@ -102,5 +104,18 @@ func TestPortableSSHFixtureResolvesAndExecutes(t *testing.T) {
 	}
 	if output, err := exec.Command(resolved, "-F", "none", "-N", "--", "test@example.com").CombinedOutput(); err != nil {
 		t.Fatalf("execute portable SSH fixture: %v\n%s", err, output)
+	}
+}
+
+func TestPortableSSHFixtureCleanupAllowsTestProcessExit(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Run the fixture test in its own process so TestMain also removes its
+	// fixture while that test executable is still running.
+	command := exec.Command(executable, "-test.run=^TestPortableSSHFixtureResolvesAndExecutes$")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("portable SSH fixture setup, execution, and cleanup: %v\n%s", err, output)
 	}
 }
