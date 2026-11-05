@@ -52,6 +52,7 @@ type options struct {
 	lifecycleObserver      *lifecycleObserver
 	privilegeAuthorizer    privilegeAuthorizer
 	systemReplacementBatch map[string]bool
+	monitorTarget          *monitorMutationTarget
 }
 
 type exitError struct {

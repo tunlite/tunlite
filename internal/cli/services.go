@@ -292,6 +292,19 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			continue
 		}
 		connection = cloneConnection(*current)
+		if opts.monitorTarget != nil {
+			// A refresh or another CLI can change the binding while the prompt
+			// is open or this command waits for the transaction lock. Recheck
+			// under that lock before making any native lifecycle change.
+			currentStatus := statusService(ctx, adapter, records, connection, config.Path())
+			if currentStatus.State == nil || monitorTarget(command, statusRow{connection: connection, state: *currentStatus.State}) != *opts.monitorTarget {
+				release()
+				results = append(results, failedServiceItem(connection.Metadata.Name, "confirmation_changed",
+					errors.New("connection changed; operation cancelled"), "low", nil))
+				completeProgress("failed")
+				continue
+			}
+		}
 		var result serviceItemResult
 		switch command {
 		case "start":
