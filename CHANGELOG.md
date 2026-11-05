@@ -114,6 +114,18 @@ without destructive contract drift and the hardware validation in
 
 ### Fixed
 
+- System launchd definition rollback unloads the replacement before restoring and
+  verifying the original provider, so failures after bootstrap restore effective
+  arguments as well as the plist.
+- Stale file-lock recovery serializes inspection, removal, and new ownership with
+  native OS guards, preventing simultaneous reapers from removing a fresh owner.
+- Monitor confirmations retain the displayed Connection and native identity across
+  refreshes and cancel if the target changes. Exiting waits for active lifecycle
+  transactions to commit or finish compensation.
+- Native log following retains bounded diagnostic tails while streaming complete
+  output; ordinary commands keep complete diagnostics.
+- A disabled system Connection can be enabled in user Scope under its existing
+  native identity, with transactional record updates and target cleanup on failure.
 - Generated launchd plists now write an explicit `Program` equal to
   `ProgramArguments[0]`. This avoids a macOS launchd edge case in which a newly
   bootstrapped job can remain at `xpcproxy` with `execs = 0`; while that transitional
