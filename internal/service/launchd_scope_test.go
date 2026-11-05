@@ -345,6 +345,79 @@ func TestLaunchdSystemDisableDeletesArtifactAndCanBeEnabledAgain(t *testing.T) {
 	}
 }
 
+func TestLaunchdDisabledSystemIdentityInstallsUserTargetWithoutPrivilege(t *testing.T) {
+	for _, outcome := range []string{"commit", "rollback", "bootstrap failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			runner := newLaunchdScopeRunner(t)
+			adapter, _, _ := newScopedLaunchd(t, runner)
+			source, err := adapter.BuildScoped(ScopeSystem, "original-name", testPlan())
+			if err != nil {
+				t.Fatal(err)
+			}
+			installed, err := StageScopeInstall(context.Background(), adapter, source, ModePersistent, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := installed.Commit(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Disable(context.Background(), source.Reference()); err != nil {
+				t.Fatal(err)
+			}
+			callsBefore := len(runner.calls)
+			reference := source.Reference()
+			reference.Scope, reference.ArtifactPath = ScopeUser, ""
+			target, err := adapter.BuildBound(reference, testPlan())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target.UnitName != source.UnitName || target.Connection != source.Connection {
+				t.Fatal("native identity changed")
+			}
+			if outcome == "bootstrap failure" {
+				runner.failBootstrap = true
+			}
+			transaction, err := StageScopeInstall(context.Background(), adapter, target, ModePersistent, nil)
+			if outcome == "bootstrap failure" {
+				if err == nil {
+					t.Fatal("bootstrap failure was ignored")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome == "rollback" {
+					err = transaction.Rollback(context.Background())
+				} else {
+					err = transaction.Commit(context.Background())
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, call := range runner.calls[callsBefore:] {
+				if call.command == MacOSSudoProgram {
+					t.Fatalf("absent source required privilege: %v", call.args)
+				}
+			}
+			if _, err := os.Stat(source.Path); !errors.Is(err, os.ErrNotExist) || runner.loaded["system/"+source.UnitName] {
+				t.Fatalf("system source was recreated: %v", err)
+			}
+			observation, err := adapter.Inspect(context.Background(), target.Reference())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome == "commit" {
+				if !observation.Installed || !observation.AutoStart || observation.ProcessState != ProcessRunning {
+					t.Fatalf("user target not persistent: %+v", observation)
+				}
+			} else if observation.Installed || observation.AutoStart || observation.ProcessState != ProcessInactive {
+				t.Fatalf("failed target was not removed: %+v", observation)
+			}
+		})
+	}
+}
+
 func TestLaunchdSystemDefinitionReplacementCommitsOrRestoresAtomically(t *testing.T) {
 	t.Run("commit", func(t *testing.T) {
 		runner := newLaunchdScopeRunner(t)

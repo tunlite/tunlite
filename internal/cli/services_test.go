@@ -89,7 +89,10 @@ func (f *scopedFakeServiceAdapter) CheckScopeInstall(_ context.Context, target s
 	return nil
 }
 
-func (f *scopedFakeServiceAdapter) CheckScopeTransition(ctx context.Context, _ service.Reference, target service.Artifact) error {
+func (f *scopedFakeServiceAdapter) CheckScopeTransition(ctx context.Context, source service.Reference, target service.Artifact) error {
+	if !f.observed[source.Connection].Installed {
+		return errors.New("source native service is not installed")
+	}
 	return f.CheckScopeInstall(ctx, target)
 }
 
