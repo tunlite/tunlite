@@ -18,6 +18,7 @@ import (
 type launchdScopeRunner struct {
 	fakeRunner
 	loaded        map[string]bool
+	definitions   map[string][]byte
 	disabled      map[string]bool
 	stageCounter  int
 	failKickstart bool
@@ -27,7 +28,7 @@ type launchdScopeRunner struct {
 
 func newLaunchdScopeRunner(t *testing.T) *launchdScopeRunner {
 	t.Helper()
-	runner := &launchdScopeRunner{loaded: map[string]bool{}, disabled: map[string]bool{}}
+	runner := &launchdScopeRunner{loaded: map[string]bool{}, definitions: map[string][]byte{}, disabled: map[string]bool{}}
 	runner.fakeRunner.run = runner.execute
 	return runner
 }
@@ -130,7 +131,16 @@ func (r *launchdScopeRunner) launchctl(args []string) ([]byte, error) {
 			return nil, errors.New("bootstrap failed")
 		}
 		label := strings.TrimSuffix(filepath.Base(args[2]), ".plist")
-		r.loaded[args[1]+"/"+label] = true
+		target := args[1] + "/" + label
+		if r.loaded[target] {
+			return []byte("service already loaded"), errors.New("already loaded")
+		}
+		definition, err := os.ReadFile(args[2])
+		if err != nil {
+			return nil, err
+		}
+		r.definitions[target] = definition
+		r.loaded[target] = true
 		return nil, nil
 	case "kickstart":
 		if r.failKickstart {
@@ -147,6 +157,7 @@ func (r *launchdScopeRunner) launchctl(args []string) ([]byte, error) {
 			return []byte("Could not find service"), errors.New("not found")
 		}
 		delete(r.loaded, args[1])
+		delete(r.definitions, args[1])
 		return nil, nil
 	}
 	return nil, errors.New("unexpected launchctl operation")
@@ -389,6 +400,68 @@ func TestLaunchdSystemDefinitionReplacementCommitsOrRestoresAtomically(t *testin
 			t.Fatalf("old persistent mode not restored: observation=%#v err=%v", observation, err)
 		}
 	})
+}
+
+func TestLaunchdDefinitionRollbackRestoresEffectiveArgumentsAfterBootstrap(t *testing.T) {
+	for _, failure := range []string{"health", "record or config commit", "unload", "restore bootstrap"} {
+		t.Run(failure, func(t *testing.T) {
+			runner := newLaunchdScopeRunner(t)
+			adapter, _, _ := newScopedLaunchd(t, runner)
+			original, _ := adapter.BuildScoped(ScopeSystem, "db", testPlan())
+			installed, err := StageScopeInstall(context.Background(), adapter, original, ModePersistent, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := installed.Commit(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			changedPlan := testPlan()
+			changedPlan.Exec.Args = append(changedPlan.Exec.Args, "--changed")
+			changed, _ := adapter.BuildScoped(ScopeSystem, "db", changedPlan)
+			var verify func(context.Context, Reference) error
+			if failure == "health" {
+				verify = func(context.Context, Reference) error { return errors.New("unhealthy replacement") }
+			}
+			transaction, err := StageDefinitionReplace(context.Background(), adapter, original.Reference(), changed, ModePersistent, verify)
+			target := "system/" + original.UnitName
+			if failure == "health" {
+				if err == nil {
+					t.Fatal("unhealthy replacement accepted")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if failure == "unload" {
+					runner.failBootout = target
+				} else if failure == "restore bootstrap" {
+					runner.failBootstrap = true
+				}
+				err = transaction.Rollback(context.Background())
+				if failure != "record or config commit" {
+					if err == nil {
+						t.Fatal("failed recovery reported success")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			// launchd retains its loaded definition, even if the plist changes.
+			// Check the definition used by its provider, not just the disk file.
+			dictionary, err := decodeLaunchdDictionary(runner.definitions[target])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fmt.Sprint(dictionary["ProgramArguments"]); strings.Contains(got, "--changed") || !runner.loaded[target] {
+				t.Fatalf("rollback left replacement provider arguments active: %s loaded=%v", got, runner.loaded[target])
+			}
+			if !bytes.Equal(runner.definitions[target], original.Content) || runner.disabled[target] {
+				t.Fatal("original provider definition and persistence were not restored")
+			}
+		})
+	}
 }
 
 func TestLaunchdRejectsForgedSystemRecordIdentityBeforeSudoOrProcessMutation(t *testing.T) {

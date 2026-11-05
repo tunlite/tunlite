@@ -918,12 +918,42 @@ func (t *launchdDefinitionReplace) Rollback(ctx context.Context) error {
 	if t.committed {
 		return errors.New("launchd definition replacement is already committed")
 	}
+	// A loaded job retains its definition independently of the plist. Unload
+	// the replacement before restoring bytes; bootstrap's "already loaded"
+	// response must never be mistaken for restoration of the old provider.
+	identity := t.launchd.domainTarget(t.target.Scope, t.target.UnitName)
+	output, err := t.launchd.runMutation(ctx, t.target.Scope, "bootout", identity)
+	if err != nil && !missingService(output) {
+		return fmt.Errorf("unload replacement before restoring definition: %w", err)
+	}
+	output, err = t.launchd.run(ctx, "print", identity)
+	if err == nil || !missingService(output) {
+		return fmt.Errorf("cannot verify replacement was unloaded: %w", errors.Join(err, errors.New("replacement may still be loaded")))
+	}
 	previous := t.target
 	previous.Content = append([]byte(nil), t.before.Artifact...)
-	_, _, installErr := t.launchd.install(ctx, previous)
-	restoreErr := t.launchd.restoreObservation(ctx, previous, t.before)
-	demandErr := restoreLaunchdDemand(t.launchd.logDir, previous, t.beforeDemand)
-	return errors.Join(installErr, restoreErr, demandErr)
+	if _, _, err := t.launchd.install(ctx, previous); err != nil {
+		return fmt.Errorf("restore previous definition: %w", err)
+	}
+	if err := t.launchd.restoreObservation(ctx, previous, t.before); err != nil {
+		return fmt.Errorf("restore previous provider: %w", err)
+	}
+	if err := restoreLaunchdDemand(t.launchd.logDir, previous, t.beforeDemand); err != nil {
+		return err
+	}
+	if t.before.AutoStart || t.before.ProcessState == ProcessRunning {
+		if err := t.launchd.observeTransitionTarget(ctx, previous, nil); err != nil {
+			return fmt.Errorf("verify restored provider: %w", err)
+		}
+	}
+	restored, err := t.launchd.inspectOne(ctx, previous)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(restored.Artifact, previous.Content) || restored.AutoStart != t.before.AutoStart {
+		return errors.New("restored launchd definition or persistence does not match the original")
+	}
+	return nil
 }
 
 func (l *Launchd) CheckScopeInstall(ctx context.Context, target Artifact) error {
