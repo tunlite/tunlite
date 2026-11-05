@@ -855,12 +855,18 @@ func TestLaunchdParsesRecognizableNativeSSHService(t *testing.T) {
 <key>StandardOutPath</key><string>/tmp/example.out</string>
 <key>StandardErrorPath</key><string>/tmp/example.err</string>
 </dict></plist>`)
-	value, label, logs, err := parseLaunchdExecutionPlan(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if value.Exec.Program != "/usr/bin/ssh" || label != "example.ssh.db" || len(logs) != 2 {
-		t.Fatalf("plan=%#v label=%q logs=%v", value, label, logs)
+	// Plist paths belong to launchd, even when this parser runs on Windows.
+	for _, controlledLogDir := range []string{"", "/tmp"} {
+		t.Run("controlledLogDir="+controlledLogDir, func(t *testing.T) {
+			value, label, logs, err := parseLaunchdExecutionPlanControlled(raw, controlledLogDir, ScopeUser, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Exec.Program != "/usr/bin/ssh" || label != "example.ssh.db" ||
+				!reflect.DeepEqual(logs, []string{"/tmp/example.out", "/tmp/example.err"}) {
+				t.Fatalf("plan=%#v label=%q logs=%v", value, label, logs)
+			}
+		})
 	}
 }
 

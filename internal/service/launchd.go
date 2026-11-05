@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -276,9 +277,10 @@ func renderLaunchd(artifact Artifact, embedded string, executionPlan plan.Execut
 // source. Modern macOS can leave nondemand KeepAlive jobs pended indefinitely;
 // an existing PathState marker makes the user's "keep this tunnel up" intent
 // explicit. Scope is part of the name so a migration can stage and roll back
-// user and system jobs independently.
+// user and system jobs independently. Plist paths use POSIX semantics on every
+// host, including when parsing launchd definitions on Windows.
 func launchdDemandPath(logDir string, artifact Artifact) string {
-	return filepath.Join(logDir, "."+artifact.Connection+"."+string(NormalizeScope(artifact.Scope))+".active")
+	return path.Join(logDir, "."+artifact.Connection+"."+string(NormalizeScope(artifact.Scope))+".active")
 }
 
 func validateLaunchdDemandIdentity(connection string, scope Scope) error {
@@ -2169,7 +2171,7 @@ func parseLaunchdExecutionPlanControlled(raw []byte, controlledLogDir string, ac
 		return plan.ExecutionPlan{}, "", nil, err
 	}
 	if controlledLogDir == "" {
-		controlledLogDir = filepath.Dir(stdout)
+		controlledLogDir = path.Dir(stdout)
 	}
 	expectedDemandPath := launchdDemandPath(controlledLogDir, Artifact{Connection: connection, Scope: actualScope})
 	if demandPath != expectedDemandPath {
