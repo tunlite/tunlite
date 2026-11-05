@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tunlite/tunlite/internal/core"
@@ -43,6 +44,35 @@ type monitorConfirmation struct {
 	name       string
 	persistent bool
 	system     bool
+	target     monitorMutationTarget
+}
+
+// Capture only stable identity and lifecycle facts. Refresh timestamps, PID
+// changes and health probes do not change what the user is authorizing.
+type monitorMutationTarget struct {
+	name, adapter, identity, command, mode, serviceState, consistency string
+	scope                                                             service.Scope
+	driver, config                                                    string
+}
+
+func monitorTarget(command string, row statusRow) monitorMutationTarget {
+	return monitorMutationTarget{
+		name: row.connection.Metadata.Name, adapter: row.state.Adapter,
+		identity: statusPlatformValue(row, "nativeIdentity"), command: command,
+		mode: row.state.Mode, scope: row.state.Scope,
+		serviceState: row.state.ServiceState, consistency: row.state.ConsistencyState,
+		driver: row.connection.Spec.Driver, config: string(row.connection.Spec.Config),
+	}
+}
+
+func (c *monitorConfirmation) resolve(rows []statusRow) (statusRow, bool) {
+	for _, row := range rows {
+		if row.connection.Metadata.Name == c.name {
+			command, _, err := monitorMutationPlan(c.key, row)
+			return row, err == nil && monitorTarget(command, row) == c.target
+		}
+	}
+	return statusRow{}, false
 }
 
 type monitorTransition struct {
@@ -109,7 +139,14 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	interval := time.Duration(seconds * float64(time.Second))
 	color := outputUsesColor(streams, opts)
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
-	defer cancelMonitor()
+	var activeMutations sync.WaitGroup
+	defer func() {
+		// Cancellation can arrive after a native side effect but before the
+		// record commit. The service transaction owns compensation; do not
+		// return to main (and os.Exit) until it has finished that work.
+		cancelMonitor()
+		activeMutations.Wait()
+	}()
 
 	var restoreRaw func()
 	uiActive := false
@@ -170,6 +207,12 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 			return refreshErr
 		}
 		rows = fresh
+		if confirmation != nil {
+			if _, valid := confirmation.resolve(rows); !valid {
+				confirmation = nil
+				flash = localized(opts.Language, "connection changed; operation cancelled", "连接已变更；操作已取消")
+			}
+		}
 		if resolved, message := monitorTransitionResolution(transition, rows, nil, opts.Language); resolved {
 			transition = nil
 			flash = message
@@ -196,11 +239,10 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 	if err := refresh(); err != nil {
 		return err
 	}
-	beginMutation := func(key monitorKey) {
-		if transition != nil || len(rows) == 0 {
+	beginMutation := func(key monitorKey, row statusRow) {
+		if transition != nil {
 			return
 		}
-		row := rows[selected]
 		command, label, planErr := monitorMutationPlan(key, row)
 		if planErr != nil {
 			flash = planErr.Error()
@@ -210,8 +252,14 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 		}
 		transition = &monitorTransition{name: row.connection.Metadata.Name, label: label}
 		render(false)
+		activeMutations.Add(1)
 		go func() {
-			mutations <- executeMonitorMutation(monitorCtx, command, row, opts)
+			defer activeMutations.Done()
+			result := executeMonitorMutation(monitorCtx, command, row, opts)
+			select {
+			case mutations <- result:
+			case <-monitorCtx.Done():
+			}
 		}()
 	}
 	for {
@@ -252,8 +300,14 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 					pending := confirmation
 					confirmation = nil
 					if key == monitorConfirm {
+						row, valid := pending.resolve(rows)
+						if !valid {
+							flash = localized(opts.Language, "connection changed; operation cancelled", "连接已变更；操作已取消")
+							render(false)
+							flash = ""
+							return false
+						}
 						if pending.system && pending.persistent && pending.key == monitorStop {
-							row := rows[selected]
 							command, label, planErr := monitorMutationPlan(pending.key, row)
 							if planErr != nil {
 								flash = planErr.Error()
@@ -271,7 +325,7 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 							}
 							mutations <- result
 						} else {
-							beginMutation(pending.key)
+							beginMutation(pending.key, row)
 						}
 					} else {
 						flash = localized(opts.Language, "operation cancelled", "操作已取消")
@@ -308,7 +362,9 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 						detail = true
 					}
 				case monitorStart:
-					beginMutation(key)
+					if len(rows) > 0 {
+						beginMutation(key, rows[selected])
+					}
 					return false
 				case monitorStop, monitorRestart:
 					if transition != nil {
@@ -316,12 +372,13 @@ func monitor(ctx context.Context, args []string, streams IO, opts options) error
 						break
 					}
 					if len(rows) > 0 {
-						_, _, planErr := monitorMutationPlan(key, rows[selected])
+						command, _, planErr := monitorMutationPlan(key, rows[selected])
 						if planErr != nil {
 							flash = planErr.Error()
 						} else {
 							confirmation = &monitorConfirmation{
 								key: key, name: rows[selected].connection.Metadata.Name,
+								target:     monitorTarget(command, rows[selected]),
 								persistent: key == monitorStop && rows[selected].state.Mode == service.ModePersistent,
 								system: key == monitorStop && rows[selected].state.Mode == service.ModePersistent &&
 									statusScopeKnown(rows[selected].state) && rows[selected].state.Scope == service.ScopeSystem,
@@ -966,6 +1023,8 @@ func executeMonitorMutationWithIO(
 	streams.Out = &stdout
 	internalOpts := opts
 	internalOpts.JSON = true
+	target := monitorTarget(command, row)
+	internalOpts.monitorTarget = &target
 	err := serviceCommand(ctx, command, []string{row.connection.Metadata.Name}, streams, internalOpts)
 	var response struct {
 		Outcome string `json:"outcome"`

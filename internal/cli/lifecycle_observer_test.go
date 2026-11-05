@@ -539,12 +539,16 @@ func TestMonitorKeepsTransitionWhenLifecycleObservationIsPending(t *testing.T) {
 	if code, out, stderr := invoke(t, "start", "db", "--json"); code != 0 {
 		t.Fatalf("start exit=%d out=%s err=%s", code, out, stderr)
 	}
-	row := fixtureStatusRow(t)
-	row.state.Mode = service.ModeBackground
 	budget := lifecycleObservationBudget{Overall: time.Millisecond, PerItem: time.Millisecond, PollInterval: time.Millisecond}
-	result := executeMonitorMutation(context.Background(), "restart", row, options{
+	opts := options{
 		Language: languageEnglish, serviceAdapter: func() (service.Adapter, error) { return adapter, nil }, lifecycleBudget: &budget,
-	})
+	}
+	rows, err := collectMonitorRows(context.Background(), "", opts)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("monitor rows=%v err=%v", rows, err)
+	}
+	row := rows[0]
+	result := executeMonitorMutation(context.Background(), "restart", row, opts)
 	if !result.pending || result.completedMessage != "restarted db" || result.message != "restart accepted; still restarting db" {
 		t.Fatalf("pending monitor result=%#v", result)
 	}
