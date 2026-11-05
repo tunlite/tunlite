@@ -218,6 +218,7 @@ func (s *Systemd) Logs(ctx context.Context, reference Reference, lines int, foll
 	args := []string{"--user", "-u", s.resolve(reference).UnitName, "-n", strconv.Itoa(lines), "--no-pager"}
 	if follow {
 		args = append(args, "--follow")
+		streams.Streaming = true
 	}
 	_, err := s.runner.Run(ctx, "journalctl", args, streams)
 	return err
