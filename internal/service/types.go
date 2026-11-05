@@ -149,6 +149,9 @@ type Streams struct {
 	In  io.Reader
 	Out io.Writer
 	Err io.Writer
+	// Streaming forwards all output but retains only a bounded diagnostic
+	// tail. Ordinary finite commands keep their complete captured output.
+	Streaming bool
 }
 
 type Capabilities struct {

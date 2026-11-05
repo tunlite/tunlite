@@ -1947,6 +1947,7 @@ func (l *Launchd) Logs(ctx context.Context, reference Reference, lines int, foll
 	args := []string{"-n", strconv.Itoa(lines)}
 	if follow {
 		args = append(args, "-F")
+		streams.Streaming = true
 	}
 	args = append(args, paths...)
 	_, err := l.runner.Run(ctx, "tail", args, streams)
