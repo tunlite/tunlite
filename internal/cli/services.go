@@ -160,7 +160,8 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 					preflightErr = buildErr
 					break
 				}
-				if sourceState := service.Evaluate(ctx, adapter, record, &sourceArtifact); sourceState.ConsistencyState != service.ConsistencyConsistent {
+				sourceState := service.Evaluate(ctx, adapter, record, &sourceArtifact)
+				if sourceState.ConsistencyState != service.ConsistencyConsistent {
 					preflightErr = errors.New("connection has drifted; resolve it before changing service scope")
 					break
 				}
@@ -172,8 +173,20 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 					preflightErr = buildErr
 					break
 				}
-				preflightErr = service.CheckScopeTransition(ctx, adapter, record.Reference(), targetArtifact)
-				if preflightErr == nil {
+				if disabledSystemSourceAbsent(record, sourceState) {
+					// disable already removed the system definition. There is no
+					// source to unload or delete; install the target under the
+					// retained identity and transition only the local record.
+					preflightErr = service.CheckScopeInstall(ctx, adapter, targetArtifact)
+					if preflightErr == nil {
+						artifact := targetArtifact
+						preflights = append(preflights, scopePreflightOperation{
+							requiresAdministrator: artifact.Scope == service.ScopeSystem,
+							from:                  string(record.Scope), to: artifact.Scope,
+							preflight: func() error { return service.PreflightScopeInstall(ctx, adapter, artifact) },
+						})
+					}
+				} else if preflightErr = service.CheckScopeTransition(ctx, adapter, record.Reference(), targetArtifact); preflightErr == nil {
 					source := record.Reference()
 					artifact := targetArtifact
 					preflights = append(preflights, scopePreflightOperation{
@@ -226,7 +239,7 @@ func serviceCommand(ctx context.Context, command string, args []string, streams 
 			return renderServiceResults(streams, opts, command, results)
 		}
 	}
-	if command == "enable" {
+	if command == "enable" && (!selection.scopeSet || selection.scope == service.ScopeSystem) {
 		preflightErr := preflightSystemReenable(ctx, adapter, records, targets, config.Path(), streams, opts)
 		if preflightErr != nil {
 			results := make([]serviceItemResult, 0, len(targets))
@@ -1049,9 +1062,14 @@ func migrateAndEnableService(
 		result.State = &before
 		return result
 	}
-	transition, err := service.StageScopeTransition(
-		ctx, adapter, oldRecord.Reference(), targetArtifact, service.ModePersistent, transitionHealthVerifier(targetArtifact),
-	)
+	var transition service.ScopeTransition
+	if disabledSystemSourceAbsent(oldRecord, before) {
+		transition, err = service.StageScopeInstall(ctx, adapter, targetArtifact, service.ModePersistent, transitionHealthVerifier(targetArtifact))
+	} else {
+		transition, err = service.StageScopeTransition(
+			ctx, adapter, oldRecord.Reference(), targetArtifact, service.ModePersistent, transitionHealthVerifier(targetArtifact),
+		)
+	}
 	if err != nil {
 		return failedServiceOperation(connection.Metadata.Name, err, "scope_transition_failed")
 	}
@@ -1071,6 +1089,11 @@ func migrateAndEnableService(
 	}
 	renderScopeChangeProgress(streams, opts, connection.Metadata.Name, string(service.NormalizeScope(oldRecord.Scope)), targetScope, "complete")
 	return observeLifecycleResult(ctx, adapter, newRecord, targetArtifact, "enable", result, opts)
+}
+
+func disabledSystemSourceAbsent(record service.Record, state service.State) bool {
+	return record.Scope == service.ScopeSystem && record.Mode == service.ModeStopped && record.ArtifactPath == "" &&
+		state.ConsistencyState == service.ConsistencyConsistent && state.ServiceState == service.ServiceAbsent && state.ProcessState == service.ProcessInactive
 }
 
 func updatedRecordForArtifact(record service.Record, artifact service.Artifact, mode string) service.Record {
