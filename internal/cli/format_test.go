@@ -528,22 +528,32 @@ func TestMonitorDetailReadsLogsOnlyForSelectedConnection(t *testing.T) {
 
 func TestMonitorRejectsNonInteractiveJSONAndDryRunUse(t *testing.T) {
 	tests := []struct {
-		args []string
-		code int
-	}{{[]string{"monitor"}, 4}, {[]string{"monitor", "--non-interactive"}, 4}, {[]string{"monitor", "--json"}, 2}, {[]string{"monitor", "--dry-run"}, 2}}
+		name            string
+		args            []string
+		code            int
+		message         string
+		globalRejection bool
+	}{
+		{name: "non-terminal", args: []string{"monitor"}, code: 4, message: "status --json"},
+		{name: "non-interactive", args: []string{"monitor", "--non-interactive"}, code: 4, message: "status --json"},
+		{name: "json", args: []string{"monitor", "--json"}, code: 2, message: "status --json"},
+		{name: "dry-run", args: []string{"monitor", "--dry-run"}, code: 2, message: "monitor does not support --dry-run", globalRejection: true},
+	}
 	for _, test := range tests {
-		var out, stderr bytes.Buffer
-		code := RunContext(context.Background(), test.args, IO{Out: &out, Err: &stderr})
-		message := out.String() + stderr.String()
-		if !monitorPlatformSupported {
-			if code != 2 || !strings.Contains(message, "monitor is not available on this platform; use status instead") {
+		t.Run(test.name, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			code := RunContext(context.Background(), test.args, IO{Out: &out, Err: &stderr})
+			message := out.String() + stderr.String()
+			wantCode, wantMessage := test.code, test.message
+			// Unsupported global options are rejected before monitor dispatch.
+			if !monitorPlatformSupported && !test.globalRejection {
+				wantCode = 2
+				wantMessage = "monitor is not available on this platform; use status instead"
+			}
+			if code != wantCode || !strings.Contains(message, wantMessage) {
 				t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", test.args, code, out.String(), stderr.String())
 			}
-			continue
-		}
-		if code != test.code || (!strings.Contains(message, "status --json") && !strings.Contains(message, "does not support --dry-run")) {
-			t.Fatalf("args=%v exit=%d stdout=%s stderr=%s", test.args, code, out.String(), stderr.String())
-		}
+		})
 	}
 }
 
