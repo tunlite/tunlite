@@ -1,6 +1,8 @@
 # Tunlite v1 预览版指南
 
 本文说明 `v1.0.0-preview.N` 的安装、支持范围和发布验收。
+`v1.0.0-preview.1` 候选准备日期为 2026-11-06；该日期不代表已经公开发布。
+公开发布事实以仓库的 Tag、GitHub Release、校验清单和 Artifact Attestation 为准。
 产品与架构决策以 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md) 和
 [ARCHITECTURE.md](ARCHITECTURE.md) 两份并列主文档为准。
 
@@ -81,7 +83,7 @@ SSH Target 可以是明确的 `host` 或 `user@host`，但 Preview 用户名只�
 
 ## 安装与校验
 
-macOS 或 Linux：
+对应 GitHub Release 和校验清单可用后，macOS 或 Linux 用户可执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh | sh
@@ -127,7 +129,8 @@ V1 Preview 暂不提供 Shell 自动补全，也不读取或修改 `.bashrc`、`
 也可以手动下载压缩包和 `SHA256SUMS`。任何 checksum 不一致都必须停止安装，不能用
 “重新下载后跳过校验”的方式继续。
 
-正式 Release 还应提供 GitHub Artifact Attestation。启用发布工作流后可验证：
+每个 Release 必须提供 GitHub Artifact Attestation。Tag 工作流完成全部门禁、生成证明
+并发布对应产物后，可验证：
 
 ```bash
 gh attestation verify tunlite_1.0.0-preview.1_macos.tar.gz \
@@ -135,7 +138,8 @@ gh attestation verify tunlite_1.0.0-preview.1_macos.tar.gz \
 ```
 
 Checksum 只证明下载内容和发布清单一致；Attestation 才把产物绑定到仓库身份、提交和
-GitHub Actions 构建。发布工作流尚未得到外部写入授权时，不得虚构已存在的证明。
+GitHub Actions 构建。发布工作流已获单独授权并完成审查，但每次推送 Tag 仍须获得明确
+发布授权；工作流存在不代表对应 Release 或证明已经存在。
 
 ## 预览版发布门禁
 
