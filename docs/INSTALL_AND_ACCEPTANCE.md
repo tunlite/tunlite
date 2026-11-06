@@ -41,9 +41,10 @@ Apple Silicon user/system 与非容器 Linux 真机验收不阻塞 Preview.1，�
 
 ## 2. 选择安装渠道与平台
 
-macOS 推荐 Homebrew 源码构建；已有 Go 1.25+ 的用户可以使用固定版本 `go install`。
-不需要编译工具链时使用预编译归档。三种渠道安装相同的 CLI，不会自动迁移旧开发版的
-Service Record。Homebrew Tap 尚待公开，下文命令为其公开后的入口。
+macOS 推荐 Homebrew 下载并校验预编译二进制，不安装 Go 或其他编译工具链。
+也可直接下载预编译归档；只有希望手工编译的用户才需要 Go 1.25+ 和固定版本
+`go install`。三种渠道安装相同的 CLI，不会自动迁移旧开发版的 Service Record。
+Homebrew Tap 已公开，下文命令可直接使用。
 
 选择预编译渠道时，先查看机器类型：
 
@@ -126,9 +127,9 @@ curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh |
 对应 Release 尚未发布时，下载地址可能返回 404；请使用维护者提供的候选二进制，不能
 跳过校验。公开发布完成仍须下载实际 Release 产物，重新校验 checksum 与 Attestation。
 
-### 3.3 Homebrew 源码安装（macOS 推荐）
+### 3.3 Homebrew 二进制安装（macOS 推荐）
 
-[`tunlite/homebrew-tap`](https://github.com/tunlite/homebrew-tap) 公开后执行：
+通过公开的 [`tunlite/homebrew-tap`](https://github.com/tunlite/homebrew-tap) 安装：
 
 ```bash
 brew install tunlite/tap/tunlite
@@ -136,8 +137,8 @@ type -a tunlite
 tunlite version --json
 ```
 
-Formula 下载固定 `v1.0.0-preview.1` 源码归档并验证 SHA-256，使用 Homebrew 的 Go
-构建依赖编译 `./cmd/tunlite`，注入版本 `1.0.0-preview.1`。Go 不属于运行时依赖。
+Formula 下载固定 `v1.0.0-preview.1` 的官方 Release 二进制归档并验证对应 SHA-256。
+macOS 使用 Universal 2 产物，Linux 按 x86_64 或 arm64 选择；不安装 Go，也不编译源码。
 二进制由 Homebrew 安装到自己的 prefix，按照 Homebrew 的 `brew shellenv` 提示配置 PATH。
 没有 `brew services start tunlite`：每个 Connection 仍由 launchd 或 systemd 独立管理。
 Linux 使用同一 Formula 时，持久连接仍要求 systemd 用户会话，Linux system Scope 不支持。
@@ -145,13 +146,18 @@ Linux 使用同一 Formula 时，持久连接仍要求 systemd 用户会话，Li
 ```bash
 brew update
 brew upgrade tunlite/tap/tunlite
+# 需要重新安装当前包时：
+brew reinstall tunlite/tap/tunlite
 # 仅在需要卸载 CLI 时执行：
 brew uninstall tunlite/tap/tunlite
 ```
 
-升级只会获得 Tap 已发布的版本；本地构建的 CLI 不承诺 Apple 开发者签名或公证。
+已添加过 Tap 的用户重试前必须先 `brew update`，以取得新的二进制 Formula。
+revision 1（Homebrew 包版本 `1.0.0-preview.1_1`）使此前同版本源码包也能升级；不会自动
+删除之前已安装的 Go。升级只会获得 Tap 已发布的包。Homebrew 分发不提供 Apple
+开发者签名或公证，也不保证不受 quarantine 或企业设备策略限制。
 
-### 3.4 固定版本 go install
+### 3.4 可选：固定版本源码 go install
 
 安装 Go 1.25 或更新版本后执行（未覆盖 `GOSUMDB`，保留 Go 默认校验）：
 
@@ -181,7 +187,7 @@ tunlite version --json
 目标 Tag，并同步更新 `-X` 注入版本；Tag 保留前缀 `v`，注入值不带 `v`。
 卸载只删除实际 `GOBIN` 或 `GOPATH/bin` 中的 `tunlite` 文件，不删除整个目录。
 
-Homebrew 与直接源码编译通常不会带有浏览器下载文件的 quarantine 属性；这不等同于
+直接源码编译通常不会带有浏览器下载文件的 quarantine 属性；这不等同于
 Apple 开发者认证、签名或公证，也不能保证绕过企业设备策略。
 
 ### 3.5 PATH、渠道切换与 Shell 配置

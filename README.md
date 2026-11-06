@@ -17,15 +17,22 @@ connection does not take the others down.
 
 ## Install the preview
 
-The system `ssh` command is the only runtime prerequisite. On macOS, Homebrew
-builds the fixed preview from verified source (Go is a build dependency only).
-Once the [`tunlite/tap` repository](https://github.com/tunlite/homebrew-tap) is published:
+The system `ssh` command is the only runtime prerequisite. On macOS, install the
+published preview with [`tunlite/tap`](https://github.com/tunlite/homebrew-tap).
+Homebrew downloads the checksum-verified release binary; it does not install Go
+or compile source:
 
 ```bash
 brew install tunlite/tap/tunlite
 ```
 
-To compile directly, install Go 1.25 or newer and run:
+If you already tapped an earlier package, run `brew update` before installing or
+upgrading. `brew upgrade tunlite/tap/tunlite` upgrades the old source-built package
+to the binary package at revision 1; use `brew reinstall tunlite/tap/tunlite` to
+reinstall the current package. Homebrew delivery does not confer Apple developer
+signing/notarization or guarantee acceptance by enterprise policies.
+
+For optional manual source compilation, install Go 1.25 or newer and run:
 
 ```bash
 git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source

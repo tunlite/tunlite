@@ -16,14 +16,20 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 
 ## 安装预览版
 
-运行时唯一前提是系统 `ssh`。macOS 推荐使用 Homebrew，从校验过的固定预览版源码编译
-（Go 仅为构建依赖）。[`tunlite/tap` 仓库](https://github.com/tunlite/homebrew-tap)公开后执行：
+运行时唯一前提是系统 `ssh`。macOS 推荐使用
+[`tunlite/tap`](https://github.com/tunlite/homebrew-tap)：Homebrew 下载并校验已发布的
+预编译二进制，不安装 Go，也不编译源码：
 
 ```bash
 brew install tunlite/tap/tunlite
 ```
 
-也可以自行安装 Go 1.25 或更新版本，然后从固定版本编译：
+已经添加过旧 Tap 时，先执行 `brew update` 再安装或升级。
+`brew upgrade tunlite/tap/tunlite` 可将此前源码构建的包升级为 revision 1 二进制包；
+需要重新安装当前包时使用 `brew reinstall tunlite/tap/tunlite`。Homebrew 分发不等同于
+Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+需要手工编译源码时，可选安装 Go 1.25 或更新版本，再从固定版本编译：
 
 ```bash
 git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
