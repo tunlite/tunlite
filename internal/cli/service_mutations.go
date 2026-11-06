@@ -355,7 +355,7 @@ func stageUpdatedConnectionService(ctx context.Context, before, after core.Conne
 		record.PlanDigest = newArtifact.PlanDigest
 		record.BaselineDigest = service.ContentDigest(newArtifact.Content)
 		if err := records.Write(ctx, record); err != nil {
-			recoveryCtx, cancel := compensationContext(ctx)
+			recoveryCtx, cancel := service.DefinitionReplaceRecoveryContext(ctx)
 			defer cancel()
 			return fail(recoveryBlockedError(err, transition.Rollback(recoveryCtx), resolveActions(before.Metadata.Name)))
 		}
@@ -364,9 +364,14 @@ func stageUpdatedConnectionService(ctx context.Context, before, after core.Conne
 			finish: release,
 			commit: func() error { return transition.Commit(ctx) },
 			rollback: func() error {
-				recoveryCtx, cancel := compensationContext(ctx)
-				defer cancel()
-				return errors.Join(transition.Rollback(recoveryCtx), records.Write(recoveryCtx, oldRecord))
+				recoveryCtx, cancel := service.DefinitionReplaceRecoveryContext(ctx)
+				recoveryErr := transition.Rollback(recoveryCtx)
+				cancel()
+				// Preserve a full record-write allowance even when native recovery
+				// used its entire deadline. Both phases remain cancellation-safe.
+				recordCtx, cancelRecord := compensationContext(ctx)
+				defer cancelRecord()
+				return errors.Join(recoveryErr, records.Write(recordCtx, oldRecord))
 			},
 			conditions: []condition{}, actions: resolveActions(before.Metadata.Name),
 		}, nil

@@ -30,6 +30,8 @@ const (
 	psProgram        = "/bin/ps"
 	killProgram      = "/bin/kill"
 	trueProgram      = "/usr/bin/true"
+
+	launchdTransitionTimeout = 30 * time.Second
 )
 
 type Launchd struct {
@@ -62,7 +64,7 @@ func NewLaunchdWithSystemScope(agentDir, daemonDir, logDir string, uid int, user
 		userDomainAvailable: true, systemDomainAvailable: daemonDir != "",
 		// SSH uses ConnectTimeout=10. Readiness must leave enough time after
 		// that connection budget for the full continuous stability window.
-		transitionTimeout: 30 * time.Second, transitionStable: 11 * time.Second, transitionPoll: 100 * time.Millisecond,
+		transitionTimeout: launchdTransitionTimeout, transitionStable: 11 * time.Second, transitionPoll: 100 * time.Millisecond,
 		runner: runner,
 	}
 }
@@ -880,7 +882,7 @@ func (l *Launchd) StageDefinitionReplace(
 	}
 	transaction := &launchdDefinitionReplace{launchd: l, target: target, before: before, beforeDemand: beforeDemand}
 	rollback := func(cause error) (ScopeTransition, error) {
-		recoveryCtx, cancel := scopeCompensationContext(ctx)
+		recoveryCtx, cancel := DefinitionReplaceRecoveryContext(ctx)
 		defer cancel()
 		if recoveryErr := transaction.Rollback(recoveryCtx); recoveryErr != nil {
 			return nil, &RecoveryBlockedError{Operation: "replace system launchd definition", Cause: cause, Recovery: recoveryErr}
@@ -1168,7 +1170,7 @@ func (l *Launchd) observeTransitionTarget(ctx context.Context, target Artifact, 
 	stableFor := l.transitionStable
 	poll := l.transitionPoll
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = launchdTransitionTimeout
 	}
 	if stableFor < 0 {
 		stableFor = 0
@@ -1289,7 +1291,7 @@ func (t *launchdScopeTransition) Rollback(ctx context.Context) error {
 }
 
 func scopeCompensationContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
+	return context.WithTimeout(context.WithoutCancel(parent), nativeCompensationTimeout)
 }
 
 func (l *Launchd) Start(ctx context.Context, reference Reference) error {
