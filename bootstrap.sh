@@ -74,6 +74,11 @@ main() {
     trap - EXIT HUP INT TERM
     recovery_failed="no"
     if [ "$rollback" = yes ]; then
+      # A signal can arrive after mv succeeds but before its shell flag updates.
+      # Both stages live beside their destinations, so disappearance means the
+      # rename completed and that destination also needs recovery.
+      if [ -n "$install_temporary" ] && [ ! -e "$install_temporary" ]; then binary_committed="yes"; fi
+      if [ "$bundled_skill" = yes ] && [ -n "$skill_temporary" ] && [ ! -e "$skill_temporary" ]; then skill_committed="yes"; fi
       if [ "$binary_committed" = yes ]; then
         if [ "$previous_binary" = yes ]; then
           if ! mv -f "$temporary/previous-binary" "$install_dir/tunlite"; then recovery_failed="yes"; fi

@@ -272,16 +272,64 @@ exec /bin/mv "$@"
 	if err == nil {
 		t.Fatalf("accepted failed rollback:\n%s", out)
 	}
-	backups, err := filepath.Glob(filepath.Join(f.root, "*", "previous-skill"))
-	if err != nil || len(backups) != 1 {
-		t.Fatalf("lost recovery backup: %v err=%v\n%s", backups, err, out)
+	const recoveryPrefix = "tunlite: 恢复失败；请手动恢复原文件，备份保留在 "
+	var recoveryDir string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, recoveryPrefix) {
+			recoveryDir = strings.TrimPrefix(line, recoveryPrefix)
+		}
 	}
-	old, err := os.ReadFile(backups[0])
+	if !filepath.IsAbs(recoveryDir) || !strings.HasPrefix(filepath.Base(recoveryDir), "tmp.") {
+		t.Fatalf("missing actionable recovery path:\n%s", out)
+	}
+	// Follow the actual reported path: macOS may select its system temp root
+	// even when the isolated test provides TMPDIR.
+	t.Cleanup(func() {
+		if err := os.RemoveAll(recoveryDir); err != nil {
+			t.Error(err)
+		}
+	})
+	old, err := os.ReadFile(filepath.Join(recoveryDir, "previous-skill"))
 	if err != nil || string(old) != "old skill" {
 		t.Fatalf("recovery backup differs: %q err=%v", old, err)
 	}
-	if !strings.Contains(out, "恢复失败") || !strings.Contains(out, filepath.Dir(backups[0])) {
-		t.Fatalf("missing actionable recovery path:\n%s", out)
+}
+
+func TestBootstrapRestoresPairWhenInterruptedAfterRename(t *testing.T) {
+	for _, staged := range []string{".SKILL-install-", ".tunlite-install-"} {
+		t.Run(staged, func(t *testing.T) {
+			f := newFixture(t)
+			f.writeRelease(t, true)
+			bin := filepath.Join(f.root, "prefix/bin")
+			skillDir := filepath.Join(f.root, "prefix/share/tunlite/skills/use-tunlite")
+			for _, dir := range []string{bin, skillDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths := map[string]string{filepath.Join(bin, "tunlite"): "old binary", filepath.Join(skillDir, "SKILL.md"): "old skill"}
+			for path, contents := range paths {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), fmt.Sprintf(`#!/bin/sh
+interrupt=no
+for arg do case "$arg" in */%s*) interrupt=yes;; esac; done
+/bin/mv "$@" || exit "$?"
+if [ "$interrupt" = yes ]; then kill -TERM "$PPID"; fi
+`, staged))
+			out, err := f.run(t, nil, "--install-dir", bin)
+			if err == nil {
+				t.Fatalf("interrupted install reported success:\n%s", out)
+			}
+			for path, want := range paths {
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("interrupted rename lost old file at %s: %d bytes, err=%v\n%s", path, len(got), err, out)
+				}
+			}
+		})
 	}
 }
 
