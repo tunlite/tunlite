@@ -1,6 +1,9 @@
 package bootstrap_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -31,16 +34,6 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\n' "$url" >> "$TUNLITE_TEST_CURL_LOG"
 cp "$TUNLITE_TEST_RELEASE_DIR/${url##*/}" "$output"
-`
-	fakeTar = `#!/bin/sh
-destination=''
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -C) destination="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cp "$TUNLITE_TEST_BINARY" "$destination/tunlite"
 `
 	fakeBinary = `#!/bin/sh
 [ "$1" = version ] || exit 64
@@ -80,9 +73,45 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.writeExecutable(t, filepath.Join(f.fakeBin, "uname"), fakeUname)
 	f.writeExecutable(t, filepath.Join(f.fakeBin, "curl"), fakeCurl)
-	f.writeExecutable(t, filepath.Join(f.fakeBin, "tar"), fakeTar)
 	f.writeExecutable(t, f.binary, fakeBinary)
-	archive := []byte("fake archive used to exercise download verification\n")
+	f.writeRelease(t, false)
+	return f
+}
+
+func (f *fixture) writeRelease(t *testing.T, bundled bool) {
+	t.Helper()
+	var data bytes.Buffer
+	gz := gzip.NewWriter(&data)
+	tw := tar.NewWriter(gz)
+	binary, err := os.ReadFile(f.binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "tunlite", Mode: 0o755, Size: int64(len(binary))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(binary); err != nil {
+		t.Fatal(err)
+	}
+	if bundled {
+		skill, err := os.ReadFile(filepath.Join("..", "..", "skill", "use-tunlite", "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "skills/use-tunlite/SKILL.md", Mode: 0o644, Size: int64(len(skill))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(skill); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := data.Bytes()
 	sum := fmt.Sprintf("%x", sha256.Sum256(archive))
 	assets := []string{
 		"tunlite_1.0.0-preview.1_macos.tar.gz",
@@ -100,7 +129,208 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.checksum = checksums.String()
 	f.writeChecksums(t, f.checksum)
-	return f
+}
+
+// Catch missing Skill extraction, wrong custom prefix, stale upgrades, and hints skipped for PATH users.
+func TestBootstrapInstallsBundledSkillAndPrintsActivation(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		t.Run(fmt.Sprint(custom), func(t *testing.T) {
+			f := newFixture(t)
+			f.writeRelease(t, true)
+			bin := filepath.Join(f.home, ".local", "bin")
+			if custom {
+				bin = filepath.Join(f.root, "custom prefix with spaces", "bin")
+			}
+			skillDir := filepath.Join(filepath.Dir(bin), "share", "tunlite", "skills", "use-tunlite")
+			if err := os.MkdirAll(skillDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("old skill"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "tunlite"), []byte("old binary"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run(t, map[string]string{"PATH": f.fakeBin + ":" + bin + ":/usr/bin:/bin:/usr/sbin:/sbin"}, "--install-dir", bin)
+			if err != nil {
+				t.Fatalf("install failed: %v\n%s", err, out)
+			}
+			want, err := os.ReadFile(filepath.Join("..", "..", "skill/use-tunlite/SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("installed Skill differs: err=%v", err)
+			}
+			info, err := os.Stat(filepath.Join(skillDir, "SKILL.md"))
+			if err != nil || info.Mode().Perm() != 0o644 {
+				t.Fatalf("Skill mode: info=%v err=%v", info, err)
+			}
+			if !strings.Contains(out, skillDir) || !strings.Contains(out, "Agent") || !strings.Contains(out, "use-tunlite") || !strings.Contains(out, "升级") {
+				t.Fatalf("missing local activation/refresh guidance:\n%s", out)
+			}
+			if strings.Contains(out, "raw.githubusercontent.com") {
+				t.Fatalf("bundled Skill incorrectly points upstream:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestBootstrapLegacyArchivePrintsSameVersionURLWithoutClaimingLocalSkill(t *testing.T) {
+	f := newFixture(t)
+	out, err := f.run(t, nil, "--version", "v1.0.0-preview.12")
+	if err != nil {
+		t.Fatalf("legacy install failed: %v\n%s", err, out)
+	}
+	url := "https://raw.githubusercontent.com/tunlite/tunlite/v1.0.0-preview.12/skill/use-tunlite/SKILL.md"
+	if !strings.Contains(out, url) || !strings.Contains(out, "Agent") {
+		t.Fatalf("missing same-version activation URL:\n%s", out)
+	}
+	skillDir := filepath.Join(f.home, ".local/share/tunlite/skills/use-tunlite")
+	if strings.Contains(out, skillDir) {
+		t.Fatalf("claims uninstalled local Skill:\n%s", out)
+	}
+	if len(strings.Fields(f.curlRequests(t))) != 2 {
+		t.Fatalf("unexpected unverified download:\n%s", f.curlRequests(t))
+	}
+}
+
+// Validation and failed second-file replacement must leave the old usable pair intact.
+func TestBootstrapPreservesBinaryAndSkillOnFailure(t *testing.T) {
+	for _, failure := range []string{"checksum", "binary", "skill-install", "binary-commit"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newFixture(t)
+			f.writeRelease(t, true)
+			bin := filepath.Join(f.root, "prefix", "bin")
+			skillDir := filepath.Join(f.root, "prefix/share/tunlite/skills/use-tunlite")
+			for _, dir := range []string{bin, skillDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			binaryPath, skillPath := filepath.Join(bin, "tunlite"), filepath.Join(skillDir, "SKILL.md")
+			if err := os.WriteFile(binaryPath, []byte("old binary"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(skillPath, []byte("old skill"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			env := map[string]string{}
+			switch failure {
+			case "checksum":
+				f.writeChecksums(t, strings.Repeat("0", 64)+"  tunlite_1.0.0-preview.1_macos.tar.gz\n")
+			case "binary":
+				env["TUNLITE_TEST_BINARY_FAIL"] = "1"
+			case "skill-install":
+				f.writeExecutable(t, filepath.Join(f.fakeBin, "install"), "#!/bin/sh\ncase \"$*\" in *SKILL.md*) exit 44;; esac\nexec /usr/bin/install \"$@\"\n")
+			case "binary-commit":
+				// A persistent destination failure must not trigger an unnecessary
+				// binary restore that prevents recovery of the already replaced Skill.
+				f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), "#!/bin/sh\nfor arg do destination=\"$arg\"; done\ncase \"$destination\" in */bin/tunlite) exit 45;; esac\nexec /bin/mv \"$@\"\n")
+			}
+			out, err := f.run(t, env, "--install-dir", bin)
+			if err == nil {
+				t.Fatalf("accepted %s failure:\n%s", failure, out)
+			}
+			for path, want := range map[string]string{binaryPath: "old binary", skillPath: "old skill"} {
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("old file lost at %s: got %d bytes, err=%v\n%s", path, len(got), err, out)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapRetainsBackupAndReportsPathWhenRollbackFails(t *testing.T) {
+	f := newFixture(t)
+	f.writeRelease(t, true)
+	bin := filepath.Join(f.root, "prefix", "bin")
+	skillDir := filepath.Join(f.root, "prefix/share/tunlite/skills/use-tunlite")
+	for _, dir := range []string{bin, skillDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tunlite"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("old skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), `#!/bin/sh
+for arg do destination="$arg"; done
+case "$destination" in */bin/tunlite) exit 45;; esac
+case "$*" in *previous-skill*) exit 46;; esac
+exec /bin/mv "$@"
+`)
+	out, err := f.run(t, map[string]string{"TMPDIR": f.root}, "--install-dir", bin)
+	if err == nil {
+		t.Fatalf("accepted failed rollback:\n%s", out)
+	}
+	const recoveryPrefix = "tunlite: 恢复失败；请手动恢复原文件，备份保留在 "
+	var recoveryDir string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, recoveryPrefix) {
+			recoveryDir = strings.TrimPrefix(line, recoveryPrefix)
+		}
+	}
+	if !filepath.IsAbs(recoveryDir) || !strings.HasPrefix(filepath.Base(recoveryDir), "tmp.") {
+		t.Fatalf("missing actionable recovery path:\n%s", out)
+	}
+	// Follow the actual reported path: macOS may select its system temp root
+	// even when the isolated test provides TMPDIR.
+	t.Cleanup(func() {
+		if err := os.RemoveAll(recoveryDir); err != nil {
+			t.Error(err)
+		}
+	})
+	old, err := os.ReadFile(filepath.Join(recoveryDir, "previous-skill"))
+	if err != nil || string(old) != "old skill" {
+		t.Fatalf("recovery backup differs: %q err=%v", old, err)
+	}
+}
+
+func TestBootstrapRestoresPairWhenInterruptedAfterRename(t *testing.T) {
+	for _, staged := range []string{".SKILL-install-", ".tunlite-install-"} {
+		t.Run(staged, func(t *testing.T) {
+			f := newFixture(t)
+			f.writeRelease(t, true)
+			bin := filepath.Join(f.root, "prefix/bin")
+			skillDir := filepath.Join(f.root, "prefix/share/tunlite/skills/use-tunlite")
+			for _, dir := range []string{bin, skillDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			paths := map[string]string{filepath.Join(bin, "tunlite"): "old binary", filepath.Join(skillDir, "SKILL.md"): "old skill"}
+			for path, contents := range paths {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), fmt.Sprintf(`#!/bin/sh
+interrupt=no
+for arg do case "$arg" in */%s*) interrupt=yes;; esac; done
+/bin/mv "$@" || exit "$?"
+if [ "$interrupt" = yes ]; then kill -TERM "$PPID"; fi
+`, staged))
+			out, err := f.run(t, nil, "--install-dir", bin)
+			if err == nil {
+				t.Fatalf("interrupted install reported success:\n%s", out)
+			}
+			for path, want := range paths {
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != want {
+					t.Fatalf("interrupted rename lost old file at %s: %d bytes, err=%v\n%s", path, len(got), err, out)
+				}
+			}
+		})
+	}
 }
 
 func (f *fixture) writeExecutable(t *testing.T, path, contents string) {

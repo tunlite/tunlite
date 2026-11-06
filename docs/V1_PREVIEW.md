@@ -83,6 +83,46 @@ SSH Target 可以是明确的 `host` 或 `user@host`，但 Preview 用户名只�
 
 ## 安装与校验
 
+macOS 推荐 Homebrew 下载固定版本预编译二进制；通过公开的
+[`tunlite/homebrew-tap`](https://github.com/tunlite/homebrew-tap) 执行：
+
+```bash
+brew install tunlite/tap/tunlite
+type -a tunlite
+tunlite version --json
+```
+
+Formula 固定 `v1.0.0-preview.1` 的官方 Release 归档与各平台 SHA-256，macOS 使用
+Universal 2，Linux 选择 x86_64 或 arm64。不安装 Go、不编译源码，运行时仍只需要
+系统 `ssh`。Homebrew 安装目录与 PATH 请遵循 `brew shellenv` 的提示。
+用 `brew update` 后的 `brew upgrade tunlite/tap/tunlite` 升级，用
+`brew uninstall tunlite/tap/tunlite` 移除 CLI。没有中心 `brew services` 服务。
+已经添加过 Tap 时，重试前先 `brew update` 更新 Formula；revision 1
+（`1.0.0-preview.1_1`）允许旧源码包升级到二进制包，不会自动删除已安装的 Go。
+需要重新安装当前包时使用 `brew reinstall tunlite/tap/tunlite`。
+Homebrew 分发不提供 Apple 开发者签名或公证，也不保证不受企业设备策略限制。
+
+只有希望手工编译时，才需要安装 Go 1.25+ 并执行以下可选步骤：
+
+```bash
+git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
+cd tunlite-source
+go install -trimpath -ldflags='-s -w -X github.com/tunlite/tunlite/internal/cli.Version=1.0.0-preview.1' ./cmd/tunlite
+go env GOBIN GOPATH
+```
+
+当前远程 `go install ...@v1.0.0-preview.1` 会在历史非 Go Tag `v0.10.3` 的 `go.mod`
+校验查询处失败，因此使用上述固定 Tag 本地模块安装，保留正常 Go 依赖校验。
+将 `GOBIN` 或 `GOPATH` 第一项的 `bin` 目录（通常为 `~/go/bin`）加入 PATH。
+版本注入是必要步骤，否则发布源码仍报告 `-dev`。升级时在新目录检出新 Tag 并同步修改注入版本，
+卸载时只删除实际安装目录里的 `tunlite`。自行编译通常避免浏览器下载的
+quarantine，但不提供 Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+用 `type -a tunlite` 检查 PATH 中的所有副本并选择一个安装渠道；靠前的旧副本可能遮住
+新安装。不要盲目覆盖其他渠道的文件；这些渠道不迁移旧开发版服务记录。卸载 CLI
+不会停止已经由 launchd 或 systemd 托管的 SSH Connection。
+
+预编译渠道继续保留。详情见[安装与验收手册](INSTALL_AND_ACCEPTANCE.md)。
 对应 GitHub Release 和校验清单可用后，macOS 或 Linux 用户可执行：
 
 ```bash
@@ -99,6 +139,19 @@ TUNLITE_VERSION=v1.0.0-preview.2 \
 TUNLITE_INSTALL_DIR=/usr/local/bin \
 sh bootstrap.sh
 ```
+
+新构建的归档包含 `skills/use-tunlite/SKILL.md`（0644），字节来自构建二进制的同一
+源码检出；三个平台均受归档 checksum 和 Attestation 覆盖。bootstrap 将其安装到
+`~/.local/share/tunlite/skills/use-tunlite`；自定义二进制目录映射到其父目录下的
+`share/tunlite/skills/use-tunlite`，例如 `/usr/local/bin` 对应
+`/usr/local/share/tunlite/skills/use-tunlite`。脚本先验证并暂存二进制和 Skill，失败时
+保留或恢复原有可用文件，不改写 Agent 目录；如果系统拒绝恢复操作，会报错并保留
+备份目录、打印手动恢复所需路径。
+
+现有公开 `v1.0.0-preview.1` 归档和 checksum 不变，其中没有 Skill。bootstrap
+安装二进制后只显示同版本 Tag 下的 Skill URL，不下载未校验内容或声称存在本地
+Skill。Homebrew 对此旧版使用同 Tag、固定 SHA-256 的资源补齐 Skill，保持预编译
+分发且不安装 Go；以后带 Skill 的归档可直接使用归档内副本。
 
 手动拿到单文件二进制时，直接复制到 PATH：
 
@@ -121,10 +174,13 @@ checksum 不一致、归档缺少二进制或二进制报告版本不一致时�
 
 V1 Preview 暂不提供 Shell 自动补全，也不读取或修改 `.bashrc`、`.zshrc`、fish 配置
 等 Shell 启动文件；补全只有在跨 Shell、跨平台和包管理器
-的长期职责边界明确后才重新立项。Agent Skill 由公开仓库中的
-[`use-tunlite` 包](../skill/use-tunlite/)独立提供；用户把仓库目录或固定版本 Tag 地址
-交给 Agent，由 Agent 按自己的扩展机制安装、更新和卸载。Tunlite CLI 不读取 Agent
-目录，也不维护 Skill 安装状态。
+的长期职责边界明确后才重新立项。安装完成后会显示可选的 Agent Skill 启用提示，
+不受二进制目录是否已在 PATH 影响。把提示中的本地目录交给 Agent：
+`请从目录 "<安装器打印的目录>" 安装并启用 use-tunlite Skill。`
+旧版 bootstrap 则使用提示中的同版本 Tag URL。Homebrew 提供稳定 `opt` 路径。
+[`use-tunlite` 包](../skill/use-tunlite/)由 Agent 按自己的扩展机制安装、更新和卸载；
+包升级后请 Agent 刷新已复制的 Skill，只有 Agent 支持时才使用稳定目录的符号链接。
+Tunlite CLI 不读取 Agent 目录，也不维护 Skill 安装状态。
 
 也可以手动下载压缩包和 `SHA256SUMS`。任何 checksum 不一致都必须停止安装，不能用
 “重新下载后跳过校验”的方式继续。

@@ -16,8 +16,34 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 
 ## 安装预览版
 
-运行时唯一前提是系统 `ssh`。
-对应 GitHub Release 和校验清单可用后执行：
+运行时唯一前提是系统 `ssh`。macOS 推荐使用
+[`tunlite/tap`](https://github.com/tunlite/homebrew-tap)：Homebrew 下载并校验已发布的
+预编译二进制，不安装 Go，也不编译源码：
+
+```bash
+brew install tunlite/tap/tunlite
+```
+
+已经添加过旧 Tap 时，先执行 `brew update` 再安装或升级。
+`brew upgrade tunlite/tap/tunlite` 可升级为带匹配 Skill 的 revision 2 二进制包；
+需要重新安装当前包时使用 `brew reinstall tunlite/tap/tunlite`。Homebrew 分发不等同于
+Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+需要手工编译源码时，可选安装 Go 1.25 或更新版本，再从固定版本编译：
+
+```bash
+git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
+cd tunlite-source
+go install -trimpath -ldflags='-s -w -X github.com/tunlite/tunlite/internal/cli.Version=1.0.0-preview.1' ./cmd/tunlite
+```
+
+使用固定 Tag 检出：远程 `go install ...@v1.0.0-preview.1` 当前会在历史上尚未采用 Go 的
+`v0.10.3` Tag 校验查询处失败。
+二进制写入 `GOBIN`，未设置时写入 `GOPATH` 第一项的 `bin` 目录（通常为 `~/go/bin`）；
+请将该目录加入 `PATH`。源码编译通常避免浏览器下载带来的 quarantine，但不等同于
+Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+仍然保留预编译下载渠道。对应 GitHub Release 和校验清单可用后执行：
 
 ```bash
 # macOS / Linux；下载 v1.0.0-preview.1 并校验 SHA-256
@@ -28,6 +54,21 @@ curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh |
 [从零安装与验收手册](docs/INSTALL_AND_ACCEPTANCE.md)执行；当前版本边界和发布门禁见
 [预览版指南](docs/V1_PREVIEW.md)。
 
+新构建的归档还包含 `skills/use-tunlite/SKILL.md`，与二进制来自同一源码检出，
+受归档 checksum 和 Attestation 覆盖。已公开的 `v1.0.0-preview.1` 归档保持不变，
+其中没有 Skill：Homebrew 从同版本 Tag 下载并校验固定 SHA-256 的 Skill 资源；
+bootstrap 安装二进制后只提示同版本 Skill 地址，不下载未校验的 Skill。
+
+使用带 Skill 的归档时，bootstrap 将其安装到
+`~/.local/share/tunlite/skills/use-tunlite`。自定义
+`--install-dir <prefix>/bin`（或 `TUNLITE_INSTALL_DIR`）对应
+`<prefix>/share/tunlite/skills/use-tunlite`；其他二进制目录也按其父目录下的 `share`
+映射。脚本会打印实际本地目录；Homebrew 提示使用稳定的 `opt` 路径。可复制提示给
+Agent：`请从目录 "<安装器打印的本地目录>" 安装并启用 use-tunlite Skill。`
+旧版 bootstrap 归档则把打印的同版本 URL 交给 Agent。启用是可选步骤，由 Agent
+按自身机制完成；安装器不会修改 Agent 目录。升级后请让 Agent 刷新已复制的 Skill；
+只有 Agent 支持时才可使用稳定路径的符号链接。
+
 拿到手动下载的原生二进制时，直接复制到 PATH：
 
 ```bash
@@ -37,7 +78,12 @@ install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
 "$HOME/.local/bin/tunlite" version
 ```
 
-安装、升级和卸载由 Release、包管理器或未来 Desktop 负责，核心 CLI 不提供对应命令，
+安装、升级和卸载由发行渠道负责。Homebrew 使用
+`brew update && brew upgrade tunlite/tap/tunlite` 升级、`brew uninstall tunlite/tap/tunlite`
+卸载；源码安装升级时在新目录检出新 Tag，并同步更新安装命令的注入版本，卸载时只删除所选安装
+目录中的二进制。切换渠道后用 `type -a tunlite` 和 `tunlite version --json` 检查：
+PATH 中靠前的旧副本可能遮住新版本。请选择一个渠道；安装不会迁移旧开发版服务记录。
+核心 CLI 不提供安装、升级或卸载命令，
 也不创建 `tun` 别名。替换 CLI 文件不会停止已经交给系统运行的 SSH Connection。
 V1 预览版暂不提供 Shell 自动补全，也不识别或修改 Agent 私有目录；需要让 Agent 使用
 Tunlite 时，请让 Agent 安装官方
