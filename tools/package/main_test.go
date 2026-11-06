@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,9 @@ func TestArchiveBundlesCanonicalSkillDeterministically(t *testing.T) {
 
 // Recomputed checksums must not let a missing/mismatched Skill or unsafe member mode pass.
 func TestVerifierValidatesSkillInEveryPlatformArchive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("verify-release.sh is only supported on macOS and Linux")
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
