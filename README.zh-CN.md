@@ -16,8 +16,28 @@ Connection 直接属于 systemd 或 launchd，一条连接失败不会拖垮其�
 
 ## 安装预览版
 
-运行时唯一前提是系统 `ssh`。
-对应 GitHub Release 和校验清单可用后执行：
+运行时唯一前提是系统 `ssh`。macOS 推荐使用 Homebrew，从校验过的固定预览版源码编译
+（Go 仅为构建依赖）。[`tunlite/tap` 仓库](https://github.com/tunlite/homebrew-tap)公开后执行：
+
+```bash
+brew install tunlite/tap/tunlite
+```
+
+也可以自行安装 Go 1.25 或更新版本，然后从固定版本编译：
+
+```bash
+git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
+cd tunlite-source
+go install -trimpath -ldflags='-s -w -X github.com/tunlite/tunlite/internal/cli.Version=1.0.0-preview.1' ./cmd/tunlite
+```
+
+使用固定 Tag 检出：远程 `go install ...@v1.0.0-preview.1` 当前会在历史上尚未采用 Go 的
+`v0.10.3` Tag 校验查询处失败。
+二进制写入 `GOBIN`，未设置时写入 `GOPATH` 第一项的 `bin` 目录（通常为 `~/go/bin`）；
+请将该目录加入 `PATH`。源码编译通常避免浏览器下载带来的 quarantine，但不等同于
+Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+仍然保留预编译下载渠道。对应 GitHub Release 和校验清单可用后执行：
 
 ```bash
 # macOS / Linux；下载 v1.0.0-preview.1 并校验 SHA-256
@@ -37,7 +57,12 @@ install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
 "$HOME/.local/bin/tunlite" version
 ```
 
-安装、升级和卸载由 Release、包管理器或未来 Desktop 负责，核心 CLI 不提供对应命令，
+安装、升级和卸载由发行渠道负责。Homebrew 使用
+`brew update && brew upgrade tunlite/tap/tunlite` 升级、`brew uninstall tunlite/tap/tunlite`
+卸载；源码安装升级时在新目录检出新 Tag，并同步更新安装命令的注入版本，卸载时只删除所选安装
+目录中的二进制。切换渠道后用 `type -a tunlite` 和 `tunlite version --json` 检查：
+PATH 中靠前的旧副本可能遮住新版本。请选择一个渠道；安装不会迁移旧开发版服务记录。
+核心 CLI 不提供安装、升级或卸载命令，
 也不创建 `tun` 别名。替换 CLI 文件不会停止已经交给系统运行的 SSH Connection。
 V1 预览版暂不提供 Shell 自动补全，也不识别或修改 Agent 私有目录；需要让 Agent 使用
 Tunlite 时，请让 Agent 安装官方

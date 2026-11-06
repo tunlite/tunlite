@@ -83,6 +83,41 @@ SSH Target 可以是明确的 `host` 或 `user@host`，但 Preview 用户名只�
 
 ## 安装与校验
 
+macOS 推荐 Homebrew 从固定版本源码构建；
+[`tunlite/homebrew-tap`](https://github.com/tunlite/homebrew-tap) 公开后可执行：
+
+```bash
+brew install tunlite/tap/tunlite
+type -a tunlite
+tunlite version --json
+```
+
+Formula 固定 `v1.0.0-preview.1` 的 HTTPS 源码归档与 SHA-256，Go 仅为构建依赖；
+运行时仍只需要系统 `ssh`。Homebrew 安装目录与 PATH 请遵循 `brew shellenv` 的提示。
+用 `brew update` 后的 `brew upgrade tunlite/tap/tunlite` 升级，用
+`brew uninstall tunlite/tap/tunlite` 移除 CLI。没有中心 `brew services` 服务。
+
+已安装 Go 1.25+ 时也可以直接编译同一个固定版本：
+
+```bash
+git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
+cd tunlite-source
+go install -trimpath -ldflags='-s -w -X github.com/tunlite/tunlite/internal/cli.Version=1.0.0-preview.1' ./cmd/tunlite
+go env GOBIN GOPATH
+```
+
+当前远程 `go install ...@v1.0.0-preview.1` 会在历史非 Go Tag `v0.10.3` 的 `go.mod`
+校验查询处失败，因此使用上述固定 Tag 本地模块安装，保留正常 Go 依赖校验。
+将 `GOBIN` 或 `GOPATH` 第一项的 `bin` 目录（通常为 `~/go/bin`）加入 PATH。
+版本注入是必要步骤，否则发布源码仍报告 `-dev`。升级时在新目录检出新 Tag 并同步修改注入版本，
+卸载时只删除实际安装目录里的 `tunlite`。Homebrew 与自行编译通常避免浏览器下载的
+quarantine，但不提供 Apple 开发者签名或公证，也不保证符合企业设备策略。
+
+用 `type -a tunlite` 检查 PATH 中的所有副本并选择一个安装渠道；靠前的旧副本可能遮住
+新安装。不要盲目覆盖其他渠道的文件；这些渠道不迁移旧开发版服务记录。卸载 CLI
+不会停止已经由 launchd 或 systemd 托管的 SSH Connection。
+
+预编译渠道继续保留。详情见[安装与验收手册](INSTALL_AND_ACCEPTANCE.md)。
 对应 GitHub Release 和校验清单可用后，macOS 或 Linux 用户可执行：
 
 ```bash

@@ -17,8 +17,31 @@ connection does not take the others down.
 
 ## Install the preview
 
-The system `ssh` command is the only runtime prerequisite.
-Once the corresponding GitHub Release and checksum manifest are available:
+The system `ssh` command is the only runtime prerequisite. On macOS, Homebrew
+builds the fixed preview from verified source (Go is a build dependency only).
+Once the [`tunlite/tap` repository](https://github.com/tunlite/homebrew-tap) is published:
+
+```bash
+brew install tunlite/tap/tunlite
+```
+
+To compile directly, install Go 1.25 or newer and run:
+
+```bash
+git clone --depth 1 --branch v1.0.0-preview.1 https://github.com/tunlite/tunlite.git tunlite-source
+cd tunlite-source
+go install -trimpath -ldflags='-s -w -X github.com/tunlite/tunlite/internal/cli.Version=1.0.0-preview.1' ./cmd/tunlite
+```
+
+Use this tagged checkout: remote `go install ...@v1.0.0-preview.1` currently fails
+on a Go checksum lookup for the repository's older, pre-Go `v0.10.3` tag.
+The executable goes to `GOBIN`, or the first `GOPATH` entry's `bin` directory
+(normally `~/go/bin`). Add that directory to `PATH`. Source builds normally avoid
+browser-download quarantine, but do not provide Apple developer signing or
+notarization and may still be restricted by enterprise policies.
+
+Prebuilt downloads remain available. Once the corresponding GitHub Release and
+checksum manifest are available:
 
 ```bash
 # macOS / Linux; downloads v1.0.0-preview.1 and verifies SHA-256
@@ -40,7 +63,13 @@ install -m 0755 ./tunlite "$HOME/.local/bin/tunlite"
 ```
 
 Installation, upgrades, and removal belong to the release channel, package manager,
-or a future Desktop. The core CLI does not expose those commands or create a `tun`
+or a future Desktop. Use `brew update && brew upgrade tunlite/tap/tunlite` and
+`brew uninstall tunlite/tap/tunlite` for Homebrew. For source installs, repeat the
+tagged checkout and install command with the new tag/version; remove only the executable
+at your chosen installation destination to uninstall. Run `type -a tunlite` and
+`tunlite version --json` after switching channels: an older copy earlier in `PATH`
+can hide the new one. Choose one channel; installation does not migrate older dev
+service records. The core CLI does not expose those commands or create a `tun`
 alias. Replacing the CLI does not stop OS-owned SSH connections. The v1 preview does
 not provide shell completion or inspect Agent directories. To use Tunlite from an
 Agent, ask that Agent to install the official [`use-tunlite` Skill package](skill/use-tunlite/).
