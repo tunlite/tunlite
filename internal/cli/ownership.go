@@ -462,7 +462,7 @@ func resolveConnection(ctx context.Context, args []string, streams IO, opts opti
 			record.PlanDigest = artifact.PlanDigest
 			record.BaselineDigest = service.ContentDigest(artifact.Content)
 			if err := records.Write(ctx, record); err != nil {
-				recoveryCtx, cancel := compensationContext(ctx)
+				recoveryCtx, cancel := service.DefinitionReplaceRecoveryContext(ctx)
 				defer cancel()
 				return recoveryBlockedError(err, transition.Rollback(recoveryCtx), resolveActions(name))
 			}
