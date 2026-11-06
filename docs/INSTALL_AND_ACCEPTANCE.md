@@ -130,7 +130,8 @@ curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh |
 `--install-dir <prefix>/bin` 或 `TUNLITE_INSTALL_DIR=<prefix>/bin` 会将 Skill 放到
 `<prefix>/share/tunlite/skills/use-tunlite`；任意自定义二进制目录都使用其父目录下的
 `share`。包含空格的路径须加引号。脚本先暂存并验证再替换；下载、校验、二进制检查或
-安装失败时保留旧的二进制和 Skill。
+安装失败时保留或恢复旧的二进制和 Skill。若系统连恢复操作也拒绝，脚本会报错并
+保留备份目录，打印其路径供手动恢复，不会报告安装成功。
 
 现有公开 `v1.0.0-preview.1` 归档及其 checksum 不变，其中没有 Skill。bootstrap
 仍可安装二进制，并提示同版本

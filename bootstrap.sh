@@ -67,24 +67,34 @@ main() {
   previous_binary="no"
   previous_skill="no"
   bundled_skill="no"
+  binary_committed="no"
+  skill_committed="no"
   cleanup() {
     result="$?"
     trap - EXIT HUP INT TERM
+    recovery_failed="no"
     if [ "$rollback" = yes ]; then
-      if [ "$previous_binary" = yes ]; then
-        mv -f "$temporary/previous-binary" "$install_dir/tunlite"
-      else
-        rm -f "$install_dir/tunlite"
-      fi
-      if [ "$bundled_skill" = yes ]; then
-        if [ "$previous_skill" = yes ]; then
-          mv -f "$temporary/previous-skill" "$skill_file"
+      if [ "$binary_committed" = yes ]; then
+        if [ "$previous_binary" = yes ]; then
+          if ! mv -f "$temporary/previous-binary" "$install_dir/tunlite"; then recovery_failed="yes"; fi
         else
-          rm -f "$skill_file"
+          if ! rm -f "$install_dir/tunlite"; then recovery_failed="yes"; fi
+        fi
+      fi
+      if [ "$skill_committed" = yes ]; then
+        if [ "$previous_skill" = yes ]; then
+          if ! mv -f "$temporary/previous-skill" "$skill_file"; then recovery_failed="yes"; fi
+        else
+          if ! rm -f "$skill_file"; then recovery_failed="yes"; fi
         fi
       fi
     fi
-    rm -rf "$temporary"
+    if [ "$recovery_failed" = yes ]; then
+      echo "tunlite: 恢复失败；请手动恢复原文件，备份保留在 $temporary" >&2
+      result=1
+    else
+      rm -rf "$temporary"
+    fi
     if [ -n "$install_temporary" ]; then rm -f "$install_temporary"; fi
     if [ -n "$skill_temporary" ]; then rm -f "$skill_temporary"; fi
     exit "$result"
@@ -143,9 +153,11 @@ main() {
   rollback="yes"
   if [ "$bundled_skill" = yes ]; then
     mv -f "$skill_temporary" "$skill_file"
+    skill_committed="yes"
     skill_temporary=""
   fi
   mv -f "$install_temporary" "${install_dir}/tunlite"
+  binary_committed="yes"
   rollback="no"
   install_temporary=""
   echo "tunlite: 已安装到 ${install_dir}/tunlite"

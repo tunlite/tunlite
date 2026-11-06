@@ -228,7 +228,9 @@ func TestBootstrapPreservesBinaryAndSkillOnFailure(t *testing.T) {
 			case "skill-install":
 				f.writeExecutable(t, filepath.Join(f.fakeBin, "install"), "#!/bin/sh\ncase \"$*\" in *SKILL.md*) exit 44;; esac\nexec /usr/bin/install \"$@\"\n")
 			case "binary-commit":
-				f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), "#!/bin/sh\nfor arg do case \"$arg\" in */.tunlite-install-*) exit 45;; esac; done\nexec /bin/mv \"$@\"\n")
+				// A persistent destination failure must not trigger an unnecessary
+				// binary restore that prevents recovery of the already replaced Skill.
+				f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), "#!/bin/sh\nfor arg do destination=\"$arg\"; done\ncase \"$destination\" in */bin/tunlite) exit 45;; esac\nexec /bin/mv \"$@\"\n")
 			}
 			out, err := f.run(t, env, "--install-dir", bin)
 			if err == nil {
@@ -237,10 +239,49 @@ func TestBootstrapPreservesBinaryAndSkillOnFailure(t *testing.T) {
 			for path, want := range map[string]string{binaryPath: "old binary", skillPath: "old skill"} {
 				got, err := os.ReadFile(path)
 				if err != nil || string(got) != want {
-					t.Fatalf("old file lost at %s: %q %v\n%s", path, got, err, out)
+					t.Fatalf("old file lost at %s: got %d bytes, err=%v\n%s", path, len(got), err, out)
 				}
 			}
 		})
+	}
+}
+
+func TestBootstrapRetainsBackupAndReportsPathWhenRollbackFails(t *testing.T) {
+	f := newFixture(t)
+	f.writeRelease(t, true)
+	bin := filepath.Join(f.root, "prefix", "bin")
+	skillDir := filepath.Join(f.root, "prefix/share/tunlite/skills/use-tunlite")
+	for _, dir := range []string{bin, skillDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tunlite"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("old skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.writeExecutable(t, filepath.Join(f.fakeBin, "mv"), `#!/bin/sh
+for arg do destination="$arg"; done
+case "$destination" in */bin/tunlite) exit 45;; esac
+case "$*" in *previous-skill*) exit 46;; esac
+exec /bin/mv "$@"
+`)
+	out, err := f.run(t, map[string]string{"TMPDIR": f.root}, "--install-dir", bin)
+	if err == nil {
+		t.Fatalf("accepted failed rollback:\n%s", out)
+	}
+	backups, err := filepath.Glob(filepath.Join(f.root, "*", "previous-skill"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("lost recovery backup: %v err=%v\n%s", backups, err, out)
+	}
+	old, err := os.ReadFile(backups[0])
+	if err != nil || string(old) != "old skill" {
+		t.Fatalf("recovery backup differs: %q err=%v", old, err)
+	}
+	if !strings.Contains(out, "恢复失败") || !strings.Contains(out, filepath.Dir(backups[0])) {
+		t.Fatalf("missing actionable recovery path:\n%s", out)
 	}
 }
 

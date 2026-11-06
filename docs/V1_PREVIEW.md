@@ -145,7 +145,8 @@ sh bootstrap.sh
 `~/.local/share/tunlite/skills/use-tunlite`；自定义二进制目录映射到其父目录下的
 `share/tunlite/skills/use-tunlite`，例如 `/usr/local/bin` 对应
 `/usr/local/share/tunlite/skills/use-tunlite`。脚本先验证并暂存二进制和 Skill，失败时
-保留原有可用文件，不改写 Agent 目录。
+保留或恢复原有可用文件，不改写 Agent 目录；如果系统拒绝恢复操作，会报错并保留
+备份目录、打印手动恢复所需路径。
 
 现有公开 `v1.0.0-preview.1` 归档和 checksum 不变，其中没有 Skill。bootstrap
 安装二进制后只显示同版本 Tag 下的 Skill URL，不下载未校验内容或声称存在本地
