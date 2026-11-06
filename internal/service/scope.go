@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/tunlite/tunlite/internal/plan"
 )
@@ -10,6 +11,8 @@ import (
 // MacOSSudoProgram is the trusted system sudo used for every macOS privilege
 // boundary. Callers must not resolve sudo through PATH.
 const MacOSSudoProgram = "/usr/bin/sudo"
+
+const nativeCompensationTimeout = 10 * time.Second
 
 type UnsupportedScopeError struct {
 	Adapter string
@@ -144,6 +147,15 @@ func StageDefinitionReplace(
 		return nil, &UnsupportedScopeError{Adapter: adapter.Name(), Scope: source.Scope}
 	}
 	return replacer.StageDefinitionReplace(ctx, source, target, mode, verify)
+}
+
+// DefinitionReplaceRecoveryContext allows native restoration, launchd's full
+// readiness window (including continuous stability), and final inspection to
+// finish even after the initiating request is canceled. Record restoration must
+// use its own bounded context so native recovery cannot consume its allowance.
+func DefinitionReplaceRecoveryContext(parent context.Context) (context.Context, context.CancelFunc) {
+	const finalInspectionMargin = 5 * time.Second
+	return context.WithTimeout(context.WithoutCancel(parent), nativeCompensationTimeout+launchdTransitionTimeout+finalInspectionMargin)
 }
 
 // PreflightDisable verifies that an already-authorized system disable can run
