@@ -124,6 +124,18 @@ curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh |
 ```
 
 安装脚本会自动识别系统和 CPU、校验 SHA-256，并安装到 `~/.local/bin/tunlite`。
+新构建的三个平台归档均带 `skills/use-tunlite/SKILL.md`（0644），与二进制来自同一
+源码检出，受同一归档 checksum 和 Attestation 覆盖。bootstrap 将它安装到
+`~/.local/share/tunlite/skills/use-tunlite`，打印实际目录和给 Agent 的启用提示。
+`--install-dir <prefix>/bin` 或 `TUNLITE_INSTALL_DIR=<prefix>/bin` 会将 Skill 放到
+`<prefix>/share/tunlite/skills/use-tunlite`；任意自定义二进制目录都使用其父目录下的
+`share`。包含空格的路径须加引号。脚本先暂存并验证再替换；下载、校验、二进制检查或
+安装失败时保留旧的二进制和 Skill。
+
+现有公开 `v1.0.0-preview.1` 归档及其 checksum 不变，其中没有 Skill。bootstrap
+仍可安装二进制，并提示同版本
+`https://raw.githubusercontent.com/tunlite/tunlite/v1.0.0-preview.1/skill/use-tunlite/SKILL.md`
+交给 Agent 安装；不下载未校验内容，也不声称 Skill 已安装到本地。
 对应 Release 尚未发布时，下载地址可能返回 404；请使用维护者提供的候选二进制，不能
 跳过校验。公开发布完成仍须下载实际 Release 产物，重新校验 checksum 与 Attestation。
 
@@ -153,7 +165,8 @@ brew uninstall tunlite/tap/tunlite
 ```
 
 已添加过 Tap 的用户重试前必须先 `brew update`，以取得新的二进制 Formula。
-revision 1（Homebrew 包版本 `1.0.0-preview.1_1`）使此前同版本源码包也能升级；不会自动
+revision 2（Homebrew 包版本 `1.0.0-preview.1_2`）在二进制包中增加匹配 Skill，
+使此前同版本包也能升级；不会自动
 删除之前已安装的 Go。升级只会获得 Tap 已发布的包。Homebrew 分发不提供 Apple
 开发者签名或公证，也不保证不受 quarantine 或企业设备策略限制。
 
@@ -203,9 +216,14 @@ V1 Preview 暂不提供 Shell 自动补全。安装验收只需要确认 Tunlite
 读取或修改 `.bashrc`、`.zshrc`、fish 配置等 Shell 启动文件，不需要执行任何补全安装
 命令。安装、升级和卸载由发行渠道负责，不属于核心 CLI。
 
-Agent Skill 不属于 CLI 的安装验收。仓库只提供标准
-[`use-tunlite` Skill 包](../skill/use-tunlite/)，由 Agent 根据自身扩展机制安装、检查、
-更新和卸载；CLI 和 `doctor` 都不读取 Agent 的私有目录。
+Agent Skill 的启用是可选步骤。Homebrew 为现有 Preview.1 归档下载同 Tag、固定
+SHA-256 的 [`use-tunlite` Skill](../skill/use-tunlite/)，安装到包的
+`share/tunlite/skills/use-tunlite`，提示使用稳定 `opt` 路径。把安装器打印的实际目录
+交给 Agent，例如：`请从目录 "<打印的目录>" 安装并启用 use-tunlite Skill。`
+对于不带 Skill 的旧版 bootstrap 归档，使用提示中的同版本 URL。二进制目录已在 PATH
+时仍会显示此提示。由 Agent 根据自身扩展机制安装、检查、更新和卸载；升级包后还需
+让 Agent 刷新已复制的 Skill，只有支持符号链接的 Agent 才可直接链接稳定目录。
+安装器不自动写入 Agent 目录；CLI 和 `doctor` 也不读取 Agent 的私有目录。
 
 ## 4. 准备一个真实 SSH 目标
 

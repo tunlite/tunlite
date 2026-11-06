@@ -28,7 +28,7 @@ brew install tunlite/tap/tunlite
 
 If you already tapped an earlier package, run `brew update` before installing or
 upgrading. `brew upgrade tunlite/tap/tunlite` upgrades the old source-built package
-to the binary package at revision 1; use `brew reinstall tunlite/tap/tunlite` to
+to the binary package with the matching Skill at revision 2; use `brew reinstall tunlite/tap/tunlite` to
 reinstall the current package. Homebrew delivery does not confer Apple developer
 signing/notarization or guarantee acceptance by enterprise policies.
 
@@ -59,6 +59,26 @@ Every release contains self-contained archives and `SHA256SUMS`. Follow the
 [zero-to-acceptance guide](docs/INSTALL_AND_ACCEPTANCE.md) for installation and
 platform verification. See the [preview guide](docs/V1_PREVIEW.md) for current
 version boundaries and release gates.
+
+Newly built archives also contain `skills/use-tunlite/SKILL.md`, copied from the
+same source checkout as the binary and covered by the archive checksum and
+attestation. The existing public `v1.0.0-preview.1` archives remain unchanged and
+do not contain it. For that release, Homebrew installs the matching Skill from a
+checksum-pinned resource at the same release tag. Bootstrap installs the binary
+and prints the same-version upstream Skill URL without downloading unverified
+Skill content.
+
+With a bundled archive, bootstrap installs the Skill at
+`~/.local/share/tunlite/skills/use-tunlite`. A custom `--install-dir <prefix>/bin`
+(or `TUNLITE_INSTALL_DIR`) uses `<prefix>/share/tunlite/skills/use-tunlite`; any
+binary directory maps to its parent's `share` directory. Bootstrap prints the
+actual local directory; Homebrew's installation hints use its stable `opt` path.
+To enable it, tell your Agent: `Install and enable the use-tunlite Skill from
+"<printed local directory>".` For legacy bootstrap installs, give the Agent the
+printed same-version URL instead. Activation is optional and follows the Agent's
+own installation mechanism; neither installer modifies Agent directories. After
+upgrading, ask the Agent to refresh any copied Skill. A stable symlink is an option
+only if the Agent supports it.
 
 A manually downloaded native binary can be copied directly into `PATH`:
 

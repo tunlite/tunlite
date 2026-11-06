@@ -10,6 +10,7 @@ fi
 version="$1"
 output="${2:-dist}"
 plain_version="${version#v}"
+source_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 macos="tunlite_${plain_version}_macos.tar.gz"
 linux_x64="tunlite_${plain_version}_linux_x64.tar.gz"
 linux_arm64="tunlite_${plain_version}_linux_arm64.tar.gz"
@@ -48,9 +49,23 @@ for archive in "$linux_arm64" "$linux_x64" "$macos"; do
   entries="$(tar -tzf "$output/$archive")"
   if [ "$entries" != "tunlite
 LICENSE
-README.md" ]; then
+README.md
+skills/use-tunlite/SKILL.md" ]; then
     echo "tunlite: unexpected archive contents in $archive" >&2
     printf '%s\n' "$entries" >&2
+    exit 1
+  fi
+  modes="$(tar -tvzf "$output/$archive" | awk '{ print $1 }')"
+  if [ "$modes" != "-rwxr-xr-x
+-rw-r--r--
+-rw-r--r--
+-rw-r--r--" ]; then
+    echo "tunlite: unexpected archive member type or mode in $archive" >&2
+    exit 1
+  fi
+  # Compare bytes for every platform, including binaries we cannot run here.
+  if ! tar -xOzf "$output/$archive" skills/use-tunlite/SKILL.md | cmp - "$source_root/skill/use-tunlite/SKILL.md"; then
+    echo "tunlite: bundled Skill differs from canonical source in $archive" >&2
     exit 1
   fi
 done
@@ -71,7 +86,7 @@ tar -xzf "$output/$native" -C "$temporary" tunlite
 if [ "$(uname -s)" = Darwin ]; then
   lipo "$temporary/tunlite" -verify_arch x86_64 arm64
 fi
-actual_version="$($temporary/tunlite version --json)"
+actual_version="$("$temporary/tunlite" version --json)"
 expected_version="{\"outcome\":\"succeeded\",\"protocolVersion\":1,\"version\":\"$plain_version\"}"
 if [ "$actual_version" != "$expected_version" ]; then
   echo "tunlite: packaged binary reported the wrong version" >&2

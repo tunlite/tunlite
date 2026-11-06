@@ -25,7 +25,7 @@ brew install tunlite/tap/tunlite
 ```
 
 已经添加过旧 Tap 时，先执行 `brew update` 再安装或升级。
-`brew upgrade tunlite/tap/tunlite` 可将此前源码构建的包升级为 revision 1 二进制包；
+`brew upgrade tunlite/tap/tunlite` 可升级为带匹配 Skill 的 revision 2 二进制包；
 需要重新安装当前包时使用 `brew reinstall tunlite/tap/tunlite`。Homebrew 分发不等同于
 Apple 开发者签名或公证，也不保证符合企业设备策略。
 
@@ -53,6 +53,21 @@ curl -fsSL https://raw.githubusercontent.com/tunlite/tunlite/main/bootstrap.sh |
 每个 Release 都包含独立压缩包和 `SHA256SUMS`。第一次安装或参与发布验收，请按照
 [从零安装与验收手册](docs/INSTALL_AND_ACCEPTANCE.md)执行；当前版本边界和发布门禁见
 [预览版指南](docs/V1_PREVIEW.md)。
+
+新构建的归档还包含 `skills/use-tunlite/SKILL.md`，与二进制来自同一源码检出，
+受归档 checksum 和 Attestation 覆盖。已公开的 `v1.0.0-preview.1` 归档保持不变，
+其中没有 Skill：Homebrew 从同版本 Tag 下载并校验固定 SHA-256 的 Skill 资源；
+bootstrap 安装二进制后只提示同版本 Skill 地址，不下载未校验的 Skill。
+
+使用带 Skill 的归档时，bootstrap 将其安装到
+`~/.local/share/tunlite/skills/use-tunlite`。自定义
+`--install-dir <prefix>/bin`（或 `TUNLITE_INSTALL_DIR`）对应
+`<prefix>/share/tunlite/skills/use-tunlite`；其他二进制目录也按其父目录下的 `share`
+映射。脚本会打印实际本地目录；Homebrew 提示使用稳定的 `opt` 路径。可复制提示给
+Agent：`请从目录 "<安装器打印的本地目录>" 安装并启用 use-tunlite Skill。`
+旧版 bootstrap 归档则把打印的同版本 URL 交给 Agent。启用是可选步骤，由 Agent
+按自身机制完成；安装器不会修改 Agent 目录。升级后请让 Agent 刷新已复制的 Skill；
+只有 Agent 支持时才可使用稳定路径的符号链接。
 
 拿到手动下载的原生二进制时，直接复制到 PATH：
 

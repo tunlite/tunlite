@@ -140,6 +140,18 @@ TUNLITE_INSTALL_DIR=/usr/local/bin \
 sh bootstrap.sh
 ```
 
+新构建的归档包含 `skills/use-tunlite/SKILL.md`（0644），字节来自构建二进制的同一
+源码检出；三个平台均受归档 checksum 和 Attestation 覆盖。bootstrap 将其安装到
+`~/.local/share/tunlite/skills/use-tunlite`；自定义二进制目录映射到其父目录下的
+`share/tunlite/skills/use-tunlite`，例如 `/usr/local/bin` 对应
+`/usr/local/share/tunlite/skills/use-tunlite`。脚本先验证并暂存二进制和 Skill，失败时
+保留原有可用文件，不改写 Agent 目录。
+
+现有公开 `v1.0.0-preview.1` 归档和 checksum 不变，其中没有 Skill。bootstrap
+安装二进制后只显示同版本 Tag 下的 Skill URL，不下载未校验内容或声称存在本地
+Skill。Homebrew 对此旧版使用同 Tag、固定 SHA-256 的资源补齐 Skill，保持预编译
+分发且不安装 Go；以后带 Skill 的归档可直接使用归档内副本。
+
 手动拿到单文件二进制时，直接复制到 PATH：
 
 ```bash
@@ -161,10 +173,13 @@ checksum 不一致、归档缺少二进制或二进制报告版本不一致时�
 
 V1 Preview 暂不提供 Shell 自动补全，也不读取或修改 `.bashrc`、`.zshrc`、fish 配置
 等 Shell 启动文件；补全只有在跨 Shell、跨平台和包管理器
-的长期职责边界明确后才重新立项。Agent Skill 由公开仓库中的
-[`use-tunlite` 包](../skill/use-tunlite/)独立提供；用户把仓库目录或固定版本 Tag 地址
-交给 Agent，由 Agent 按自己的扩展机制安装、更新和卸载。Tunlite CLI 不读取 Agent
-目录，也不维护 Skill 安装状态。
+的长期职责边界明确后才重新立项。安装完成后会显示可选的 Agent Skill 启用提示，
+不受二进制目录是否已在 PATH 影响。把提示中的本地目录交给 Agent：
+`请从目录 "<安装器打印的目录>" 安装并启用 use-tunlite Skill。`
+旧版 bootstrap 则使用提示中的同版本 Tag URL。Homebrew 提供稳定 `opt` 路径。
+[`use-tunlite` 包](../skill/use-tunlite/)由 Agent 按自己的扩展机制安装、更新和卸载；
+包升级后请 Agent 刷新已复制的 Skill，只有 Agent 支持时才使用稳定目录的符号链接。
+Tunlite CLI 不读取 Agent 目录，也不维护 Skill 安装状态。
 
 也可以手动下载压缩包和 `SHA256SUMS`。任何 checksum 不一致都必须停止安装，不能用
 “重新下载后跳过校验”的方式继续。

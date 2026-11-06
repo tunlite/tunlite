@@ -185,6 +185,7 @@ func releaseEntries(binaryPath, binaryName string) []releaseEntry {
 		{source: binaryPath, name: binaryName, mode: 0o755},
 		{source: "LICENSE", name: "LICENSE", mode: 0o644},
 		{source: "README.md", name: "README.md", mode: 0o644},
+		{source: "skill/use-tunlite/SKILL.md", name: "skills/use-tunlite/SKILL.md", mode: 0o644},
 	}
 }
 
